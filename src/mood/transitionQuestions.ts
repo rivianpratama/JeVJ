@@ -74,8 +74,9 @@ const KIND_CRITERIA: Record<TransitionKind, Entry> = {
       'a harsh, screamed or distorted climax; that is scream_peak',
       'applause, laughter, crowd noise or a noise burst without a beat (burst is true); that is break_silence or none',
       'a gradual orchestral or ambient swell without a beat (beatless is true); that is none',
+      'a speaker starting again after a breath (speech >= 0.5 and pause high either side); that is none',
     ],
-    requires: 'beatConf in the after window is at least 0.3',
+    requires: 'a beat under what follows: beatless must be false',
   },
   build_start: { what: 'energy begins rising toward something' },
   breakdown: { what: 'energy is pulled away after a peak, stripped down' },
@@ -84,10 +85,17 @@ const KIND_CRITERIA: Record<TransitionKind, Entry> = {
   scream_peak: {
     what: 'harsh, screamed or distorted climax',
     signals: ['harsh at or above 0.6', 'harshDelta positive', 'noise high', 'very bright', 'loud'],
+    not_for: 'a bright synthetic lead or supersaw, which is loud and flat without being screamed',
     note: 'a track that screams continuously still has peaks: name the moments the harshness steps up, not only the one loudest instant',
+    prefer_over:
+      'tempo_change and key_change, when harsh is at or above 0.6 and harshDelta is positive — a screamed entry moves the harshness, not the pulse',
   },
   quiet_fall: { what: 'gentle fall into a quiet passage' },
-  tempo_change: { what: 'the pulse speeds up or slows down' },
+  tempo_change: {
+    what: 'the pulse speeds up or slows down',
+    requires: 'bpmBefore and bpmAfter really differ, by more than a few percent',
+    not_for: 'a tempo reading that wobbled while the music stayed on one pulse',
+  },
   key_change: { what: 'the harmony moves to a new key' },
   none: { what: 'no meaningful change here' },
 };
@@ -125,7 +133,9 @@ export function candidateKey(index: number): string {
 function kindQuestion(index: number): ChoiceQuestion {
   return {
     type: 'choice',
-    instructions: `What kind of musical moment is \`${candidateKey(index)}\`? Judge from the music either side of it and from the measurements of the seam itself.`,
+    instructions:
+      `What kind of musical moment is \`${candidateKey(index)}\`? Judge from the music either side of it and from the measurements of the seam itself. ` +
+      'When more than one kind fits, pick the one whose own evidence moved most: a harshDelta of 0.1 or more, with harsh at or above 0.6 after it, is a scream_peak even if the tempo reading also moved; a tempo reading that moved while nothing else did is usually none.',
     criteria: KIND_CRITERIA,
   };
 }

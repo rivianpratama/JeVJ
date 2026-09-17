@@ -84,6 +84,23 @@ const KEY_CHANGE_FIT = 0.5;
 const VOCAL_CROSSING = 0.5;
 const HARSH_CROSSING = 0.6;
 /**
+ * The novelty a feature crossing is credited with, which is what it has to
+ * survive the cap on.
+ *
+ * A crossing is not a novelty peak — the payload may barely move when a singer
+ * starts screaming over a riff that was already there — so it has to be given a
+ * number, and the number decides whether the cap keeps it. `CANDIDATE_NOVELTY`
+ * for both was too little for `harsh`: on *Duality* the harshness crosses 0.6
+ * four or five times in three and a half minutes, and every one of them lost
+ * its slot to one of the track's twenty-nine tempo wobbles, which is why a
+ * track that is nothing but screaming returned no `scream_peak` at all. A
+ * harshness crossing is the rarest candidate this finder produces and the one
+ * a listener is most certain to notice, so it outranks everything but a real
+ * slam.
+ */
+const VOCAL_CROSSING_NOVELTY = CANDIDATE_NOVELTY;
+const HARSH_CROSSING_NOVELTY = 0.7;
+/**
  * How long a crossing has to hold before it counts.
  *
  * Both features are already smoothed, but a signal sitting on its threshold
@@ -390,10 +407,10 @@ export function findCandidates(o: CandidateSources): TransitionCandidate[] {
   }
 
   for (const c of crossings(o.frames, o.vocal, VOCAL_CROSSING, 'vocal')) {
-    raw.push({ ...c, novelty: Math.max(noveltyAt(c.t), CANDIDATE_NOVELTY) });
+    raw.push({ ...c, novelty: Math.max(noveltyAt(c.t), VOCAL_CROSSING_NOVELTY) });
   }
   for (const c of crossings(o.frames, o.harsh, HARSH_CROSSING, 'harsh')) {
-    raw.push({ ...c, novelty: Math.max(noveltyAt(c.t), CANDIDATE_NOVELTY) });
+    raw.push({ ...c, novelty: Math.max(noveltyAt(c.t), HARSH_CROSSING_NOVELTY) });
   }
 
   return cap(dedupe(raw));

@@ -85,19 +85,29 @@ const BEATLESS_TRUST = 0.3;
 const BEATLESS_ONSETS_PER_SEC = 3;
 
 /**
- * What a noise burst is: broadband, no beat worth the name, and abrasive, with
- * the broadband part having *arrived* at the moment rather than having been
- * there all along.
+ * What a noise burst is: broadband, with nothing under it, and no beat worth
+ * the name.
  *
- * Applause is the case. It reads as a sudden jump in spectral flatness against
- * a passage that had none — a room clapping is close to white noise and a
- * speaking voice is not — with no trustworthy beat under it. The rise matters
- * as much as the level: a cymbal-heavy mix is flat all the way through and is
- * not a burst at any one instant.
+ * Applause is the case this exists for, and all three clauses are needed to
+ * name it. Measured on the talk, every candidate the ear hears as clapping or
+ * laughter reads a flatness of 0.16-0.22 on the page after it against 0.00-0.11
+ * everywhere the man is speaking: a room clapping is close to white noise and a
+ * voice is not.
+ *
+ * Flatness alone is not enough, because the other thing that reads flat is
+ * distortion — *Duality* has twenty-three candidates over 0.15 — and the
+ * second clause is what tells a room from a guitar wall. A room is noisy and
+ * *not abrasive*: it has no saturation, it is not especially bright and it
+ * sits low in the track's own loudness range, so `harsh` reads 0.2-0.4 on the
+ * talk's applause against 0.5-0.7 on every flat candidate in *Duality*. The
+ * third clause is `beatTrust`, which is what says no record is playing at all.
+ *
+ * Read off the page after the moment rather than off the frames, deliberately:
+ * these are the numbers the model is also shown, so a candidate the flag fires
+ * on is one whose own page says why.
  */
-const BURST_WINDOW_SEC = 1;
-const BURST_FLATNESS = 0.12;
-const BURST_FLATNESS_RISE = 0.04;
+const BURST_FLATNESS = 0.15;
+const BURST_HARSH = 0.45;
 const BURST_TRUST = 0.3;
 
 export interface TrackAnalysisDeps {
@@ -305,7 +315,7 @@ export function buildTransitionInput(
       before !== null && after !== null && before.tonic !== after.tonic && after.fit > 0.5,
     vocalDelta: round(meanAround(o.frames, o.vocal, t, half, 1) - meanAround(o.frames, o.vocal, t, half, -1), 2),
     harshDelta: round(meanAround(o.frames, o.harsh, t, half, 1) - meanAround(o.frames, o.harsh, t, half, -1), 2),
-    burst: isBurst(o.frames, t, after?.input ?? null),
+    burst: isBurst(after?.input ?? null),
     beatless: isBeatless(after?.input ?? null),
   };
 }
@@ -326,38 +336,14 @@ function isBeatless(page: MoodInput | null): boolean {
   );
 }
 
-/**
- * Whether what follows the moment is a noise burst rather than music.
- *
- * The flatness is read off the frames rather than off the page, because a
- * burst is two seconds long and a page is four bars: by the time the `after`
- * payload was taken the clapping may already have stopped.
- */
-function isBurst(
-  frames: readonly FrameFeatures[],
-  t: number,
-  page: MoodInput | null,
-): boolean {
+/** Whether what follows the moment is a noise burst rather than music. */
+function isBurst(page: MoodInput | null): boolean {
   if (page === null) return false;
-  if (beatTrust(page.beatConf, page.regular) >= BURST_TRUST) return false;
-
-  const after = meanFlatness(frames, t, t + BURST_WINDOW_SEC);
-  const before = meanFlatness(frames, t - BURST_WINDOW_SEC, t);
-  return after >= BURST_FLATNESS && after - before >= BURST_FLATNESS_RISE;
-}
-
-/** Mean spectral flatness over `[from, to)`, or 0 when no frame falls in it. */
-function meanFlatness(frames: readonly FrameFeatures[], from: number, to: number): number {
-  let sum = 0;
-  let n = 0;
-  for (let i = Math.max(0, indexAtOrBefore(frames, from)); i < frames.length; i++) {
-    const f = frames[i]!;
-    if (f.t < from) continue;
-    if (f.t >= to) break;
-    sum += f.flatness;
-    n += 1;
-  }
-  return n === 0 ? 0 : sum / n;
+  return (
+    page.noise >= BURST_FLATNESS &&
+    page.harsh <= BURST_HARSH &&
+    beatTrust(page.beatConf, page.regular) < BURST_TRUST
+  );
 }
 
 /**

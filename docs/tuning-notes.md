@@ -1,4 +1,4 @@
-# Real-track tuning notes (v2.1)
+# Real-track tuning notes (v2.1, with the v2.2 calibration round)
 
 Six tracks through the finished app — paste, download, analyse, play — on
 `feat/jevj-v1`, Chrome, macOS, 1440×900 with the pixel ratio capped at 1.5.
@@ -172,6 +172,120 @@ seconds; with it, at most one flip per four seconds.
    knobs were tuned against the measurement harness before it; these six were
    the check that the knobs describe real music and not a synthetic build.
 
+## v2.2 — the calibration round
+
+The three findings below were recorded rather than fixed, because Task 18's
+brief allowed Director, smoke and strand knobs only. Task 18b is the pass that
+fixed them, against the same cached audio rather than against the ear alone.
+Two scripts do the measuring and both are committed:
+
+- `npx tsx scripts/calibrate/probe-features.ts [id...]` decodes a cached mp4
+  with ffmpeg and sweeps it through the same `FeatureExtractor` +
+  `AnalysisPipeline` the app runs, printing every feature the model is shown
+  per four seconds. It costs nothing and is where the detectors were tuned.
+- `npx tsx scripts/calibrate/probe-jev.ts [id...]` runs `analyzeTrack` end to
+  end against the real model and prints what both passes said, with the token
+  totals. `--dry` stubs both passes and prints the candidate flags instead,
+  which is where `burst` and `beatless` were tuned for nothing.
+
+### The local features, before → after
+
+Per-window means over the first sixty seconds, except the talk, which is the
+whole 3:46 because its first twenty-four seconds are an intro.
+
+| track | `speech` | `harsh` |
+|---|---|---|
+| Richard St. John (speech) | 0.35 → **0.58** | 0.27 → 0.34 |
+| Slipknot, *Duality* | 0.28 → **0.20** | 0.31 → **0.58** |
+| Avicii, *Levels* | 0.29 → **0.14** | 0.33 → 0.50 |
+| Travis Scott, *SICKO MODE* | — → 0.19 | — → 0.49 |
+| Satie, *Gymnopédie* | 0.09 → 0.12 | 0.30 → **0.23** |
+| Eno, *An Ending* | 0.22 → 0.12 | 0.25 → 0.39 |
+
+`speech` now orders the six correctly and by a wide margin — the talk is three
+times any music track — where before it read 0.28-0.35 on four of the six and
+0.35 on the talk, which is not a detector. `harsh` likewise: it used to report
+0.30 for solo piano and 0.31 for two minutes of screaming.
+
+The talk clears 0.6 in 58% of its four-second windows rather than the 80% the
+brief asked for, and the shortfall is real rather than a tuning failure: the
+windows that miss are its first twenty-four seconds, its applause and its
+outro music, all of which have no holes in the envelope and none of which is a
+man talking. The music tracks are at 0.12-0.20 against a ceiling of 0.25.
+
+### What the model said, before → after
+
+Live, whole tracks, one run each.
+
+| track | before | after |
+|---|---|---|
+| **talk** | `spoken` mean **0.13**, genre spoken on 0 of 28 segments, **9 `drop`** | `spoken` mean **0.57** and ≥ 0.7 on 20 of 28, genre **spoken 64%**, **1 `drop`** |
+| **Duality** | **no `scream_peak`**, genre electronic_dance 47% / pop 32% | **5 `scream_peak`** (0:18, 0:57, 2:22, 2:23, 2:26), genre **rock_metal 74%** |
+| **Gymnopédie** | 2 `drop` (1:59, 3:46) | 1 `drop` |
+| **An Ending** | 3 `drop` | 2 `drop` |
+| ***Levels*** | genre electronic_dance 90% | genre electronic_dance 70%, rock_metal 25% |
+| ***SICKO MODE*** | genre pop / electronic_dance | electronic_dance 40%, pop 29% |
+
+### What moved, and why
+
+1. **The beat grid locks onto speech.** The talk reads `beatConf` 1.00 against
+   `regular` 0.00 from thirty seconds in — an autocorrelation finds a period in
+   syllables, and nothing lands on it. The old `speech` score gave a confident
+   grid a veto worth 0.53 of the answer, which capped a talk at 0.47 whatever
+   else was true. `beatTrust(confidence, regular)` is what the veto is spent
+   against now.
+2. **The modulation ratio was measured on a linear envelope**, which measures
+   the vowels and not the gaps between them. It is taken on the log envelope,
+   over 2.5-8 Hz against 0.5-20.
+3. **`pauseRatio` is new and is what carries the answer.** At 15 dB below the
+   four-second median it reads 0.08-0.23 wherever the talk is talking and
+   *exactly* 0.000 in every window of a minute of house, metal, trap and an
+   ambient pad. It is the heaviest term and a gate on the other four.
+4. **`pitchVariation` is new, tested, and weighted at nothing.** Through a mix
+   the frame-level `f0` wanders for every kind of music alike — 0.99 on
+   *Levels*, 0.92 on the Eno, 0.83 on the talk — with or without a salience
+   gate. It is published so the next attempt starts from the measurement.
+5. **`harsh` had the `attack === 'sharp'` gate firing backwards.** `attack` is
+   really a sparseness measure — how far an onset rises above the last two
+   seconds' own flux — so a piano note against silence reads `sharp` and a wall
+   of distorted guitar reads `mixed`. The gate gave the Gymnopédie full marks
+   and cut Slipknot by 40%. It is replaced by `saturation`: peaks taken off
+   *and* noise between the partials, which is distortion and is not a held pad.
+6. **`burst` and `beatless` are new fields on `TransitionInput`**, and `drop`
+   now says what it is not for four times over, naming the field each time.
+   Applause reads flatness 0.16-0.22 with `harsh` 0.2-0.4; a guitar wall reads
+   the same flatness with `harsh` 0.5-0.7, which is what tells a room from a
+   band.
+7. **A harshness crossing now outranks a tempo wobble for a candidate slot.**
+   *Duality* crosses `harsh` 0.6 four or five times in three and a half
+   minutes and every crossing used to lose its slot to one of the track's
+   twenty-nine tempo wobbles — which is the whole reason a track that is
+   nothing but screaming returned no `scream_peak`.
+
+### What it cost, and what is still wrong
+
+A calibration round is nineteen whole-track live runs: **3.2M input and 375k
+output tokens**, at 150k-210k input and 18k-25k output per track, which is
+unchanged per track from v2.1 — the payload grew by one field and the rubrics
+by a few sentences. Most of the iteration happened under `--dry`, which is
+free; the live runs are only for what a model's opinion decides.
+
+- ***Levels* now reads `rock_metal` on a quarter of its segments** and returns
+  eight `scream_peak`. The harsh rescale moved the line that `rock_metal`'s
+  criteria sit on: a supersaw lead measures 0.50 where a scream measures 0.65,
+  and the two are closer than the rubric's words are. Raising the criterion to
+  `harsh >= 0.6` and adding a `not_for` took it from 45% to 25%, and the
+  remainder is the genuine ambiguity of a loud saturated synth.
+- **The Gymnopédie still has one `drop`** and the Eno two. Both are at
+  `beatConf` 1.00 with an onset density over three, so `beatless` does not
+  fire, and a rubric sentence is all that is holding them.
+- ***Duality* lost its two correct `drop`s** (the cold open and the chorus
+  return) to `scream_peak` and `break_silence`. That is the cost of telling the
+  model to prefer a harshness step over everything else, and on this track it
+  is arguably right — the chorus return *is* a scream.
+- **`tempo_change` is still the commonest answer on metal and trap** (27 of 60
+  on *Duality*), which is the grid wobbling rather than the music moving.
+
 ## What these tracks say about the analysis, which is not a knob
 
 Recorded rather than fixed — the brief for this pass allows Director, smoke and
@@ -179,12 +293,16 @@ strand knobs only, and every item below is a rubric or a detector.
 
 - **`spoken` is far too low on real speech** (0.13 mean on a TED talk). This is
   the single highest-value fix left: the breath scene and the whole speech
-  safety hang off it.
+  safety hang off it. **Fixed in v2.2: 0.57.**
 - **`scream_peak` never fires on continuous screaming.** The rubric looks for a
-  peak, and a track that is all peak has none.
+  peak, and a track that is all peak has none. **Fixed in v2.2: five of them on
+  *Duality*.**
 - **Genre is unreliable outside dance music** — metal read as electronic_dance,
   ambient read as electronic_dance. It feeds the relief bonus and the grain
-  colour, so the cost is a weaker picture rather than a wrong one.
+  colour, so the cost is a weaker picture rather than a wrong one. **Half fixed
+  in v2.2**: metal now reads `rock_metal` on 74% of its segments, the ambient
+  still reads `electronic_dance`, and *Levels* picked up a quarter
+  `rock_metal` on the way.
 - **Pass 2 almost never says `none`** (0–7 out of ~60). Either the candidate
   detector is well aimed or the verdict has no strong "nothing happened" prior;
   the talk's nine drops suggest the latter.

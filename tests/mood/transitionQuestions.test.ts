@@ -45,13 +45,17 @@ describe('transitionQuestions', () => {
         'a harsh, screamed or distorted climax; that is scream_peak',
         'applause, laughter, crowd noise or a noise burst without a beat (burst is true); that is break_silence or none',
         'a gradual orchestral or ambient swell without a beat (beatless is true); that is none',
+        'a speaker starting again after a breath (speech >= 0.5 and pause high either side); that is none',
       ],
-      requires: 'beatConf in the after window is at least 0.3',
+      requires: 'a beat under what follows: beatless must be false',
     });
     expect(kind.criteria['scream_peak']).toEqual({
       what: 'harsh, screamed or distorted climax',
       signals: ['harsh at or above 0.6', 'harshDelta positive', 'noise high', 'very bright', 'loud'],
+      not_for: 'a bright synthetic lead or supersaw, which is loud and flat without being screamed',
       note: 'a track that screams continuously still has peaks: name the moments the harshness steps up, not only the one loudest instant',
+      prefer_over:
+        'tempo_change and key_change, when harsh is at or above 0.6 and harshDelta is positive — a screamed entry moves the harshness, not the pulse',
     });
     expect(kind.criteria['none']).toEqual({ what: 'no meaningful change here' });
   });
