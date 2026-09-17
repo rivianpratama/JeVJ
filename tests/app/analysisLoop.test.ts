@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AnalysisLoop } from '../../src/app/analysisLoop';
 import { BeatGrid } from '../../src/analysis/grid';
+import { FeatureExtractor } from '../../src/analysis/features';
 import { magnitudesFromDecibels } from '../../src/source/audioGraph';
 import type { AudioGraph } from '../../src/source/audioGraph';
 import { clickTrack, edmLoop, windowsFrom } from '../helpers/synth';
@@ -26,25 +27,26 @@ function fakeGraph(signal: Float32Array): AudioGraph {
   };
 }
 
-/** What `createAudioGraph` sets on its `AnalyserNode`. */
-const MIN_DB = -100;
-const MAX_DB = -10;
-
 /**
  * The same signal as the *live* graph delivers it.
  *
- * `AnalyserNode` divides its spectrum by `fftSize` and reports decibels
- * clamped to the analyser's range; `fftMagnitudes` normalizes by nothing. So
- * this takes the test fixture's magnitudes the whole way down that path and
- * back up through the conversion `AudioGraph.readFrame` actually uses, which
- * is the only way a Node test can hold the live scale to the offline one.
+ * `AnalyserNode` divides its spectrum by `fftSize` before reporting decibels;
+ * `fftMagnitudes` normalizes by nothing. So this takes the test fixture's
+ * magnitudes the whole way down that path and back up through the conversion
+ * `AudioGraph.readFrame` actually uses, which is the only way a Node test can
+ * hold the live scale to the offline one.
+ *
+ * Not clamped to `minDecibels`/`maxDecibels`: those bound `getByteFrequencyData`,
+ * which quantizes into a 0-255 byte range that has to be bounded somehow.
+ * `getFloatFrequencyData` — what `AudioGraph` actually calls — hands back the
+ * unclamped decibel value, so clamping here would be modelling a limit the
+ * real float path does not have.
  */
 function analyserGraph(signal: Float32Array): AudioGraph {
   const frames = windowsFrom(signal, FS, FFT).map((w) => {
     const db = new Float32Array(w.mags.length);
     for (let i = 0; i < w.mags.length; i++) {
-      const level = 20 * Math.log10(Math.max(w.mags[i]! / FFT, 1e-12));
-      db[i] = Math.min(MAX_DB, Math.max(MIN_DB, level));
+      db[i] = 20 * Math.log10(Math.max(w.mags[i]! / FFT, 1e-12));
     }
     const mags = new Float32Array(db.length);
     magnitudesFromDecibels(db, mags);
@@ -327,6 +329,55 @@ describe('AnalysisLoop', () => {
     expect(b.rhythm.onsetsPerSec).toBeGreaterThan(3);
     expect(b.rhythm.meter).toBe('duple');
     expect(b.speech).toBeLessThanOrEqual(0.25);
+  });
+
+  /**
+   * Pins the magnitude scale itself, at the one layer that is not a ratio:
+   * `bandsRaw` is a direct mean of the linear magnitudes, and `flux` is a
+   * direct difference between two frames of them, so either would show a
+   * scale mismatch immediately — before it is buried under the grid,
+   * onsets and everything downstream that measures a *shape* rather than a
+   * *level*. Same synthesized signal, run through `fftMagnitudes` for the
+   * offline reading and through `magnitudesFromDecibels` with the analyser's
+   * own normalization for the live one.
+   */
+  it('scales bandsRaw and flux the same way live as offline, within 25%', () => {
+    const signal = edmLoop(128, 6, FS);
+    const frames = windowsFrom(signal, FS, FFT);
+
+    const offline = new FeatureExtractor({ sampleRate: FS, fftSize: FFT });
+    const offlineFeatures = frames.map((f) => offline.extract(f.mags, f.time, f.t));
+
+    // The frame with the strongest attack: bandsRaw and flux both carry real
+    // signal there rather than noise-floor rounding, which is where a 25%
+    // tolerance would be meaningless either way.
+    let bestIdx = 1;
+    for (let i = 1; i < offlineFeatures.length; i++) {
+      if (offlineFeatures[i]!.flux > offlineFeatures[bestIdx]!.flux) bestIdx = i;
+    }
+
+    const live = new FeatureExtractor({ sampleRate: FS, fftSize: FFT });
+    let liveAtBest = live.extract(frames[0]!.mags, frames[0]!.time, frames[0]!.t);
+    for (let i = 0; i <= bestIdx; i++) {
+      const db = new Float32Array(frames[i]!.mags.length);
+      for (let k = 0; k < db.length; k++) db[k] = 20 * Math.log10(Math.max(frames[i]!.mags[k]! / FFT, 1e-12));
+      const mags = new Float32Array(db.length);
+      magnitudesFromDecibels(db, mags);
+      liveAtBest = live.extract(mags, frames[i]!.time, frames[i]!.t);
+    }
+
+    const a = offlineFeatures[bestIdx]!;
+    const b = liveAtBest;
+
+    for (let band = 0; band < a.bandsRaw.length; band++) {
+      const ref = a.bandsRaw[band]!;
+      if (ref < 1e-3) continue; // near-silent band: a ratio there is noise, not signal.
+      expect(b.bandsRaw[band]!).toBeGreaterThanOrEqual(ref * 0.75);
+      expect(b.bandsRaw[band]!).toBeLessThanOrEqual(ref * 1.25);
+    }
+    expect(a.flux).toBeGreaterThan(0);
+    expect(b.flux).toBeGreaterThanOrEqual(a.flux * 0.75);
+    expect(b.flux).toBeLessThanOrEqual(a.flux * 1.25);
   });
 
   it('stops reading once stopped', () => {

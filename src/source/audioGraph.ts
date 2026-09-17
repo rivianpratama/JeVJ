@@ -33,11 +33,12 @@ const MAX_DB = -10;
  * this window size. Everything the analysis does with a spectrum is a ratio
  * except one number, and that number is the onset detector's `ABSOLUTE_FLOOR`,
  * the gate that stops silence from triggering. Unscaled, the live path handed
- * it a detection function whose *loudest* value was fifty times below that
- * floor, so the floor became the threshold: onsets fired on whichever frames
- * of a kick happened to squeak over an absolute bar, if any, and `regular`
- * read 0.00 on a metronome-perfect loop while the same audio swept offline
- * read 1.00.
+ * it a detection function whose *loudest* measured value was about 0.012 —
+ * just above the 0.01 floor rather than comfortably clear of it — so the
+ * floor was close enough to the threshold to bite: onsets fired on whichever
+ * frames of a kick happened to squeak over an absolute bar, if any, and
+ * `regular` read 0.00 on a metronome-perfect loop while the same audio swept
+ * offline read 1.00.
  *
  * The windows are not identical — the analyser applies Blackman (coherent
  * gain 0.42) where `fftMagnitudes` applies Hann (0.5) — so this is right to

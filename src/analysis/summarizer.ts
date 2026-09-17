@@ -156,7 +156,11 @@ export class Summarizer {
           sub: timbre.subWeight(),
           centroidSlope: timbre.centroidSlope(),
         },
-        speech: speech.score(state.confidence),
+        // The beat as well as how sure of it we are: a pulse train's harmonics
+        // sit in the syllabic band, and the detector can only take them out of
+        // the measurement if it is told where they are. Same call as
+        // `AnalysisPipeline.step` — see `pipeline.ts`.
+        speech: speech.score(state.confidence, state.period > 0 ? 1 / state.period : 0),
       },
       positionSec,
       durationSec,

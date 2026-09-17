@@ -156,11 +156,15 @@ export class SpeechDetector {
    * of is music, whatever its envelope looks like — and `beatHz` is the beat
    * it is that sure of, in beats per second, or 0 when there is no grid to ask.
    *
-   * Told both, the detector stops competing with the music: the beat and its
-   * harmonics come out of the modulation spectrum, and what remains is
-   * discounted by how sure of the beat the grid is. Told neither, it behaves
-   * exactly as it did — a detector with no beat to be told about is the case
-   * it was always right about.
+   * The two arguments do different jobs. `beatHz` only matters once
+   * `beatConfidence` clears `NOTCH_CONFIDENCE`: that is what tells the notch
+   * where to cut the beat and its harmonics out of the modulation spectrum.
+   * The `1 - BEAT_DISCOUNT * beatConfidence` scale on what is left, though,
+   * reads `beatConfidence` alone — it applies whenever `beatConfidence > 0`,
+   * regardless of `beatHz`, including when `beatHz` is 0 or too low a
+   * confidence to have notched anything. Told neither — `beatConfidence` and
+   * `beatHz` both 0, a detector with no grid to ask — it behaves exactly as
+   * it did before this cue existed.
    */
   score(beatConfidence: number, beatHz = 0): number {
     if (!this.any) return 0;

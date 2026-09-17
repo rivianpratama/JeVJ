@@ -18,9 +18,12 @@ const SECONDS = 12;
  * of everything it did touch.
  *
  * The point of the fake is what it is *missing*: the only methods on it are
- * the two listener calls and a `currentTime` to read. A flow that paused the
- * element, reloaded it or revoked its source would throw here rather than
- * quietly stopping the music, which is the failure this file is about.
+ * `pause`, the two listener calls, and a `currentTime` to read. A flow that
+ * paused the element is not caught by a throw — `pause` is here, and counted,
+ * so the tests catch it by asserting `paused` stayed at 0. A flow that
+ * reloaded the element or revoked its source would throw here instead, since
+ * neither has a method on the fake to call, which is the failure this file is
+ * about.
  */
 function fakeElement(): {
   el: HTMLAudioElement;

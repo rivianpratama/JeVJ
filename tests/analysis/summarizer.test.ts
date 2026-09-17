@@ -191,6 +191,27 @@ describe('Summarizer.snapshot', () => {
 
     expect(new Summarizer(stubDeps()).snapshot(92, 92, 245)).toEqual(expected);
   });
+
+  it('agrees with fromSnapshot on speech when a beat is locked, the way pipeline.ts does', () => {
+    const readings = exampleReadings(); // grid.period = 60/128 > 0: a locked beat.
+    const beatHz = 1 / readings.grid.period;
+
+    // Sensitive to the beatHz argument, unlike stubDeps' plain `() => r.speech`
+    // stub — that stub ignores every argument, so it cannot tell a call site
+    // that forgets to pass the beat frequency from one that gets it right.
+    const speech = { score: (conf: number, hz = 0): number => (hz > 0 ? 0.42 : 0.91) };
+    const deps = { ...stubDeps(readings), speech };
+
+    const fromReadings = Summarizer.fromSnapshot(
+      { ...readings, speech: speech.score(readings.grid.confidence, beatHz) },
+      92,
+      245,
+    );
+
+    const fromSnapshot = new Summarizer(deps).snapshot(92, 92, 245);
+    expect(fromSnapshot.speech).toBe(fromReadings.speech);
+    expect(fromSnapshot.speech).toBe(0.42);
+  });
 });
 
 describe('Summarizer.serialize', () => {
