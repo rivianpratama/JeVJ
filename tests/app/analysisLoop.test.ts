@@ -3,6 +3,11 @@ import { AnalysisLoop } from '../../src/app/analysisLoop';
 import type { AudioGraph } from '../../src/source/audioGraph';
 import { clickTrack, windowsFrom } from '../helpers/synth';
 
+/** A metronome that accents every third beat. */
+function waltz(bpm: number, seconds: number, sr: number): Float32Array {
+  return clickTrack(bpm, seconds, sr, 3);
+}
+
 const FS = 44100;
 const FFT = 4096;
 
@@ -87,6 +92,52 @@ describe('AnalysisLoop', () => {
     expect(snap.tempo?.confidence).toBe(0);
     expect(snap.grid.confidence).toBe(0); // never anchored to noise
     expect(snap.beats).toHaveLength(0);
+  });
+
+  it('carries every tracker in its snapshot', () => {
+    const loop = new AnalysisLoop();
+    loop.start(fakeGraph(clickTrack(120, 12, FS)));
+    for (let i = 0; i < Math.floor((12 * FS) / 735); i++) loop.step();
+
+    const snap = loop.latest()!;
+    expect(['duple', 'triple', 'unclear']).toContain(snap.rhythm.meter);
+    expect(snap.rhythm.regular).toBeGreaterThan(0.5); // a metronome, after all
+    expect(snap.rhythm.sync).toBeLessThan(0.3);
+    expect(snap.rhythm.onsetsPerSec).toBeGreaterThan(1);
+    expect(snap.timbre.attack).toBe('sharp');
+    expect(snap.timbre.consonance).toBeGreaterThanOrEqual(0);
+    expect(snap.timbre.consonance).toBeLessThanOrEqual(1);
+    expect(snap.dynamics.trend).toBe('steady');
+    // A bare metronome is silence with clicks in it, so it genuinely reports
+    // a hole in every beat. Only the type is worth asserting here; what a gap
+    // is gets decided in the dynamics tests, on music-shaped loudness.
+    expect(typeof snap.dynamics.gap).toBe('boolean');
+    expect(snap.speech).toBeLessThan(0.5);
+    expect(snap.key.tonic).toBeGreaterThanOrEqual(-1);
+  });
+
+  it('has nothing to say about a key it has not heard', () => {
+    const loop = new AnalysisLoop();
+    loop.start(fakeGraph(new Float32Array(4 * FS)));
+    for (let i = 0; i < Math.floor((4 * FS) / 735); i++) loop.step();
+
+    const snap = loop.latest()!;
+    expect(snap.key.key).toBe('?');
+    expect(snap.key.mode).toBe('unclear');
+    expect(snap.rhythm.meter).toBe('unclear');
+    expect(snap.dynamics.slope4).toBe(0);
+  });
+
+  it('hands the meter it hears to the grid, and counts in three for it', () => {
+    const loop = new AnalysisLoop();
+    // A waltz: a strong beat then two weak ones, at 90 BPM.
+    const signal = waltz(90, 20, FS);
+    loop.start(fakeGraph(signal));
+    for (let i = 0; i < Math.floor((20 * FS) / 735); i++) loop.step();
+
+    const snap = loop.latest()!;
+    expect(snap.rhythm.meter).toBe('triple');
+    expect(snap.grid.barLength).toBe(3);
   });
 
   it('stops reading once stopped', () => {

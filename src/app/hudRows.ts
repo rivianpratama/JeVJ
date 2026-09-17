@@ -17,13 +17,25 @@ const BAND_BLOCKS = 8;
 const UNMEASURED = '—';
 
 export function hudRows(snap: AnalysisSnapshot): HudData {
-  const { features: f, grid } = snap;
+  const { features: f, grid, key, rhythm, dynamics, timbre } = snap;
 
   const mood: Record<string, string | number> = {
     rms: f.rms.toFixed(3),
     centroid: `${Math.round(f.centroid)} Hz`,
     phase: phaseBar(snap.phase),
     bar: `${grid.barInPhrase + 1}/16`,
+    modal: key.modal,
+    modeConf: key.modeConf.toFixed(2),
+    consonance: timbre.consonance.toFixed(2),
+    bright: timbre.bright.toFixed(2),
+    noise: timbre.noise.toFixed(2),
+    attack: timbre.attack,
+    meter: rhythm.meter,
+    sync: rhythm.sync.toFixed(2),
+    regular: rhythm.regular.toFixed(2),
+    range: dynamics.range.toFixed(2),
+    trend: dynamics.trend,
+    crest: dynamics.crest.toFixed(2),
   };
   for (let i = 0; i < f.bands.length; i++) {
     mood[`b${i}`] = '█'.repeat(Math.round((f.bands[i] ?? 0) * BAND_BLOCKS));
@@ -38,6 +50,10 @@ export function hudRows(snap: AnalysisSnapshot): HudData {
     bpm: measured ? grid.bpm : UNMEASURED,
     beatConf: measured ? grid.confidence : UNMEASURED,
     tempo: snap.tempo?.marking,
+    key: key.key,
+    mode: key.mode,
+    loud: dynamics.loud,
+    speech: snap.speech,
     mood,
   };
 }

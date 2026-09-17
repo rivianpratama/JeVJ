@@ -26,7 +26,7 @@ const THUMP_SECONDS = 0.08;
  * detector, little enough that the beat is still the strongest period.
  */
 const THUMP_AMP = 0.05;
-const BEATS_PER_BAR = 4;
+const DEFAULT_BEATS_PER_BAR = 4;
 
 /**
  * Where `t` sits inside its analysis window, as a fraction of the window.
@@ -44,7 +44,8 @@ const T_IN_WINDOW = 1;
 
 /**
  * `seconds` of metronome at `bpm`: a 5 ms decaying noise burst on every beat,
- * with every fourth beat louder and thicker in the bass.
+ * with the first beat of every bar louder and thicker in the bass. Pass
+ * `beatsPerBar = 3` for a waltz.
  *
  * The first beat is at t = 0, and — as on a real metronome — every beat is the
  * *same* click, scaled. Rolling fresh noise per beat sounds more natural but
@@ -52,7 +53,12 @@ const T_IN_WINDOW = 1;
  * strength is enough for an autocorrelation to mistake some other period for
  * the beat. A fixture should test the detector, not the fixture's dice.
  */
-export function clickTrack(bpm: number, seconds: number, sr = 44100): Float32Array {
+export function clickTrack(
+  bpm: number,
+  seconds: number,
+  sr = 44100,
+  beatsPerBar = DEFAULT_BEATS_PER_BAR,
+): Float32Array {
   const out = new Float32Array(Math.round(seconds * sr));
   const period = (60 / bpm) * sr;
   const burst = Math.round(CLICK_SECONDS * sr);
@@ -65,7 +71,7 @@ export function clickTrack(bpm: number, seconds: number, sr = 44100): Float32Arr
 
   for (let beat = 0; beat * period < out.length; beat++) {
     const start = Math.round(beat * period);
-    const downbeat = beat % BEATS_PER_BAR === 0;
+    const downbeat = beat % beatsPerBar === 0;
     const amp = downbeat ? CLICK_AMP * ACCENT : CLICK_AMP;
 
     for (let i = 0; i < burst; i++) {
@@ -121,6 +127,131 @@ export function windowsFrom(
       time[j] = at >= 0 && at < signal.length ? signal[at]! : 0;
     }
     out.push({ mags: fftMagnitudes(time).slice(), time, t: (i * hop) / sr });
+  }
+  return out;
+}
+
+/** Partials in the sawtooth the pitched helpers use; amplitude 1/k. */
+const SAW_PARTIALS = 8;
+/** Peak the pitched helpers normalise to, leaving headroom like real audio. */
+const TONE_PEAK = 0.5;
+/** How long each note of `scaleTones` sounds. */
+const NOTE_SECONDS = 0.25;
+/**
+ * A note that started or stopped mid-sample is a click, and a click is
+ * broadband — it would smear energy across every pitch class the chroma cares
+ * about. Five milliseconds of fade is inaudible and keeps the spectrum honest.
+ */
+const NOTE_FADE_SEC = 0.005;
+
+/** How many sines `amNoise` stacks, and how far either side of the centre. */
+const NOISE_PARTIALS = 48;
+const NOISE_SPREAD = 0.25;
+
+/**
+ * `seconds` of a sustained chord: one sawtooth per frequency, partials 1..8 at
+ * 1/k, summed and normalised so the loudest sample sits at 0.5.
+ *
+ * Sawtooth rather than sine because a key detector that only ever sees
+ * fundamentals is not being tested: real instruments put a fifth and a third
+ * into the chroma whether the music asked for them or not, and the tracker has
+ * to survive that.
+ */
+export function chord(freqsHz: number[], seconds: number, sr = 44100): Float32Array {
+  const out = new Float32Array(Math.round(seconds * sr));
+  for (const f of freqsHz) addSaw(out, f, 0, out.length, sr);
+  return normalisePeak(out, TONE_PEAK);
+}
+
+/**
+ * The notes of `midiNotes` in turn, 0.25 s each, cycling until `seconds` is
+ * full. Each note is the same sawtooth `chord` uses, faded in and out.
+ *
+ * Repeat a note in the list to weight it: a scale whose tonic appears twice is
+ * how a bare scale tells a key detector which note is home.
+ */
+export function scaleTones(midiNotes: number[], seconds: number, sr = 44100): Float32Array {
+  const out = new Float32Array(Math.round(seconds * sr));
+  if (midiNotes.length === 0) return out;
+
+  const span = Math.round(NOTE_SECONDS * sr);
+  const fade = Math.round(NOTE_FADE_SEC * sr);
+
+  for (let slot = 0; slot * span < out.length; slot++) {
+    const note = midiNotes[slot % midiNotes.length]!;
+    const hz = 440 * Math.pow(2, (note - 69) / 12);
+    const start = slot * span;
+    const end = Math.min(start + span, out.length);
+
+    const voice = new Float32Array(end - start);
+    addSaw(voice, hz, 0, voice.length, sr);
+    normalisePeak(voice, TONE_PEAK);
+    for (let i = 0; i < voice.length; i++) {
+      const rise = fade > 0 ? Math.min(1, i / fade) : 1;
+      const fall = fade > 0 ? Math.min(1, (voice.length - 1 - i) / fade) : 1;
+      out[start + i] = voice[i]! * Math.min(rise, fall);
+    }
+  }
+  return out;
+}
+
+/**
+ * Band-limited noise around `centerHz`, amplitude-modulated at `rateHz` by
+ * `0.5 + 0.5·sin(2π·rate·t)` — the syllabic envelope speech has and music
+ * mostly does not.
+ *
+ * The "noise" is 48 sines scattered over ±25% of the centre with random
+ * phases: cheap, deterministic, and it puts the spectral centroid exactly
+ * where the caller asked for it, which a filtered white source would not.
+ */
+export function amNoise(rateHz: number, seconds: number, sr = 44100, centerHz = 2000): Float32Array {
+  const n = Math.round(seconds * sr);
+  const out = new Float32Array(n);
+  const rand = mulberry32(0x0a11ce55);
+
+  const freqs = new Float64Array(NOISE_PARTIALS);
+  const phases = new Float64Array(NOISE_PARTIALS);
+  for (let k = 0; k < NOISE_PARTIALS; k++) {
+    freqs[k] = centerHz * (1 + NOISE_SPREAD * (rand() * 2 - 1));
+    phases[k] = rand() * 2 * Math.PI;
+  }
+
+  for (let i = 0; i < n; i++) {
+    const t = i / sr;
+    let v = 0;
+    for (let k = 0; k < NOISE_PARTIALS; k++) v += Math.sin(2 * Math.PI * freqs[k]! * t + phases[k]!);
+    out[i] = v * (0.5 + 0.5 * Math.sin(2 * Math.PI * rateHz * t));
+  }
+  return normalisePeak(out, TONE_PEAK);
+}
+
+/** One sawtooth voice added into `out[from..to)`. Partials past Nyquist are dropped. */
+function addSaw(out: Float32Array, hz: number, from: number, to: number, sr: number): void {
+  for (let k = 1; k <= SAW_PARTIALS; k++) {
+    const f = hz * k;
+    if (f >= sr / 2) break;
+    const w = (2 * Math.PI * f) / sr;
+    for (let i = from; i < to; i++) out[i] = out[i]! + Math.sin(w * i) / k;
+  }
+}
+
+/** Scales `buf` in place so its loudest sample is `peak`. Silence stays silent. */
+function normalisePeak(buf: Float32Array, peak: number): Float32Array {
+  let loudest = 0;
+  for (let i = 0; i < buf.length; i++) loudest = Math.max(loudest, Math.abs(buf[i]!));
+  if (loudest > 0) for (let i = 0; i < buf.length; i++) buf[i] = (buf[i]! / loudest) * peak;
+  return buf;
+}
+
+/** The signals end to end, in order — one longer take made of several. */
+export function concatSignals(...parts: Float32Array[]): Float32Array {
+  let total = 0;
+  for (const p of parts) total += p.length;
+  const out = new Float32Array(total);
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
   }
   return out;
 }
