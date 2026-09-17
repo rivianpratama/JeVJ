@@ -1,9 +1,17 @@
 import type { IncomingMessage } from 'node:http';
 import { Readable } from 'node:stream';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { contentTypeFor, matchPath, parseRange, readJsonBody } from '../../server/http';
+import {
+  BODY_TIMEOUT_MS,
+  contentTypeFor,
+  isCrossOrigin,
+  isJsonRequest,
+  matchPath,
+  parseRange,
+  readJsonBody,
+} from '../../server/http';
 
 describe('parseRange', () => {
   it('is ignored when there is no header', () => {
@@ -80,6 +88,11 @@ function request(body: string): IncomingMessage {
   return Readable.from([Buffer.from(body)]) as unknown as IncomingMessage;
 }
 
+/** The same, but arriving in the chunks the caller chose. */
+function chunked(chunks: Buffer[]): IncomingMessage {
+  return Readable.from(chunks) as unknown as IncomingMessage;
+}
+
 describe('readJsonBody', () => {
   it('parses a JSON object', async () => {
     await expect(readJsonBody(request('{"url":"x"}'), 1024)).resolves.toEqual({ ok: true, value: { url: 'x' } });
@@ -103,6 +116,96 @@ describe('readJsonBody', () => {
       status: 413,
       error: 'payload too large',
     });
+  });
+
+  it('counts the limit in bytes, not in characters', async () => {
+    // Six hundred three-byte characters is 1800 bytes and 600 characters: a
+    // reader counting characters would let it through.
+    const body = JSON.stringify({ title: '館'.repeat(600) });
+    await expect(readJsonBody(chunked([Buffer.from(body)]), 1024)).resolves.toMatchObject({
+      ok: false,
+      status: 413,
+    });
+  });
+
+  it('decodes a character split across two chunks', async () => {
+    // A stream does not respect character boundaries, and a reader that
+    // decodes each chunk on arrival turns this into two replacement
+    // characters — a title with an accent in it, quietly corrupted.
+    const body = Buffer.from(JSON.stringify({ title: 'café 館' }), 'utf8');
+    const chunks: Buffer[] = [];
+    for (let i = 0; i < body.length; i += 3) chunks.push(body.subarray(i, i + 3));
+
+    await expect(readJsonBody(chunked(chunks), 1024)).resolves.toEqual({
+      ok: true,
+      value: { title: 'café 館' },
+    });
+  });
+
+  it('gives up on a body that never arrives', async () => {
+    vi.useFakeTimers();
+    try {
+      const stream = new Readable({ read() {} });
+      stream.push(Buffer.from('{"url":'));
+      let destroyed = false;
+      stream.destroy = ((): Readable => {
+        destroyed = true;
+        return stream;
+      }) as Readable['destroy'];
+
+      const pending = readJsonBody(stream as unknown as IncomingMessage, 1024);
+      await vi.advanceTimersByTimeAsync(BODY_TIMEOUT_MS + 1);
+
+      await expect(pending).resolves.toEqual({
+        ok: false,
+        status: 408,
+        error: 'body took too long',
+      });
+      expect(destroyed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('isCrossOrigin', () => {
+  const req = (headers: Record<string, string>): IncomingMessage =>
+    ({ headers }) as unknown as IncomingMessage;
+
+  it('is false when there is no Origin at all', () => {
+    expect(isCrossOrigin(req({ host: '127.0.0.1:5173' }))).toBe(false);
+    expect(isCrossOrigin(req({ host: '127.0.0.1:5173', origin: '' }))).toBe(false);
+    expect(isCrossOrigin(req({ host: '127.0.0.1:5173', origin: 'null' }))).toBe(false);
+  });
+
+  it('is false when the Origin is this server', () => {
+    expect(isCrossOrigin(req({ host: '127.0.0.1:5173', origin: 'http://127.0.0.1:5173' }))).toBe(false);
+    expect(isCrossOrigin(req({ host: 'localhost:5173', origin: 'https://localhost:5173' }))).toBe(false);
+  });
+
+  it('is true for anywhere else, port included', () => {
+    expect(isCrossOrigin(req({ host: '127.0.0.1:5173', origin: 'https://evil.example' }))).toBe(true);
+    expect(isCrossOrigin(req({ host: '127.0.0.1:5173', origin: 'http://127.0.0.1:9999' }))).toBe(true);
+    expect(isCrossOrigin(req({ host: '127.0.0.1:5173', origin: 'not a url' }))).toBe(true);
+    expect(isCrossOrigin(req({ origin: 'http://127.0.0.1:5173' }))).toBe(true);
+  });
+});
+
+describe('isJsonRequest', () => {
+  const req = (type?: string): IncomingMessage =>
+    ({ headers: type === undefined ? {} : { 'content-type': type } }) as unknown as IncomingMessage;
+
+  it('takes application/json, with or without parameters', () => {
+    expect(isJsonRequest(req('application/json'))).toBe(true);
+    expect(isJsonRequest(req('application/json; charset=utf-8'))).toBe(true);
+    expect(isJsonRequest(req('APPLICATION/JSON'))).toBe(true);
+  });
+
+  it('takes nothing else, including the types a form can send', () => {
+    expect(isJsonRequest(req())).toBe(false);
+    expect(isJsonRequest(req('text/plain'))).toBe(false);
+    expect(isJsonRequest(req('application/x-www-form-urlencoded'))).toBe(false);
+    expect(isJsonRequest(req('multipart/form-data; boundary=x'))).toBe(false);
   });
 });
 

@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { Genre, MoodInput } from '../../src/shared/types';
-import { NEUTRAL_MOOD, validateMoodInput, validateMoodVector } from '../../src/shared/moodSchema';
+import {
+  NEUTRAL_MOOD,
+  validateMoodInput,
+  validateMoodVector,
+  validateTrackAnalysis,
+  validateTransitionInput,
+  validateTransitionVerdict,
+} from '../../src/shared/moodSchema';
+import { EXAMPLE_INPUT, exampleAnalysis, exampleTransition, exampleVerdict } from '../helpers/moodFixture';
 
 function validInput(): MoodInput {
   return {
@@ -92,5 +100,99 @@ describe('validateMoodVector', () => {
     const r = validateMoodVector({ ...NEUTRAL_MOOD, genreP });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain('genreP');
+  });
+});
+
+describe('validateTransitionInput', () => {
+  it('accepts a well-formed candidate and copies it field by field', () => {
+    const input = exampleTransition('2:04');
+    const r = validateTransitionInput({ ...input, nonsense: 1 });
+    expect(r.ok ? 'ok' : r.error).toBe('ok');
+    expect(r.ok && r.value).toEqual(input);
+    expect(r.ok && r.value).not.toHaveProperty('nonsense');
+  });
+
+  it('insists on m:ss, without a track length after it', () => {
+    for (const at of ['2:04/4:05', '204', '2:4', '', 'soon']) {
+      expect(validateTransitionInput(exampleTransition(at as string)).ok, at).toBe(false);
+    }
+  });
+
+  it('refuses a music page that is not one', () => {
+    expect(validateTransitionInput({ ...exampleTransition(), before: { bpm: 128 } }).ok).toBe(false);
+    expect(validateTransitionInput({ ...exampleTransition(), after: null }).ok).toBe(false);
+  });
+
+  it('holds every number to its range', () => {
+    const bad: Array<Partial<Record<string, unknown>>> = [
+      { jumpDb: 500 },
+      { jumpDb: 'loud' },
+      { gapBeforeSec: -1 },
+      { bpmAfter: 400 },
+      { vocalDelta: 2 },
+      { harshDelta: -2 },
+      { keyChanged: 'yes' },
+    ];
+    for (const over of bad) {
+      const r = validateTransitionInput({ ...exampleTransition(), ...over });
+      expect(r.ok, JSON.stringify(over)).toBe(false);
+    }
+  });
+});
+
+describe('validateTransitionVerdict', () => {
+  it('accepts a well-formed verdict', () => {
+    const v = exampleVerdict();
+    const r = validateTransitionVerdict(v);
+    expect(r.ok ? 'ok' : r.error).toBe('ok');
+    expect(r.ok && r.value).toEqual(v);
+  });
+
+  it('refuses a kind it does not know, or a distribution with a hole in it', () => {
+    expect(validateTransitionVerdict(exampleVerdict({ kind: 'slam' as never })).ok).toBe(false);
+    const holed = exampleVerdict();
+    delete (holed.kindP as Record<string, number>)['none'];
+    expect(validateTransitionVerdict(holed).ok).toBe(false);
+  });
+});
+
+describe('validateTrackAnalysis', () => {
+  it('round-trips a record through JSON', () => {
+    const analysis = exampleAnalysis('jNQXAC9IVRw');
+    const parsed: unknown = JSON.parse(JSON.stringify(analysis));
+    const r = validateTrackAnalysis(parsed);
+    expect(r.ok ? 'ok' : r.error).toBe('ok');
+    expect(r.ok && r.value).toEqual(analysis);
+  });
+
+  it('keeps the cue fields the transition writer adds', () => {
+    const r = validateTrackAnalysis(JSON.parse(JSON.stringify(exampleAnalysis())));
+    const hit = r.ok ? r.value.cues.find((c) => c.impact !== undefined) : undefined;
+    expect(hit?.flourish).toBe(true);
+    expect(hit?.transition).toBe('drop');
+  });
+
+  it('is happy without a videoId, since a dropped file has none', () => {
+    const r = validateTrackAnalysis(exampleAnalysis());
+    expect(r.ok && 'videoId' in r.value).toBe(false);
+  });
+
+  it('refuses a record with a piece missing or wrong', () => {
+    const base = exampleAnalysis();
+    const broken: Array<[string, unknown]> = [
+      ['not an object', 42],
+      ['no title', { ...base, title: undefined }],
+      ['no duration', { ...base, durationSec: 'a while' }],
+      ['segments not an array', { ...base, segments: {} }],
+      ['a segment with no mood', { ...base, segments: [{ start: 0, end: 1, input: EXAMPLE_INPUT }] }],
+      ['a transition with no time', { ...base, transitions: [{ input: {}, verdict: {} }] }],
+      ['a cue with no source', { ...base, cues: [{ t: 1 }] }],
+      ['a cue from nowhere', { ...base, cues: [{ t: 1, source: 'somewhere' }] }],
+      ['a log entry with no direction', { ...base, log: [{ t: 1, json: '{}' }] }],
+      ['a log entry that is not text', { ...base, log: [{ t: 1, dir: 'req', json: {} }] }],
+    ];
+    for (const [name, value] of broken) {
+      expect(validateTrackAnalysis(value).ok, name).toBe(false);
+    }
   });
 });

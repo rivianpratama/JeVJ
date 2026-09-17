@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { JevLike } from '../../server/moodHandler';
 import { createRoutes } from '../../server/routes';
 import { JobRunner } from '../../server/ytdlp/job';
-import { EXAMPLE_INPUT, exampleAnswers } from '../helpers/moodFixture';
+import { EXAMPLE_INPUT, exampleAnalysis, exampleAnswers, exampleTransition } from '../helpers/moodFixture';
 
 const ID = 'jNQXAC9IVRw';
 /** One kilobyte of recognisable bytes, so a range can be checked by value. */
@@ -225,5 +225,119 @@ describe('the rest of the router', () => {
   it('leaves a path it does not own to whatever comes next', async () => {
     const res = await fetch(`${base}/index.html`);
     expect(await res.text()).toBe('fell through');
+  });
+});
+
+/** A POST as a browser would make it, with whatever headers a test wants. */
+function post(path: string, body: unknown, headers: Record<string, string> = {}): Promise<Response> {
+  return fetch(`${base}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...headers },
+    body: JSON.stringify(body),
+  });
+}
+
+describe('POST /api/transition', () => {
+  it('answers a batch with one verdict per candidate', async () => {
+    const res = await post('/api/transition', {
+      transitions: [exampleTransition('0:30'), exampleTransition('1:00')],
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { verdicts: unknown[] };
+    expect(body.verdicts).toHaveLength(2);
+  });
+
+  it('refuses a body that is not a batch', async () => {
+    expect((await post('/api/transition', { transitions: [] })).status).toBe(400);
+  });
+
+  it('answers only POST', async () => {
+    const res = await fetch(`${base}/api/transition`);
+    expect(res.status).toBe(405);
+  });
+});
+
+describe('the analysis cache', () => {
+  const analysis = exampleAnalysis(ID);
+
+  it('round-trips a record through the cache', async () => {
+    expect((await fetch(`${base}/api/analysis/${ID}`)).status).toBe(404);
+
+    const stored = await post(`/api/analysis/${ID}`, analysis);
+    expect(stored.status).toBe(200);
+
+    const res = await fetch(`${base}/api/analysis/${ID}`);
+    expect(res.status).toBe(200);
+    const back = (await res.json()) as typeof analysis;
+    expect(back.segments).toEqual(analysis.segments);
+    expect(back.transitions).toEqual(analysis.transitions);
+    expect(back.cues).toEqual(analysis.cues);
+    expect(back.log).toEqual(analysis.log);
+    expect(back.videoId).toBe(ID);
+  });
+
+  it('refuses a record that is not one', async () => {
+    expect((await post(`/api/analysis/${ID}`, { title: 'x' })).status).toBe(400);
+    expect((await post(`/api/analysis/${ID}`, { ...analysis, cues: [{ t: 1 }] })).status).toBe(400);
+  });
+
+  it('refuses an id that is not a video id', async () => {
+    expect((await post('/api/analysis/not-an-id', analysis)).status).toBe(400);
+    expect((await fetch(`${base}/api/analysis/not-an-id`)).status).toBe(404);
+  });
+
+  it('reads a corrupt cache file as a miss rather than serving it', async () => {
+    writeFileSync(join(dir, `${ID}.analysis.json`), '{"title": "half a fi');
+    expect((await fetch(`${base}/api/analysis/${ID}`)).status).toBe(404);
+  });
+});
+
+describe('the guards on the routes that spend something', () => {
+  const guarded: Array<[string, unknown]> = [
+    ['/api/mood', EXAMPLE_INPUT],
+    ['/api/transition', { transitions: [exampleTransition('0:30')] }],
+    ['/api/resolve', { url: `https://www.youtube.com/watch?v=${ID}` }],
+    [`/api/analysis/${ID}`, exampleAnalysis(ID)],
+  ];
+
+  it('refuses a cross-origin POST', async () => {
+    for (const [path, body] of guarded) {
+      const res = await post(path, body, { origin: 'https://evil.example' });
+      expect(res.status, path).toBe(403);
+    }
+  });
+
+  it('allows a same-origin POST', async () => {
+    for (const [path, body] of guarded) {
+      const res = await post(path, body, { origin: base });
+      expect(res.status, path).toBeLessThan(400);
+    }
+  });
+
+  it('allows a POST with no Origin at all, which is how curl asks', async () => {
+    for (const [path, body] of guarded) {
+      expect((await post(path, body)).status, path).toBeLessThan(400);
+    }
+  });
+
+  it('insists on a JSON content type', async () => {
+    for (const [path, body] of guarded) {
+      const res = await fetch(`${base}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'text/plain;charset=UTF-8' },
+        body: JSON.stringify(body),
+      });
+      expect(res.status, path).toBe(415);
+    }
+  });
+
+  it('takes a content type with parameters on it', async () => {
+    const res = await post('/api/mood', EXAMPLE_INPUT, { 'content-type': 'application/json; charset=utf-8' });
+    expect(res.status).toBe(200);
+  });
+
+  it('leaves GET alone', async () => {
+    const res = await fetch(`${base}/api/analysis/${ID}`, { headers: { origin: 'https://evil.example' } });
+    expect(res.status).toBe(404);
   });
 });

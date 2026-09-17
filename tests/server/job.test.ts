@@ -268,3 +268,78 @@ describe('JobRunner, failure', () => {
     expect(() => runner.start('../../etc/passwd')).toThrow();
   });
 });
+
+describe('JobRunner, concurrency', () => {
+  /** Eleven-character ids that differ, so each is its own job. */
+  const ids = ['aaaaaaaaaaa', 'bbbbbbbbbbb', 'ccccccccccc', 'ddddddddddd'];
+
+  /**
+   * A spawner that blocks until the test lets it finish, so the number of
+   * processes actually in flight is observable.
+   */
+  function heldSpawn(): {
+    spawn: (cmd: string, args: string[], hooks: SpawnHooks) => Promise<number>;
+    running: string[];
+    finish: (id: string) => void;
+  } {
+    const running: string[] = [];
+    const gates = new Map<string, () => void>();
+    return {
+      running,
+      finish: (id) => gates.get(id)?.(),
+      spawn: async (_cmd, args, _hooks) => {
+        const id = ids.find((x) => args.some((a) => a.includes(x))) ?? '?';
+        running.push(id);
+        await new Promise<void>((resolve) => gates.set(id, resolve));
+        writeFileSync(join(dir, `${id}.mp4`), 'video bytes');
+        return 0;
+      },
+    };
+  }
+
+  it('runs at most two downloads at once and queues the rest', async () => {
+    const held = heldSpawn();
+    const runner = new JobRunner(dir, held.spawn);
+
+    const states = ids.slice(0, 3).map((id) => runner.start(id));
+    await tick();
+
+    expect(held.running).toEqual([ids[0], ids[1]]);
+    expect(states[2]?.status).toBe('queued');
+
+    held.finish(ids[0]!);
+    await tick();
+    expect(held.running).toEqual([ids[0], ids[1], ids[2]]);
+
+    held.finish(ids[1]!);
+    held.finish(ids[2]!);
+    await runner.settled(ids[2]!);
+    expect(runner.get(ids[2]!)?.status).toBe('done');
+  });
+
+  it('frees the slot even when the spawn itself throws', async () => {
+    let calls = 0;
+    const runner = new JobRunner(
+      dir,
+      async () => {
+        calls += 1;
+        throw new Error('no yt-dlp on this machine');
+      },
+      'yt-dlp',
+      1,
+    );
+
+    runner.start(ids[0]!);
+    runner.start(ids[1]!);
+    await runner.settled(ids[0]!);
+    await runner.settled(ids[1]!);
+
+    expect(calls).toBe(2);
+    expect(runner.get(ids[1]!)?.status).toBe('error');
+  });
+});
+
+/** Let every already-resolved promise in the queue run. */
+async function tick(): Promise<void> {
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+}

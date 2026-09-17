@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "start": "node --import tsx server/index.ts",
-    "smoke": "tsx scripts/jev-smoke.ts"
+    "smoke": "tsx scripts/jev-smoke.ts",
+    "smoke:transition": "tsx scripts/transition-smoke.ts"
   },
   "dependencies": {
     "three": "^0.186.0",

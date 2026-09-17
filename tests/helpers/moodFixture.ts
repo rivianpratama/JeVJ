@@ -3,7 +3,8 @@
  * tested against, plus a set of model answers shaped exactly like the SDK's.
  */
 
-import type { MoodInput, TransitionInput, TransitionVerdict } from '../../src/shared/types';
+import { NEUTRAL_MOOD } from '../../src/shared/moodSchema';
+import type { MoodInput, TrackAnalysis, TransitionInput, TransitionVerdict } from '../../src/shared/types';
 
 export const EXAMPLE_INPUT: MoodInput = {
   pos: '1:32/4:05',
@@ -76,6 +77,31 @@ export function exampleVerdict(over: Partial<TransitionVerdict> = {}): Transitio
     confidence: 0.75,
     ...over,
   };
+}
+
+/** A small but complete analysis record: one segment, one moment, both cued. */
+export function exampleAnalysis(videoId?: string): TrackAnalysis {
+  const input = exampleTransition('0:24');
+  const verdict = exampleVerdict();
+  const analysis: TrackAnalysis = {
+    title: 'a track',
+    durationSec: 60,
+    segments: [{ start: 0, end: 60, input: EXAMPLE_INPUT, mood: NEUTRAL_MOOD }],
+    transitions: [{ at: 24, input, verdict }],
+    cues: [
+      { t: 0, source: 'offline', mood: NEUTRAL_MOOD },
+      { t: 20, source: 'jev', build: 0, transition: 'drop' },
+      { t: 24, source: 'jev', impact: 0.9, build: 1, section: 'drop_climax', flourish: true, transition: 'drop' },
+    ],
+    log: [
+      { t: 0, dir: 'req', json: JSON.stringify(EXAMPLE_INPUT) },
+      { t: 0, dir: 'res', json: JSON.stringify(NEUTRAL_MOOD) },
+      { t: 24, dir: 'req', json: JSON.stringify(input) },
+      { t: 24, dir: 'res', json: JSON.stringify(verdict) },
+    ],
+  };
+  if (videoId !== undefined) analysis.videoId = videoId;
+  return analysis;
 }
 
 function scoreAnswer(score: number, levels: number, confidence = 0.8): Record<string, unknown> {

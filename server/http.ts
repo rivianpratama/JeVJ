@@ -138,32 +138,61 @@ export function matchPath(pattern: string, pathname: string): Record<string, str
 export type BodyResult = { ok: true; value: unknown } | { ok: false; status: number; error: string };
 
 /**
- * Reads a JSON body, refusing anything over `limit` bytes.
+ * How long a body may take to arrive before the request is abandoned.
  *
- * The limit is checked as the bytes arrive rather than after: the point is not
- * to parse a body that large, and a local server is still a server.
+ * A client that opens a connection, announces a body and then sends nothing
+ * holds a socket and a pending handler for as long as it likes. Ten seconds is
+ * far longer than a local POST of a few hundred kilobytes needs and short
+ * enough that a stalled one cannot accumulate.
+ */
+export const BODY_TIMEOUT_MS = 10_000;
+
+/**
+ * Reads a JSON body, refusing anything over `limit` *bytes* and anything that
+ * takes longer than `BODY_TIMEOUT_MS` to arrive.
+ *
+ * The chunks are kept as buffers and decoded once at the end, which is not a
+ * micro-optimisation: a UTF-8 character can be split across two chunks, and
+ * decoding each chunk on arrival turns the halves into two replacement
+ * characters — a track title with an accent in it, silently corrupted. It is
+ * also what makes the limit a byte limit rather than a character one, which is
+ * what a limit is for.
  */
 export function readJsonBody(req: IncomingMessage, limit: number): Promise<BodyResult> {
   return new Promise((resolve) => {
-    let body = '';
+    const chunks: Buffer[] = [];
+    let size = 0;
     let settled = false;
+
     const finish = (result: BodyResult): void => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       resolve(result);
     };
 
+    const timer = setTimeout(() => {
+      finish({ ok: false, status: 408, error: 'body took too long' });
+      req.destroy();
+    }, BODY_TIMEOUT_MS);
+    // A pending read must not be what keeps the process alive.
+    if (typeof timer.unref === 'function') timer.unref();
+
     req.on('data', (chunk: Buffer | string) => {
       if (settled) return;
-      body += chunk;
-      if (body.length > limit) {
+      const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
+      size += buf.length;
+      if (size > limit) {
         finish({ ok: false, status: 413, error: 'payload too large' });
         req.destroy();
+        return;
       }
+      chunks.push(buf);
     });
     req.on('error', () => finish({ ok: false, status: 400, error: 'body could not be read' }));
     req.on('end', () => {
       if (settled) return;
+      const body = Buffer.concat(chunks).toString('utf8');
       try {
         finish({ ok: true, value: JSON.parse(body.trim() === '' ? 'null' : body) });
       } catch {
@@ -171,6 +200,45 @@ export function readJsonBody(req: IncomingMessage, limit: number): Promise<BodyR
       }
     });
   });
+}
+
+/**
+ * Whether a request came from somewhere other than this server.
+ *
+ * JeVJ runs on localhost, and a page on any other origin can still POST to a
+ * localhost port — which is how a visited web page gets to spend somebody's
+ * API budget or spawn yt-dlp on their machine. The browser tells us where a
+ * cross-origin request came from, and the only origin allowed to drive these
+ * routes is our own.
+ *
+ * No `Origin` header at all is *not* cross-origin: that is curl, a test, or a
+ * same-origin navigation, none of which a browser would let a third-party page
+ * make.
+ */
+export function isCrossOrigin(req: IncomingMessage): boolean {
+  const origin = headerValue(req, 'origin');
+  if (origin === undefined || origin === '' || origin === 'null') return false;
+
+  const host = headerValue(req, 'host');
+  if (host === undefined || host === '') return true;
+
+  try {
+    return new URL(origin).host !== host;
+  } catch {
+    return true;
+  }
+}
+
+/** Whether the request announced a JSON body, as every POST route requires. */
+export function isJsonRequest(req: IncomingMessage): boolean {
+  const type = headerValue(req, 'content-type');
+  if (type === undefined) return false;
+  return type.split(';')[0]?.trim().toLowerCase() === 'application/json';
+}
+
+function headerValue(req: IncomingMessage, name: string): string | undefined {
+  const value = req.headers[name];
+  return Array.isArray(value) ? value[0] : value;
 }
 
 export function sendJson(res: ServerResponse, status: number, json: unknown): void {

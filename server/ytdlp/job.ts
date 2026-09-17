@@ -86,13 +86,29 @@ interface Job {
   settled: Promise<JobState>;
 }
 
+/**
+ * How many yt-dlp processes may run at once.
+ *
+ * Each one is a process, two sockets and a few hundred megabytes a minute of
+ * disk, and one paste is one job: a page that fires twenty resolves — or a
+ * person who pastes ten links — should queue behind two rather than fork
+ * twenty. The extra jobs exist immediately and honestly report `queued`, which
+ * is a status the client already knows how to poll.
+ */
+export const MAX_RUNNING_JOBS = 2;
+
 export class JobRunner {
   private readonly jobs = new Map<string, Job>();
+  /** Videos with a yt-dlp actually running, so the cap counts processes. */
+  private running = 0;
+  /** Jobs waiting for a slot, in the order they were asked for. */
+  private readonly waiting: Array<() => void> = [];
 
   constructor(
     private readonly cacheDir: string,
     private readonly spawn: Spawner,
     private readonly binary = 'yt-dlp',
+    private readonly maxRunning = MAX_RUNNING_JOBS,
   ) {}
 
   /**
@@ -134,8 +150,44 @@ export class JobRunner {
     return await this.jobs.get(id)?.settled;
   }
 
-  /** Runs yt-dlp and folds its output into the job as it arrives. */
+  /**
+   * Waits for a slot, then runs yt-dlp and folds its output into the job as it
+   * arrives.
+   *
+   * The wait is the whole of the concurrency cap. A job that is waiting has
+   * already been created and already been handed to the client — it simply
+   * stays `queued`, which is what that status means — and the slot is released
+   * in a `finally` so a spawn that threw cannot wedge the queue.
+   */
   private async run(state: JobState): Promise<JobState> {
+    await this.acquire();
+    try {
+      return await this.download(state);
+    } finally {
+      this.release();
+    }
+  }
+
+  /** Resolves when fewer than `maxRunning` downloads are in flight. */
+  private acquire(): Promise<void> {
+    if (this.running < this.maxRunning) {
+      this.running += 1;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      this.waiting.push(() => {
+        this.running += 1;
+        resolve();
+      });
+    });
+  }
+
+  private release(): void {
+    this.running -= 1;
+    this.waiting.shift()?.();
+  }
+
+  private async download(state: JobState): Promise<JobState> {
     const errors: string[] = [];
     let filesDone = 0;
 

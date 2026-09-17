@@ -484,8 +484,15 @@ const SONG_QUIET = 52;
 const SONG_END = 60;
 /** How long the hole before the slam is. */
 const SONG_GAP_SEC = 0.4;
-/** A minor triad two octaves up from the kick, for the pad that opens the track. */
-const SONG_PAD_HZ = [220, 261.63, 329.63];
+/**
+ * The pad's chord: a minor triad an octave above the kick.
+ *
+ * Low on purpose. A sawtooth triad up at 220 Hz puts enough of its partials in
+ * the 1-3 kHz formant band to read as a voice, which is a true thing about the
+ * sound and a distracting one in a fixture whose vocal crossings are supposed
+ * to come from the scream.
+ */
+const SONG_PAD_HZ = [110, 130.81, 164.81];
 
 export interface SongFixture {
   signal: Float32Array;
@@ -522,7 +529,8 @@ export function songFixture(sr = 44100): SongFixture {
   // which is what keeps a section boundary a change of energy rather than a
   // change of whether there is any music at all.
   addPad(out, at(0), at(SONG_BREAKDOWN) - Math.round(SONG_GAP_SEC * sr), sr, 0.1);
-  addPad(out, at(SONG_BREAKDOWN), at(SONG_END), sr, 0.16);
+  addPad(out, at(SONG_BREAKDOWN), at(SONG_SCREAM), sr, 0.16);
+  addPad(out, at(SONG_QUIET), at(SONG_END), sr, 0.16);
 
   // Intro: a soft kick on every downbeat only.
   addKicks(out, at(0), at(SONG_BUILD_START), sr, 0.35, 4);
@@ -545,12 +553,13 @@ export function songFixture(sr = 44100): SongFixture {
   addHats(out, at(SONG_DROP), at(SONG_BREAKDOWN), sr, 0.4, 0.5);
   addBass(out, at(SONG_DROP), at(SONG_BREAKDOWN), sr, 1.1);
 
-  // Scream: bright noise bursts twice a beat over a kick.
-  const scream = noiseBurstTrain(4, SONG_QUIET - SONG_SCREAM, sr);
+  // Scream: bright noise bursts six to a beat over a kick, and no pad under
+  // them — a scream is the loudest, brightest, most transient thing here.
+  const scream = noiseBurstTrain(12, SONG_QUIET - SONG_SCREAM, sr);
   for (let i = 0; i < scream.length; i++) {
     const j = at(SONG_SCREAM) + i;
     if (j >= out.length) break;
-    out[j] = out[j]! + scream[i]! * 0.9;
+    out[j] = out[j]! + scream[i]! * 1.3;
   }
   addKicks(out, at(SONG_SCREAM), at(SONG_QUIET), sr, 0.9, 1);
 

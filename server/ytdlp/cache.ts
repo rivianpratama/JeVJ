@@ -75,6 +75,40 @@ export function cachedInfo(cacheDir: string, videoId: string): CachedInfo | null
   return info;
 }
 
+function analysisPath(cacheDir: string, videoId: string): string {
+  return join(cacheDir, `${videoId}.analysis.json`);
+}
+
+/**
+ * The saved analysis of a video, as raw JSON text, or null if there is none.
+ *
+ * Text rather than an object: the caller validates it (`validateTrackAnalysis`)
+ * and this module's job is the cache directory, not the schema. A record that
+ * does not parse is simply not there, which costs one re-analysis.
+ */
+export function cachedAnalysis(cacheDir: string, videoId: string): string | null {
+  if (!isVideoId(videoId)) return null;
+  try {
+    return readFileSync(analysisPath(cacheDir, videoId), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Saves the analysis of a video. Returns whether it was written — unlike the
+ * title sidecar, a caller that asked us to store this is entitled to know.
+ */
+export function writeAnalysis(cacheDir: string, videoId: string, json: string): boolean {
+  if (!isVideoId(videoId)) return false;
+  try {
+    writeFileSync(analysisPath(cacheDir, videoId), json);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Saves what we know about a video. Failing to write is not worth a failure. */
 export function writeInfo(cacheDir: string, videoId: string, info: CachedInfo): void {
   if (!isVideoId(videoId)) return;
