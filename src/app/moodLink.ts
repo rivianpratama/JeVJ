@@ -113,6 +113,20 @@ export class MoodLink {
   mood(): MoodVector {
     return this.state.current();
   }
+
+  /**
+   * Aim at `m` without asking anyone.
+   *
+   * There is one caller: the sound has gone away — the user stopped sharing the
+   * tab — and nothing is going to replace it. The last judgment is about music
+   * that is no longer playing, so after a decent interval the caller points this
+   * at the idle mood and lets the ordinary slew take it there. It is a *target*
+   * rather than an assignment for that reason: a picture that snaps to idle is
+   * a cut, and the thing that just happened was not a cut, it was a silence.
+   */
+  fadeTo(m: MoodVector): void {
+    this.state.setTarget(m, this.now);
+  }
 }
 
 /**

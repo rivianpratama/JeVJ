@@ -30,7 +30,19 @@ import { writeJevCues } from './timeline/jevWriter';
 import { CueTimeline } from './timeline/timeline';
 import { createCard } from './ui/card';
 import { createHud } from './ui/hud';
+import { IDLE_MOOD } from './visuals/director';
 import type { AudioGraph } from './source/audioGraph';
+
+/**
+ * How long the last judgment stands after the sound goes away.
+ *
+ * Stopping a tab share is often a fumble — the wrong button in the browser's
+ * own bar — and a picture that fell to idle the instant it happened would
+ * punish it. Ten seconds is long enough to press play again and keep the mood
+ * that was on screen, and short enough that a page left alone does not sit
+ * there pretending to hear something.
+ */
+const IDLE_FADE_MS = 10_000;
 
 const root = document.querySelector<HTMLElement>('#ui');
 if (!root) throw new Error('JeVJ: #ui is missing from the document');
@@ -83,17 +95,26 @@ const hud = createHud(root, (ms) => {
 });
 hud.update({ latencyTrimMs });
 
+/** The pending fade to idle after a tab share ended, if one is pending. */
+let idleFade: ReturnType<typeof setTimeout> | undefined;
+
 const transport = createTransport({
   root,
   card,
   player,
   preAnalyse: fileFlow.preAnalyse,
-  onTrackChange: fileFlow.cancel,
+  onTrackChange: () => {
+    clearTimeout(idleFade);
+    fileFlow.cancel();
+  },
+  onCaptureEnded: () => {
+    clearTimeout(idleFade);
+    idleFade = setTimeout(() => moodLink.fadeTo(IDLE_MOOD), IDLE_FADE_MS);
+  },
   onGraph: (g) => {
     graph = g;
     captureLatencySec = estimateCaptureLatency(g.ctx);
     loop.start(g);
-    setInterval(tick, HUD_INTERVAL_MS);
   },
 });
 
@@ -118,4 +139,9 @@ const moodLink = new MoodLink({
 const visuals = createVisualLink({ canvas: bg, loop, cues, mood: () => moodLink.mood() });
 visuals.start();
 
-const tick = createHudTick({ loop, timeline, cues, moodLink, visuals, transport, hud });
+// The diagnostics tick: one interval for the life of the page, started here
+// rather than when a graph appears, so the overlay can describe an idle page —
+// which frame rate, which particle tier, which pixel ratio — before any audio
+// exists to describe.
+const tick = createHudTick({ loop, timeline, cues, moodLink, visuals, transport, hud, latencySec });
+setInterval(tick, HUD_INTERVAL_MS);

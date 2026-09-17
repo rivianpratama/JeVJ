@@ -79,6 +79,10 @@ export interface VisualLink {
   moodSource(): MoodSource;
   /** How many points the particle cloud is running, as the HUD prints it. */
   particleTier(): string;
+  /** What a frame costs on the GPU, in milliseconds, or `NaN` before one has been measured. */
+  frameMs(): number;
+  /** The device pixel ratio the renderer is drawing at. */
+  pixelRatio(): number;
 }
 
 export function createVisualLink(o: VisualLinkOptions): VisualLink {
@@ -225,6 +229,8 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
     mood: () => mood,
     moodSource: () => moodSrc,
     particleTier: () => particles.tierName(),
+    frameMs: () => visuals.frameMs(),
+    pixelRatio: () => visuals.pixelRatio(),
   };
 }
 

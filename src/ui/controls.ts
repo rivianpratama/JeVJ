@@ -121,12 +121,42 @@ export function createControls(root: HTMLElement, h: ControlHandlers): Controls 
     if (file) offerFile(file);
   });
 
+  // ---- fullscreen --------------------------------------------------------
+  /**
+   * `F` puts the visualizer on the whole screen and takes the chrome away with
+   * it — the link bar and the label fade out, and the play button with them.
+   * They are still *there*: everything comes back under the pointer, because a
+   * control you cannot find is worse than one you can see. The class does the
+   * hiding (see `styles.css`); this only follows the browser's own event, so
+   * leaving fullscreen by any route — Escape, the system chrome — restores the
+   * UI as well.
+   */
+  async function toggleFullscreen(): Promise<void> {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await document.documentElement.requestFullscreen();
+    } catch {
+      toast('this browser would not go fullscreen', 'error');
+    }
+  }
+
+  document.addEventListener('fullscreenchange', () => {
+    document.body.classList.toggle('is-immersive', document.fullscreenElement !== null);
+  });
+
   // ---- keyboard ----------------------------------------------------------
   window.addEventListener('keydown', (e) => {
-    if (e.code !== 'Space' && e.key !== ' ') return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (isTyping(e.target)) return;
-    e.preventDefault();
-    fire();
+    if (e.code === 'Space' || e.key === ' ') {
+      e.preventDefault();
+      fire();
+      return;
+    }
+    if (e.key === 'f' || e.key === 'F') {
+      e.preventDefault();
+      void toggleFullscreen();
+    }
   });
 
   return {

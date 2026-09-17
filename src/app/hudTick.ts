@@ -43,16 +43,42 @@ export interface HudTickOptions {
   visuals: VisualLink;
   transport: Transport;
   hud: Hud;
+  /** How far ahead of the analysis the timeline is read, in seconds. */
+  latencySec: () => number;
 }
 
-/** One tick. Put it on an interval; it does nothing until there are frames. */
+/**
+ * One tick. Put it on an interval; the analysis rows appear once there are
+ * frames.
+ *
+ * The rows that describe the *page* rather than the music — which state the app
+ * is in, what a frame costs, which cloud the renderer settled on — are printed
+ * from the first tick, before any audio. They are how you find out why a page
+ * that has heard nothing is drawing slowly, which is exactly the moment there
+ * is no snapshot to hang them off.
+ */
 export function createHudTick(o: HudTickOptions): () => void {
   /** The last detector event written down, so a sticky one is written once. */
   let lastDropAt = Number.NaN;
 
+  /** The rows that are true whether or not anything is playing. */
+  function pageRows(): Parameters<Hud['update']>[0] {
+    return {
+      state: o.transport.state(),
+      fps: o.loop.stepsPerSec(),
+      gpuMs: o.visuals.frameMs(),
+      dpr: o.visuals.pixelRatio(),
+      particles: o.visuals.particleTier(),
+      latencyMs: o.latencySec() * 1000,
+    };
+  }
+
   return function tick(): void {
     const snap = o.loop.latest();
-    if (!snap) return;
+    if (!snap) {
+      o.hud.update(pageRows());
+      return;
+    }
 
     const t = o.moodLink.update(
       snap,
@@ -88,13 +114,11 @@ export function createHudTick(o: HudTickOptions): () => void {
         },
       }),
       upcoming: upcomingRows(o.cues, now),
-      // Wall-clock, and the only wall-clock number on the overlay: whether the
-      // loop above is being given frames at all. A hidden tab runs it at one
-      // or two a second, and every reading below is then taken off a twentieth
-      // of the music.
-      fps: o.loop.stepsPerSec(),
-      // Which particle tier the renderer settled on for this machine.
-      particles: o.visuals.particleTier(),
+      // `fps` is wall-clock, and the only wall-clock number on the overlay:
+      // whether the loop above is being given steps at all. A hidden page falls
+      // back to a 33 ms timer, so this should stay above 25 even there; if it
+      // does not, every reading below is taken off a twentieth of the music.
+      ...pageRows(),
     });
   };
 }

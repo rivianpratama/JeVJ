@@ -66,11 +66,19 @@ function analyserGraph(signal: Float32Array): AudioGraph {
 beforeEach(() => {
   globalThis.requestAnimationFrame = () => 1;
   globalThis.cancelAnimationFrame = () => {};
+  // The loop also asks the page whether it is visible, so that it can step off
+  // a timer instead of off frames when it is not.
+  globalThis.document = {
+    hidden: false,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  } as unknown as Document;
 });
 
 afterEach(() => {
   Reflect.deleteProperty(globalThis, 'requestAnimationFrame');
   Reflect.deleteProperty(globalThis, 'cancelAnimationFrame');
+  Reflect.deleteProperty(globalThis, 'document');
 });
 
 describe('AnalysisLoop', () => {
@@ -378,6 +386,44 @@ describe('AnalysisLoop', () => {
     expect(a.flux).toBeGreaterThan(0);
     expect(b.flux).toBeGreaterThanOrEqual(a.flux * 0.75);
     expect(b.flux).toBeLessThanOrEqual(a.flux * 1.25);
+  });
+
+  it('keeps stepping off a timer while the page is hidden', () => {
+    let hidden = false;
+    let onVisible = (): void => {};
+    let timerStep: (() => void) | null = null;
+    const loop = new AnalysisLoop({
+      host: {
+        requestFrame: () => 1,
+        cancelFrame: () => {},
+        setTimer: (cb) => {
+          timerStep = cb;
+          return 2;
+        },
+        clearTimer: () => {
+          timerStep = null;
+        },
+        hidden: () => hidden,
+        onVisibilityChange: (cb) => {
+          onVisible = cb;
+          return () => {};
+        },
+      },
+    });
+
+    loop.start(fakeGraph(clickTrack(120, 4, FS)));
+    expect(loop.driverMode()).toBe('frames');
+
+    hidden = true;
+    onVisible();
+    expect(loop.driverMode()).toBe('timer');
+
+    // The music has not stopped, so neither has the analysis: the timer drives
+    // the same step the display frames were driving.
+    timerStep!();
+    timerStep!();
+    expect(loop.latest()).not.toBeNull();
+    expect(loop.stepsPerSec()).toBeGreaterThan(0);
   });
 
   it('stops reading once stopped', () => {

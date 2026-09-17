@@ -6,6 +6,8 @@
  */
 
 export interface HudData {
+  /** Which of the six things the app is doing; see `app/state.ts`. */
+  state?: string;
   /** A number once measured; a placeholder string before anything is known. */
   bpm?: number | string;
   beatConf?: number | string;
@@ -17,6 +19,16 @@ export interface HudData {
   fps?: number;
   /** How many points the particle cloud is running: `262k` or `590k`. */
   particles?: string;
+  /** What a drawn frame costs on the GPU, smoothed, in milliseconds. */
+  gpuMs?: number;
+  /** The pixel-ratio cap the governor has settled on. */
+  dpr?: number;
+  /**
+   * How far the timeline is read ahead of the analysis clock, in milliseconds:
+   * the detector's own lag, the capture pipeline's, and the trim below. This is
+   * the number the trim slider is *correcting*, so the two belong together.
+   */
+  latencyMs?: number;
   key?: string;
   mode?: string;
   tempo?: string;
@@ -87,9 +99,12 @@ export function createHud(root: HTMLElement, onTrim: (ms: number) => void): Hud 
       if (v !== undefined) pairs.push([k, v]);
     };
 
+    push('state', data.state);
     push('bpm', num(data.bpm, 1));
     push('beat', num(data.beatConf, 2));
     push('fps', num(data.fps, 0));
+    push('gpu', data.gpuMs === undefined || !Number.isFinite(data.gpuMs) ? undefined : `${data.gpuMs.toFixed(1)} ms`);
+    push('dpr', num(data.dpr, 2));
     push('particles', data.particles);
     push('key', data.key);
     push('mode', data.mode);
@@ -101,7 +116,8 @@ export function createHud(root: HTMLElement, onTrim: (ms: number) => void): Hud 
     }
     push('tokens', num(data.tokensTotal, 0));
     push('calls', num(data.calls, 0));
-    push('latency', data.lastLatencyMs === undefined ? undefined : `${Math.round(data.lastLatencyMs)} ms`);
+    push('jev', data.lastLatencyMs === undefined ? undefined : `${Math.round(data.lastLatencyMs)} ms`);
+    push('latency', data.latencyMs === undefined ? undefined : `${Math.round(data.latencyMs)} ms`);
 
     rows.replaceChildren(
       ...pairs.map(([k, v]) => {

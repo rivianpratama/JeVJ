@@ -159,7 +159,11 @@ body.is-dragging::after {
   inset: 0;
   overflow: hidden;
   border-radius: 50% / 42%;
-  background: rgba(0, 0, 0, 0.4);
+  /*
+   * No fill of its own: before a video is cued the card is an empty oval, and a
+   * dark wash across it would put a hole in the visualizer where the picture is
+   * supposed to be brightest. The halo behind it is what makes the shape read.
+   */
   mask-image: radial-gradient(ellipse at center, #000 58%, rgba(0, 0, 0, 0.6) 78%, transparent 100%);
   -webkit-mask-image: radial-gradient(
     ellipse at center,
@@ -430,6 +434,29 @@ body.has-banner .hud {
 .hud-trim-value {
   font-variant-numeric: tabular-nums;
   color: var(--ink);
+}
+
+/* ------------------------------------------------------------ fullscreen */
+
+/*
+ * `F`: the picture takes the screen and the interface gets out of its way. It
+ * is faded rather than removed so that it can come back under the pointer —
+ * each piece reappears when the pointer is over it, which for the play button
+ * means over the place it was.
+ */
+body.is-immersive .topbar,
+body.is-immersive .card-label,
+body.is-immersive .transport {
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+
+body.is-immersive .topbar:hover,
+body.is-immersive .topbar:focus-within,
+body.is-immersive .transport:hover,
+body.is-immersive .transport:focus-within {
+  opacity: 1;
+  transition: opacity 0.12s ease;
 }
 
 @media (max-width: 700px) {

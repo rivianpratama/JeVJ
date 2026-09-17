@@ -10,23 +10,26 @@
  * changes. Task 8's offline pass drives the same pipeline from a decoded file
  * with none of this attached.
  *
- * It runs on rAF because that is when there is a new spectrum worth reading,
- * but it never *times* anything with it: every instant downstream is the audio
- * clock carried in `FrameFeatures.t`.
+ * It runs on display frames because that is when there is a new spectrum worth
+ * reading, but it never *times* anything with them: every instant downstream is
+ * the audio clock carried in `FrameFeatures.t`.
  *
- * The one thing the wall clock is good for is saying how often that happens,
- * and `stepsPerSec` publishes it. A browser does not run
- * `requestAnimationFrame` at 60 Hz in a tab it has backgrounded or a pane the
- * desktop app has hidden — measured in Chrome against a hidden pane, 1.3 times
- * a second — and an analyser read is a 93 ms window, so at that rate five
- * sixths of the music is never looked at. Nothing downstream is wrong when
- * that happens; there is simply almost no evidence, and a tempo taken off it
- * reads 0.2 confident where the same audio swept offline reads 1.0. The HUD
- * prints the rate so that the reading explains itself.
+ * A browser does not run `requestAnimationFrame` at 60 Hz in a tab it has
+ * backgrounded or a pane the desktop app has hidden — measured in Chrome
+ * against a hidden pane, 1.3 times a second — and an analyser read is a 93 ms
+ * window, so at that rate five sixths of the music is never looked at, and a
+ * tempo taken off it reads 0.2 confident where the same audio swept offline
+ * reads 1.0. The music does not stop when the user looks away, so neither does
+ * this: `loopDriver` puts the step on a 33 ms timer for as long as the page is
+ * hidden and back on frames when it returns.
+ *
+ * `stepsPerSec` publishes how often the step actually ran, so the HUD's reading
+ * explains itself either way.
  */
 
 import { AnalysisPipeline } from '../analysis/pipeline';
 import { FeatureExtractor } from '../analysis/features';
+import { createLoopDriver, type DriverHost, type LoopDriver } from './loopDriver';
 import type { AnalysisSnapshot } from '../analysis/pipeline';
 import type { AudioGraph } from '../source/audioGraph';
 
@@ -53,13 +56,15 @@ export interface AnalysisLoopOptions {
    * never reads it.
    */
   now?: () => number;
+  /** The page the driver reads frames, timers and visibility from. */
+  host?: DriverHost;
 }
 
 export class AnalysisLoop {
   private pipeline = new AnalysisPipeline();
   private graph: AudioGraph | null = null;
   private extractor: FeatureExtractor | null = null;
-  private handle = 0;
+  private readonly driver: LoopDriver;
 
   /** When the last `RATE_CAPACITY` steps happened, newest at `rateHead - 1`. */
   private readonly stamps = new Float64Array(RATE_CAPACITY);
@@ -69,6 +74,7 @@ export class AnalysisLoop {
 
   constructor(o: AnalysisLoopOptions = {}) {
     this.now = o.now ?? (() => performance.now());
+    this.driver = createLoopDriver(() => this.step(), o.host);
   }
 
   /**
@@ -87,12 +93,11 @@ export class AnalysisLoop {
       });
       this.pipeline = new AnalysisPipeline();
     }
-    if (this.handle === 0) this.handle = requestAnimationFrame(this.frame);
+    this.driver.start();
   }
 
   stop(): void {
-    if (this.handle !== 0) cancelAnimationFrame(this.handle);
-    this.handle = 0;
+    this.driver.stop();
     this.graph = null;
     this.extractor = null;
     this.rateStored = 0;
@@ -148,8 +153,8 @@ export class AnalysisLoop {
     this.pipeline.step(extractor.extract(frame.mags, frame.time, frame.t));
   }
 
-  private readonly frame = (): void => {
-    this.handle = requestAnimationFrame(this.frame);
-    this.step();
-  };
+  /** Which clock the step is running on: the HUD says so when it is a timer. */
+  driverMode(): ReturnType<LoopDriver['mode']> {
+    return this.driver.mode();
+  }
 }

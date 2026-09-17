@@ -91,6 +91,8 @@ export interface Visuals {
    * query is free enough to leave running.
    */
   requestFrameTiming(seconds: number): void;
+  /** The device pixel ratio actually in use, after the cap. */
+  pixelRatio(): number;
   dispose(): void;
 }
 
@@ -293,6 +295,8 @@ export function createVisuals(canvas: HTMLCanvasElement): Visuals {
     requestFrameTiming(seconds: number): void {
       probeWindow = Math.max(probeWindow, Math.max(0, seconds));
     },
+
+    pixelRatio: () => pixelRatio,
 
     resize,
 

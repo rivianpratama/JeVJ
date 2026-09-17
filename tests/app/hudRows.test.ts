@@ -23,11 +23,19 @@ function fakeGraph(signal: Float32Array): AudioGraph {
 beforeEach(() => {
   globalThis.requestAnimationFrame = () => 1;
   globalThis.cancelAnimationFrame = () => {};
+  // The loop also asks the page whether it is visible, so that it can step off
+  // a timer instead of off frames when it is not.
+  globalThis.document = {
+    hidden: false,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  } as unknown as Document;
 });
 
 afterEach(() => {
   Reflect.deleteProperty(globalThis, 'requestAnimationFrame');
   Reflect.deleteProperty(globalThis, 'cancelAnimationFrame');
+  Reflect.deleteProperty(globalThis, 'document');
 });
 
 /** The snapshot after `seconds` of `signal`. */
