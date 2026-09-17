@@ -188,7 +188,6 @@ export class AnalysisLoop {
     // beats in this snapshot all describe the same instant.
     const beats = this.grid.tick(features.t);
     const phase = this.grid.phase(features.t);
-    const grid = this.grid.state();
 
     this.key.push(features.chroma, dt);
     this.timbre.push(features, onset, dt);
@@ -197,17 +196,22 @@ export class AnalysisLoop {
 
     // The rhythm tracker counts beats from phase wraps, so it has to see every
     // frame, not only the ones an onset landed on.
-    this.rhythm.tick(features.t, phase);
+    this.rhythm.tick(phase);
     if (onset > 0) this.rhythm.pushOnset(features.t, onset, phase);
 
     // The grid rebuilds its downbeat evidence whenever the bar length changes,
-    // so it is only told when the answer is new.
+    // so it is only told when the answer is new. The tracker debounces the
+    // answer itself, which is what keeps that from happening every other frame.
     const meter = this.rhythm.meter();
     if (meter !== this.meter) {
       this.meter = meter;
       this.grid.setMeter(meter);
     }
 
+    // Read the grid only now: on the frame the meter flips, `setMeter` has
+    // just changed the bar length, and a state taken before it would put a
+    // stale `barLength` — and a stale `barSec` — in this snapshot.
+    const grid = this.grid.state();
     const barSec = grid.period * grid.barLength;
     this.snapshot = {
       features,

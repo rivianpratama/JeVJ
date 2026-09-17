@@ -25,7 +25,7 @@ function run(onsets: Array<{ t: number; strength: number }>, seconds: number): R
 
   for (let i = 0; i * (1 / FPS) <= seconds; i++) {
     const t = i / FPS;
-    tracker.tick(t, phaseAt(t));
+    tracker.tick(phaseAt(t));
     while (next < sorted.length && sorted[next]!.t <= t) {
       const o = sorted[next]!;
       tracker.pushOnset(o.t, o.strength, phaseAt(o.t));
@@ -106,6 +106,29 @@ describe('RhythmTracker meter', () => {
   it('will not guess from flat onsets, or from none', () => {
     expect(run(onBeats(36), 18).meter()).toBe('unclear');
     expect(new RhythmTracker().meter()).toBe('unclear');
+  });
+});
+
+describe('RhythmTracker meter hysteresis', () => {
+  /**
+   * Thirty-six beats of a plain every-four accent, and then, from beat 36, a
+   * sudden and very loud every-three one. The raw hypothesis turns over at
+   * beat 39; what the tracker *says* should not.
+   */
+  const flip = [
+    ...onBeats(36, (b) => (b % 4 === 0 ? 3 : 1)),
+    ...Array.from({ length: 24 }, (_, i) => ({
+      t: (36 + i) * PERIOD,
+      strength: i % 3 === 0 ? 20 : 1,
+    })),
+  ];
+
+  it('keeps its answer while the new evidence is only two beats old', () => {
+    expect(run(flip, 41 * PERIOD).meter()).toBe('duple');
+  });
+
+  it('changes it once the new evidence has survived four beats', () => {
+    expect(run(flip, 45 * PERIOD).meter()).toBe('triple');
   });
 });
 

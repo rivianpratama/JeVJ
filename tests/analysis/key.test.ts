@@ -58,6 +58,9 @@ describe('KeyTracker', () => {
     expect(e.key).toBe('C');
     expect(e.mode).toBe('major');
     expect(e.modeConf).toBeGreaterThan(0.3);
+    // `fit` is the winning correlation itself, not the major/minor separation.
+    expect(e.fit).toBeGreaterThan(0.5);
+    expect(e.fit).toBeLessThanOrEqual(1);
   });
 
   it('hears A minor in a natural minor scale', () => {
@@ -111,6 +114,12 @@ describe('modalFlavor', () => {
     expect(modalFlavor(pcs(7, 9, 11, 0, 2, 4, 5), 7)).toBe('mixolydian');
     expect(modalFlavor(pcs(9, 11, 0, 2, 4, 5, 7), 9)).toBe('aeolian');
     expect(modalFlavor(pcs(11, 0, 2, 4, 5, 7, 9), 11)).toBe('locrian');
+  });
+
+  it('names the mode over a drone, because the tonic is left out of the score', () => {
+    const drone = pcs(2, 4, 5, 7, 9, 11, 0);
+    drone[2] = 10; // ten times the weight on D, the tonic of D dorian
+    expect(modalFlavor(drone, 2)).toBe('dorian');
   });
 
   it('gives up when two modes fit equally well', () => {

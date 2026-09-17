@@ -19,7 +19,9 @@
  * - Meter is decided by where the accents fall. Two accumulators collect onset
  *   strength by beat-position-modulo-3 and modulo-4; whichever hypothesis has
  *   one position standing further above its siblings is the one the music is
- *   counted in.
+ *   counted in. That answer is debounced: the grid rebuilds its downbeat from
+ *   scratch every time the bar length moves, so a hypothesis has to hold for a
+ *   bar before it is published.
  *
  * Pure: times come from the caller's audio clock and nothing here touches the
  * DOM.
@@ -55,6 +57,16 @@ const MIN_METER_BEATS = 8;
 const METER_DECIDE_MARGIN = 0.1;
 /** What last beat's accent evidence is worth once another beat has gone by. */
 const METER_DECAY = 0.99;
+/**
+ * Beat advances a new hypothesis has to win in a row before it is published.
+ *
+ * The grid throws away its downbeat evidence whenever the bar length changes,
+ * so a meter that flickers costs the downbeat, not just the label. Four beats
+ * is a bar of the answer we are doubting: long enough that a single loud fill
+ * cannot turn 4/4 into 3/4, short enough that a real change of metre is heard
+ * within a bar of it happening.
+ */
+const METER_HOLD_BEATS = 4;
 
 /** The widest change in density worth reporting. */
 const MAX_ONSET_RATIO = 20;
@@ -72,13 +84,34 @@ export class RhythmTracker {
   private beats = 0;
   private prevPhase = -1;
 
+  /** The answer `meter()` gives, the one competing with it, and its run. */
+  private published: Meter = 'unclear';
+  private candidate: Meter = 'unclear';
+  private candidateBeats = 0;
+  /** Whether the first, un-debounced call has been made. */
+  private decided = false;
+
+  /**
+   * Syncopation and regularity depend only on the retained onsets, so they are
+   * computed once per onset rather than once per frame: `onsets` counts them
+   * and the cached answers are stale exactly when it has moved on.
+   */
+  private onsets = 0;
+  private syncAt = -1;
+  private syncValue = 0;
+  private regularAt = -1;
+  private regularValue = 0;
+  /** Scratch for the interval statistics, so `regularity()` allocates nothing. */
+  private readonly gaps = new Float64Array(CAPACITY);
+  private readonly spread = new Float64Array(CAPACITY);
+
   /**
    * Every frame, whether or not anything happened: the beat count is made of
    * phase *wraps*, and an onset-only view of the phase would miss most of
    * them. Music whose onsets all land on the beat reports the same phase every
    * time, and the count would never advance.
    */
-  tick(_t: number, phase: number): void {
+  tick(phase: number): void {
     this.advance(phase);
   }
 
@@ -94,10 +127,14 @@ export class RhythmTracker {
 
     this.acc3[this.beats % 3] = this.acc3[this.beats % 3]! + strength;
     this.acc4[this.beats % 4] = this.acc4[this.beats % 4]! + strength;
+    this.onsets += 1;
   }
 
   /** 0 when every onset is on a beat, 1 when every onset is between them. */
   syncopation(): number {
+    if (this.syncAt === this.onsets) return this.syncValue;
+    this.syncAt = this.onsets;
+
     const from = this.windowStart(GROOVE_WINDOW_SEC);
     let off = 0;
     let all = 0;
@@ -106,36 +143,44 @@ export class RhythmTracker {
       all += s;
       off += s * offBeatWeight(this.phaseAt(i));
     }
-    return all > 0 ? off / all : 0;
+    this.syncValue = all > 0 ? off / all : 0;
+    return this.syncValue;
   }
 
   /** 1 for a metronome, 0 for free time. */
   regularity(): number {
+    if (this.regularAt === this.onsets) return this.regularValue;
+    this.regularAt = this.onsets;
+    this.regularValue = 0;
+
     const from = this.windowStart(GROOVE_WINDOW_SEC);
     const start = this.indexFrom(from);
     const n = this.stored - start - 1;
     if (n < MIN_INTERVALS) return 0;
 
-    const gaps = new Float64Array(n);
+    const gaps = this.gaps.subarray(0, n);
     for (let i = 0; i < n; i++) gaps[i] = this.timeAt(start + i + 1) - this.timeAt(start + i);
 
     const middle = median(gaps);
     if (!(middle > 0)) return 0;
 
-    const spread = new Float64Array(n);
+    const spread = this.spread.subarray(0, n);
     for (let i = 0; i < n; i++) spread[i] = Math.abs(gaps[i]! - middle);
 
-    return clamp(1 - median(spread) / middle / IRREGULAR_SCALE, 0, 1);
+    this.regularValue = clamp(1 - median(spread) / middle / IRREGULAR_SCALE, 0, 1);
+    return this.regularValue;
   }
 
-  /** Duple or triple, from where the accents keep landing. */
+  /**
+   * Duple or triple, from where the accents keep landing — debounced.
+   *
+   * The raw hypothesis is re-read once a beat, not once a frame, and it has to
+   * hold for `METER_HOLD_BEATS` of them before this answer moves. The one
+   * exception is the first answer: there is nothing yet to be loyal to, so the
+   * moment there is enough evidence to judge at all, the judgment stands.
+   */
   meter(): Meter {
-    if (this.beats < MIN_METER_BEATS) return 'unclear';
-
-    const triple = dominance(this.acc3);
-    const duple = dominance(this.acc4);
-    if (Math.abs(triple - duple) <= METER_DECIDE_MARGIN) return 'unclear';
-    return triple > duple ? 'triple' : 'duple';
+    return this.published;
   }
 
   /** Onsets a second over the last four seconds. */
@@ -170,8 +215,36 @@ export class RhythmTracker {
       this.beats += 1;
       for (let i = 0; i < 3; i++) this.acc3[i] = this.acc3[i]! * METER_DECAY;
       for (let i = 0; i < 4; i++) this.acc4[i] = this.acc4[i]! * METER_DECAY;
+      this.judgeMeter();
     }
     this.prevPhase = p;
+  }
+
+  /** One beat's worth of evidence, weighed against what is on the books. */
+  private judgeMeter(): void {
+    if (this.beats < MIN_METER_BEATS) return;
+
+    const raw = this.rawMeter();
+    if (raw === this.candidate) this.candidateBeats += 1;
+    else {
+      this.candidate = raw;
+      this.candidateBeats = 1;
+    }
+
+    if (!this.decided) {
+      this.decided = true;
+      this.published = raw;
+      return;
+    }
+    if (raw !== this.published && this.candidateBeats >= METER_HOLD_BEATS) this.published = raw;
+  }
+
+  /** What this beat's accumulators say, before any loyalty to the last answer. */
+  private rawMeter(): Meter {
+    const triple = dominance(this.acc3);
+    const duple = dominance(this.acc4);
+    if (Math.abs(triple - duple) <= METER_DECIDE_MARGIN) return 'unclear';
+    return triple > duple ? 'triple' : 'duple';
   }
 
   private countIn(from: number, to: number): number {

@@ -70,14 +70,36 @@ export interface KeyEstimate {
   /** A pitch-class name, or '?' when nothing has been heard. */
   key: string;
   mode: Mode;
-  /** 0..1: how far apart the best major and best minor fits are. */
+  /**
+   * 0..1: how far apart the best major and the best minor fit are.
+   *
+   * This measures the *separation* of the two modes, not how well either of
+   * them fits the music. Atonal noise whose chroma happens to lean major reads
+   * a high `modeConf` on a key nobody would name, and a clear C major sitting
+   * squarely between its two profiles reads a low one. Gate on `fit` when the
+   * question is "is this in a key at all"; gate on `modeConf` only when the
+   * question is "major or minor".
+   */
   modeConf: number;
+  /**
+   * 0..1: the winning correlation itself — how well the accumulated chroma
+   * matches the profile of the key that was named. Negative correlations clamp
+   * to 0, which is what "no key here" looks like.
+   */
+  fit: number;
   modal: ModalFlavor;
   /** Pitch class of the tonic, or -1 when there is no key. */
   tonic: number;
 }
 
-const NOTHING: KeyEstimate = { key: '?', mode: 'unclear', modeConf: 0, modal: 'unclear', tonic: -1 };
+const NOTHING: KeyEstimate = {
+  key: '?',
+  mode: 'unclear',
+  modeConf: 0,
+  fit: 0,
+  modal: 'unclear',
+  tonic: -1,
+};
 
 export class KeyTracker {
   private readonly decay: number;
@@ -140,6 +162,7 @@ export class KeyTracker {
       key: PC_NAMES[tonic] ?? '?',
       mode,
       modeConf: Math.abs(margin),
+      fit: clamp(major ? majorFit : minorFit, 0, 1),
       modal: modalFlavor(this.acc, tonic),
       tonic,
     };

@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AnalysisLoop } from '../../src/app/analysisLoop';
+import { BeatGrid } from '../../src/analysis/grid';
 import type { AudioGraph } from '../../src/source/audioGraph';
 import { clickTrack, windowsFrom } from '../helpers/synth';
 
@@ -138,6 +139,29 @@ describe('AnalysisLoop', () => {
     const snap = loop.latest()!;
     expect(snap.rhythm.meter).toBe('triple');
     expect(snap.grid.barLength).toBe(3);
+  });
+
+  it('does not churn the grid over a steady four-four click track', () => {
+    // Every reading the loop forwards costs the grid its downbeat evidence, so
+    // a meter that flickers costs it repeatedly. Un-debounced this track drew
+    // two calls in twenty seconds — a spurious triple and the retraction of it;
+    // the tracker's first, un-debounced answer is the only one that should get
+    // through now.
+    const spy = vi.spyOn(BeatGrid.prototype, 'setMeter');
+    try {
+      const loop = new AnalysisLoop();
+      loop.start(fakeGraph(clickTrack(120, 20, FS)));
+      const lengths = new Set<number>();
+      for (let i = 0; i < Math.floor((20 * FS) / 735); i++) {
+        loop.step();
+        lengths.add(loop.latest()!.grid.barLength);
+      }
+
+      expect(spy.mock.calls.length).toBeLessThanOrEqual(1);
+      expect(lengths.size).toBeLessThanOrEqual(2);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('stops reading once stopped', () => {

@@ -26,6 +26,7 @@ export function hudRows(snap: AnalysisSnapshot): HudData {
     bar: `${grid.barInPhrase + 1}/16`,
     modal: key.modal,
     modeConf: key.modeConf.toFixed(2),
+    fit: key.fit.toFixed(2),
     consonance: timbre.consonance.toFixed(2),
     bright: timbre.bright.toFixed(2),
     noise: timbre.noise.toFixed(2),
