@@ -6,6 +6,13 @@
  * the vertex shader from the instance's own seed, so the CPU never touches a
  * vertex and the geometry is built once at startup and never rebuilt.
  *
+ * How many of the four hundred are actually drawn follows the layer's own
+ * weight: each strand holds a hash, and only those under the weight survive the
+ * fragment shader. A quiet mix is a scattering of ribbons over a dark field and
+ * the full curtain assembles only when the director hands this layer the frame.
+ * Drawing all four hundred at a low weight instead — which is what scaling the
+ * finished texture alone does — gives a uniform pale rain with no dark in it.
+ *
  * This is the layer the director reaches for when the music is *quiet* and
  * tense: where the dust needs energy to look like anything, silk reads best
  * when almost nothing is happening to it. Bend comes from tension and
@@ -64,6 +71,7 @@ export class Strands implements Scene {
         uAccent: { value: new THREE.Vector3(1, 1, 1) },
         uDownbeat: { value: 0 },
         uExposure: { value: 1 },
+        uWeight: { value: 0 },
       },
     });
 
@@ -90,6 +98,11 @@ export class Strands implements Scene {
     u['uThickness']!.value = p.strandThickness;
     u['uDownbeat']!.value = fast.downbeatPulse;
     u['uExposure']!.value = p.exposure;
+    // The layer's own weight, which is how many ribbons it draws. The Composer
+    // scales the finished texture by the same number; this is the *other* half
+    // of the fade, and it is what keeps a quiet mix from being a full curtain
+    // rendered dim.
+    u['uWeight']!.value = p.weights.strands;
 
     const stops = u['uStops']!.value as THREE.Vector3[];
     for (let s = 0; s < stops.length; s++) {
@@ -186,11 +199,16 @@ function ribbonGeometry(count: number, segments: number): THREE.InstancedBufferG
   // of 400 strands reads as a grid the moment two of them line up.
   const base = new Float32Array(count * 3);
   const ids = new Float32Array(count);
+  // The visibility hash. It has its own irrational step, independent of the
+  // sway phase: sharing one would mean every *visible* strand also shared a
+  // narrow band of phase, and they would all lean together.
+  const hashes = new Float32Array(count);
   for (let i = 0; i < count; i++) {
     base[i * 3] = (fract(i * 0.7548776662) * 2 - 1) * SPREAD_X;
     base[i * 3 + 1] = (fract(i * 0.5698402909) * 2 - 1) * SPREAD_Z;
     base[i * 3 + 2] = fract(i * 0.3819660113) * 6.2831853;
     ids[i] = i;
+    hashes[i] = fract(i * 0.6180339887 + 0.137);
   }
 
   const geometry = new THREE.InstancedBufferGeometry();
@@ -201,6 +219,7 @@ function ribbonGeometry(count: number, segments: number): THREE.InstancedBufferG
   geometry.setAttribute('aT', new THREE.BufferAttribute(along, 1));
   geometry.setAttribute('aBase', new THREE.InstancedBufferAttribute(base, 3));
   geometry.setAttribute('aId', new THREE.InstancedBufferAttribute(ids, 1));
+  geometry.setAttribute('aHash', new THREE.InstancedBufferAttribute(hashes, 1));
   return geometry;
 }
 

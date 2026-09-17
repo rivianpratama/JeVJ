@@ -102,6 +102,20 @@ describe('direct', () => {
     const drift = once(mood({ ...m, motion: 'drift' }), fast());
     expect(swarm.weights.particles).toBeGreaterThan(base.weights.particles);
     expect(drift.weights.strands).toBeGreaterThan(base.weights.strands);
+
+    // The exact sizes, pinned: a swarm is a takeover, a drift is a lean. At
+    // arousal 1 the base strand weight is zero, so what is left of the drifting
+    // silk is the bonus alone, against ink 0.55 and particles 1·1·(0.6+0.4·0.5).
+    const onlyBonus = once(mood({ arousal: 1, spoken: 0, motion: 'drift' }), fast());
+    expect(onlyBonus.weights.strands).toBeCloseTo(0.1 / (0.55 + 0.8 + 0.1), 6);
+  });
+
+  it('keeps the ink ahead of the silk on a page that has heard nothing', () => {
+    // IDLE_MOOD drifts, and the drift bonus used to put the strands over the
+    // ink before a note had been played — a curtain with no music behind it.
+    const p = once(IDLE_MOOD, fast());
+    expect(p.weights.ink).toBeGreaterThan(p.weights.strands);
+    expect(p.weights.ink).toBeGreaterThan(p.weights.particles);
   });
 
   it('blooms into a soft explosion on the downbeat and settles back', () => {

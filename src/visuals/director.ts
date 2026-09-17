@@ -338,7 +338,10 @@ export function direct(
   // swarm's dust back over a talking voice at full strength, which is the one
   // thing the `(1 − spoken)` factors above exist to prevent.
   if (motion === 'swarm') wParticles += 0.3 * (1 - spoken);
-  if (motion === 'drift') wStrands += 0.2 * (1 - spoken);
+  // A drift leans the mix toward silk; it does not hand it over. At 0.2 the
+  // bonus put the strands ahead of the ink at IDLE_MOOD — which drifts — so a
+  // page that had heard nothing opened on a curtain instead of on the ink.
+  if (motion === 'drift') wStrands += 0.1 * (1 - spoken);
   const total = INK_BED + wParticles + wStrands;
 
   // Particles.
