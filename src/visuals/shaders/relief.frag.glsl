@@ -44,8 +44,12 @@ const float EMBER_GAIN = 2.0;
 const float EMBER_AGGRESSION = 0.5;
 
 void main() {
-  // Up and to the left, and toward the camera: a *raking* light, nine degrees
-  // above the ground, which is the only kind that shows a relief at all.
+  // Up and to the left of the *screen*: a *raking* light, nine degrees above
+  // the ground. The camera looks down the −z axis, so "toward the upper left"
+  // is −x, +y and −z — a positive z would put the lamp behind the viewer, which
+  // is the one position that shows a relief no shadow at all.
+  //
+  // It is nine degrees which is the only kind that shows a relief at all.
   //
   // The elevation is not a free choice; it was set by measurement, and it is
   // low because this layer composites alpha-over. A lamp at 30° lights nearly
@@ -55,7 +59,7 @@ void main() {
   // target of 0.06. At 9° the flats sit at the background and only the faces
   // turned toward the lamp come up, which is charcoal with a drawing in it
   // rather than a grey slab.
-  vec3 light = normalize(vec3(-0.9, 0.15, 0.3));
+  vec3 light = normalize(vec3(-0.9, 0.15, -0.3));
 
   float e = uStep;
   float hx = reliefHeightAt(vXZ + vec2(e, 0.0)) - reliefHeightAt(vXZ - vec2(e, 0.0));

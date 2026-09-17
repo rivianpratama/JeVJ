@@ -97,15 +97,44 @@ export interface RenderParams {
   posterize: number;
   /** Kaleidoscope folds; 0 is off. */
   mirrorFolds: number;
+  /**
+   * How much of the kaleidoscope is actually on screen, 0..1.
+   *
+   * `mirrorFolds` is an integer and cannot be crossfaded, so this is what moves.
+   * The count changes only while this is near zero, and everything that wants
+   * the mirror *off* — reduced motion, the speech clamp — drives this to zero
+   * rather than snapping the count, because a figure that vanishes between two
+   * frames is a cut.
+   */
+  mirrorMix: number;
   grain: number;
   vignette: number;
   exposure: number;
 
   flowStyle: Motion;
+
+  /**
+   * Whether the dust's accent grains burn rather than counterpoint.
+   *
+   * The rule: **warmth ≥ 0.4 takes the palette's `ember`, below it the
+   * `accent`.** The accent is the complement, which on a warm palette is a cold
+   * colour — the right answer for a cold track, where the sparks are the one
+   * thing that is *not* the hue, and the wrong one for a warm track, where they
+   * read as debris from another picture.
+   */
+  warmGrains: boolean;
 }
 
 /** Seconds for a slewed scalar to cover ~63% of the distance to its target. */
 const SLEW_TAU = 0.8;
+/**
+ * The kaleidoscope's own, faster time constant, and how quiet it has to be
+ * before the fold count may change underneath it.
+ */
+const MIRROR_TAU = 0.5;
+const MIRROR_SWITCH = 0.05;
+/** Above this warmth the dust's accent grains are embers rather than the complement. */
+const WARM_GRAINS_AT = 0.4;
 /** The strobe cap: at most three luminance reversals a second. */
 const MIN_FLIP_SEC = 1 / 3;
 /** Exposure moves smaller than this do not count as a direction. */
@@ -124,6 +153,12 @@ function lerp(a: number, b: number, t: number): number {
 
 function clamp01(x: number): number {
   return x < 0 ? 0 : x > 1 ? 1 : x;
+}
+
+/** GLSL's smoothstep, so a gate in here reads the same as a gate in a shader. */
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = clamp01((x - edge0) / (edge1 - edge0));
+  return t * t * (3 - 2 * t);
 }
 
 function leaning<K extends string>(keys: readonly K[], chosen: K, p = 0.6): Record<K, number> {
@@ -200,14 +235,26 @@ const RELIEF_GENRE_BONUS = 0.3;
  * is what the melancholy/aggression bid is for.
  */
 const RELIEF_GENRES: ReadonlySet<Genre> = new Set<Genre>(['rock_metal']);
-/** Below this `spoken` the voice layer is not asked for at all. */
-const BREATH_GATE = 0.5;
 /**
- * Above this share of the frame the Breath layer is the picture, and the
- * safety clamps come down: nothing that can flash a screen survives over a
- * talking voice.
+ * The speech gate: no voice layer below 0.35, all of it above 0.65.
+ *
+ * It is a smoothstep and not a threshold because `spoken` is a judgment that
+ * arrives every few seconds and lands as a step. At `spoken ≥ 0.5 ? spoken : 0`
+ * an answer moving from 0.49 to 0.51 put half the frame under a new layer
+ * between two frames — a cut, and the most visible one in the app.
  */
-const BREATH_SAFE_OVER = 0.5;
+const BREATH_GATE_LO = 0.35;
+const BREATH_GATE_HI = 0.65;
+/**
+ * The share of the frame at which the safety clamps come down.
+ *
+ * It is 0.25 because that is where the *blend* is already half breath — the
+ * composite is mixed by `weight / 0.5` — so the clamp engages exactly when the
+ * voice layer becomes the thing being looked at. At 0.5, the old number, there
+ * was a quarter of the range where the breath was plainly on screen and the
+ * kaleidoscope was still turning over it.
+ */
+const BREATH_SAFE_OVER = 0.25;
 /** The most bloom a speech frame may carry. */
 const BREATH_MAX_BLOOM = 0.4;
 /** Above this share of the frame the terrain wants a mirror line. */
@@ -248,10 +295,25 @@ export interface DirectorState {
    * from the previous frame's total.
    */
   heldBloomBase: number;
-  /** The fold count actually in use, and the one waiting to replace it. */
+  /**
+   * The five layers' *un-normalised* bids, slewed.
+   *
+   * They are held here rather than read back off `prev.weights` because those
+   * are normalised: a layer whose own bid never moved still changes share when
+   * another layer's does, and slewing the normalised number would chase that
+   * change instead of the mood. Slewing the bids and normalising afterwards
+   * keeps every layer's crossfade its own, and the mix exactly one.
+   */
+  bids: { ink: number; particles: number; strands: number; relief: number; breath: number };
+  /** The fold count actually in use, the debounced one the music wants, and the pending one. */
   folds: number;
+  wantedFolds: number;
   pendingFolds: number;
   pendingFoldsSince: number;
+  /** How much of the kaleidoscope is on screen, slewed. */
+  mirrorMix: number;
+  /** How far the speech clamp is engaged, slewed: 1 is fully clamped. */
+  safety: number;
   /**
    * When the last climax impact landed, on the same clock. The bloom flare is
    * a one-second window after a hit and cannot be read back off the previous
@@ -268,9 +330,13 @@ export function createDirector(): DirectorState {
     lastDir: 0,
     heldChromaBase: 0,
     heldBloomBase: 0,
+    bids: { ink: 0, particles: 0, strands: 0, relief: 0, breath: 0 },
     folds: 0,
+    wantedFolds: 0,
     pendingFolds: 0,
     pendingFoldsSince: Number.NEGATIVE_INFINITY,
+    mirrorMix: 0,
+    safety: 0,
     lastClimaxAt: Number.NEGATIVE_INFINITY,
   };
 }
@@ -292,33 +358,35 @@ function limitStrobe(s: DirectorState, desired: number, held: number): number {
 }
 
 /**
- * The fold count, with a hand on it.
+ * The fold count the music is asking for, with a hand on it.
  *
  * `tension` wobbling across a rounding boundary would re-fold the entire
  * screen several times a second, which is the one thing a kaleidoscope must
  * not do — the figure is the point, and a figure that keeps changing its
  * symmetry is noise. A different count has to be wanted continuously for half
- * a second before it is taken.
+ * a second before it is even *wanted*, and wanting it is not the same as
+ * getting it: the caller only commits the new count while the mirror's mix has
+ * faded to nothing, so the change happens where nobody can see it.
  */
 function holdFolds(s: DirectorState, target: number, fresh: boolean): number {
   if (fresh) {
-    s.folds = target;
+    s.wantedFolds = target;
     s.pendingFolds = target;
     s.pendingFoldsSince = s.clock;
-    return s.folds;
+    return target;
   }
-  if (Math.abs(target - s.folds) < 1) {
-    s.pendingFolds = s.folds;
+  if (target === s.wantedFolds) {
+    s.pendingFolds = target;
     s.pendingFoldsSince = s.clock;
-    return s.folds;
+    return s.wantedFolds;
   }
   if (target !== s.pendingFolds) {
     s.pendingFolds = target;
     s.pendingFoldsSince = s.clock;
   } else if (s.clock - s.pendingFoldsSince >= FOLD_HOLD_SEC) {
-    s.folds = target;
+    s.wantedFolds = target;
   }
-  return s.folds;
+  return s.wantedFolds;
 }
 
 export function direct(
@@ -414,7 +482,7 @@ export function direct(
   // below do: added flat, a drone podcast would keep a full terrain under the
   // voice layer that is supposed to have the frame to itself.
   if (RELIEF_GENRES.has(mood.genre)) wRelief += RELIEF_GENRE_BONUS * voiced;
-  const wBreath = spoken >= BREATH_GATE ? spoken : 0;
+  const wBreath = smoothstep(BREATH_GATE_LO, BREATH_GATE_HI, spoken) * spoken;
   // The motion bonuses fade with speech too. Added flat they would put a
   // swarm's dust back over a talking voice at full strength, which is the one
   // thing the `(1 − spoken)` factors above exist to prevent.
@@ -423,18 +491,44 @@ export function direct(
   // bonus put the strands ahead of the ink at IDLE_MOOD — which drifts — so a
   // page that had heard nothing opened on a curtain instead of on the ink.
   if (motion === 'drift') wStrands += 0.1 * voiced;
+  // Every bid is slewed toward its target before the mix is taken, so no layer
+  // can appear or vanish between two frames however hard the mood layer steps —
+  // and the normalisation afterwards keeps the total exactly one frame's worth
+  // of light at every point of the crossfade.
+  const b = state.bids;
+  if (prev === null) {
+    b.ink = wInk;
+    b.particles = wParticles;
+    b.strands = wStrands;
+    b.relief = wRelief;
+    b.breath = wBreath;
+  } else {
+    b.ink += (wInk - b.ink) * k;
+    b.particles += (wParticles - b.particles) * k;
+    b.strands += (wStrands - b.strands) * k;
+    b.relief += (wRelief - b.relief) * k;
+    b.breath += (wBreath - b.breath) * k;
+  }
   // Never zero in practice — `spoken` 1 makes the breath 1 and anything less
   // leaves the ink bed — but a mix that could divide by zero is a black frame
   // waiting for the one mood nobody tried.
-  const bid = wInk + wParticles + wStrands + wRelief + wBreath;
+  const bid = b.ink + b.particles + b.strands + b.relief + b.breath;
   const total = bid > 1e-6 ? bid : 1;
   const weights = {
-    ink: bid > 1e-6 ? wInk / total : 1,
-    particles: wParticles / total,
-    strands: wStrands / total,
-    relief: wRelief / total,
-    breath: wBreath / total,
+    ink: bid > 1e-6 ? b.ink / total : 1,
+    particles: b.particles / total,
+    strands: b.strands / total,
+    relief: b.relief / total,
+    breath: b.breath / total,
   };
+
+  // The safety, as a number rather than a switch. It engages on the same share
+  // of the frame the blend composites the breath with, and it is slewed, so
+  // everything it takes away leaves gradually instead of being snatched.
+  const safetyTarget = weights.breath >= BREATH_SAFE_OVER ? 1 : 0;
+  const kMirror = prev === null ? 1 : 1 - Math.exp(-step / MIRROR_TAU);
+  state.safety += (safetyTarget - state.safety) * kMirror;
+  const safety = state.safety;
 
   // Hypnotic, or terrain that has taken the frame. Two to six folds: eight read
   // as sharp static spokes rather than as a figure, and repetitive dance music
@@ -443,7 +537,22 @@ export function direct(
   // dominant relief gets a mirror line whatever the music is doing.
   let foldTarget = hypnotic >= 0.6 ? Math.round(lerp(MIN_FOLDS, MAX_FOLDS, tension)) : 0;
   if (weights.relief > RELIEF_MIRROR_OVER) foldTarget = Math.max(foldTarget, MIN_FOLDS);
-  let mirrorFolds = holdFolds(state, foldTarget, prev === null);
+  const wantedFolds = holdFolds(state, foldTarget, prev === null);
+  if (prev === null) state.folds = wantedFolds;
+
+  // The mirror's mix, and the one rule that makes a fold count safe to change:
+  // while the count on screen is not the one the music wants, the figure fades
+  // *out* — and only once it is invisible does the count move and the figure
+  // come back. Reduced motion and the speech clamp pull the same lever, so they
+  // dim the kaleidoscope away rather than snatching it.
+  const changing = state.folds !== wantedFolds;
+  let mirrorMixTarget = state.folds > 0 && !changing ? 1 : 0;
+  if (reducedMotion) mirrorMixTarget = 0;
+  mirrorMixTarget = Math.min(mirrorMixTarget, 1 - safety);
+  state.mirrorMix += (mirrorMixTarget - state.mirrorMix) * kMirror;
+  if (state.mirrorMix < MIRROR_SWITCH) state.folds = wantedFolds;
+  const mirrorMix = state.mirrorMix;
+  const mirrorFolds = state.folds;
 
   // Particles.
   let particleSpeed = lerp(0.2, 2.2, arousal);
@@ -481,7 +590,6 @@ export function direct(
     flowAmtTarget *= 0.5;
     pushKick *= 0.5;
     chroma *= 0.5;
-    mirrorFolds = 0;
     particleSpeed *= 0.5;
     particleImpulse *= 0.5;
     // Not halved: a camera that lunges at the viewer is exactly what reduced
@@ -489,32 +597,36 @@ export function direct(
     dollySnap = 0;
   }
 
-  // Exposure is instant (it is impact-driven), then capped, then rate-limited
-  // in *direction* so it can never strobe.
-  let exposure = 1 + 0.25 * impact + 0.1 * clamp01(fast.downbeatPulse) * arousal;
-  if (reducedMotion) exposure = Math.min(exposure, REDUCED_MAX_EXPOSURE);
-  exposure = prev === null ? exposure : limitStrobe(state, exposure, prev.exposure);
+  // Safety, applied to the *targets* rather than to the results. Over a talking
+  // voice nothing that can flash a screen survives — no fringing, no banding, a
+  // bloom that cannot bloom, an exposure pinned flat and a kaleidoscope faded
+  // out — but every one of those leaves through the slew or the limiter that
+  // owns it. An assignment after the limiter would be a cut with a safety
+  // label on it, which is the failure mode this whole pass is about.
+  chroma *= 1 - safety;
+  if (safety > 0.5) posterize = 0;
 
   // The bloom's slewed base is held aside for the same reason chroma's is: the
   // climax flare is a multiplier on top, and a flared `prev.bloomStrength` fed
   // back into the slew would ratchet the bloom up and never come down.
-  if (prev === null) state.heldBloomBase = bloomStrengthTarget;
-  else state.heldBloomBase += (bloomStrengthTarget - state.heldBloomBase) * k;
+  const bloomTarget = lerp(bloomStrengthTarget, Math.min(bloomStrengthTarget, BREATH_MAX_BLOOM), safety);
+  if (prev === null) state.heldBloomBase = bloomTarget;
+  else state.heldBloomBase += (bloomTarget - state.heldBloomBase) * k;
   if (section === 'drop_climax' && impact >= CLIMAX_IMPACT_GATE) state.lastClimaxAt = state.clock;
   const flaring = section === 'drop_climax' && state.clock - state.lastClimaxAt < CLIMAX_BLOOM_SEC;
-  let bloomStrength = state.heldBloomBase * (flaring ? CLIMAX_BLOOM : 1);
+  // The flare is a multiplier on the slewed base, so the ceiling has to be
+  // applied again after it — mixed in by the safety rather than switched, so a
+  // climax that turns into speech dims out instead of being snapped down.
+  const flared = state.heldBloomBase * (flaring ? CLIMAX_BLOOM : 1);
+  const bloomStrength = lerp(flared, Math.min(flared, BREATH_MAX_BLOOM), safety);
 
-  // Safety. Over a talking voice nothing that can flash a screen survives:
-  // no kaleidoscope, no fringing, no banding, a bloom that cannot bloom, and
-  // an exposure pinned flat — an impact-driven lift over speech is precisely
-  // the flash the Breath scene exists to avoid.
-  if (weights.breath > BREATH_SAFE_OVER) {
-    mirrorFolds = 0;
-    chroma = 0;
-    posterize = 0;
-    bloomStrength = Math.min(bloomStrength, BREATH_MAX_BLOOM);
-    exposure = 1;
-  }
+  // Exposure is instant (it is impact-driven), flattened by the safety, capped,
+  // and only then rate-limited in *direction* so it can never strobe. Nothing
+  // touches it after the limiter.
+  let exposure = 1 + 0.25 * impact + 0.1 * clamp01(fast.downbeatPulse) * arousal;
+  exposure = lerp(exposure, 1, safety);
+  if (reducedMotion) exposure = Math.min(exposure, REDUCED_MAX_EXPOSURE);
+  exposure = prev === null ? exposure : limitStrobe(state, exposure, prev.exposure);
 
   return {
     weights,
@@ -551,10 +663,12 @@ export function direct(
     chroma,
     posterize,
     mirrorFolds,
+    mirrorMix,
     grain: slew(grainTarget, prev?.grain ?? grainTarget),
     vignette: slew(vignetteTarget, prev?.vignette ?? vignetteTarget),
     exposure,
 
     flowStyle: mood.motion,
+    warmGrains: clamp01(mood.warmth) >= WARM_GRAINS_AT,
   };
 }

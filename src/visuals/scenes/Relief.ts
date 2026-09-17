@@ -162,10 +162,20 @@ export class Relief implements Scene {
     const target = this.target;
     if (!target) throw new Error('Relief: render before init');
 
+    // The clear has to be *transparent* black, explicitly. Everything the
+    // terrain does not cover leaves this target at the clear value, and the
+    // Composer composites this layer alpha-over: at clear alpha 1 every
+    // uncovered pixel would lay opaque black over the ink and the relief would
+    // darken the composite exactly where there is no relief. three's default
+    // clear alpha is 0, but it is a renderer-wide setting any other pass could
+    // have moved, so this scene sets it for its own draw and puts it back.
     const autoClear = r.autoClear;
+    const clearAlpha = r.getClearAlpha();
+    r.setClearAlpha(0);
     r.setRenderTarget(target);
     r.autoClear = true;
     r.render(this.scene, this.camera);
+    r.setClearAlpha(clearAlpha);
     r.autoClear = autoClear;
     r.setRenderTarget(null);
     return target.texture;

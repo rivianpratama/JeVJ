@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import breathFrag from '../../src/visuals/shaders/breath.frag.glsl?raw';
+import mirrorFrag from '../../src/visuals/shaders/mirror.frag.glsl?raw';
 import commonGlsl from '../../src/visuals/shaders/common.glsl?raw';
 import reliefFrag from '../../src/visuals/shaders/relief.frag.glsl?raw';
 import reliefHeight from '../../src/visuals/shaders/relief_height.glsl?raw';
@@ -73,6 +74,20 @@ describe('relief shaders', () => {
   it('writes an alpha, because the Composer blends it over what is behind', () => {
     expect(reliefFrag).toContain('gl_FragColor = vec4(col * uExposure, fade);');
   });
+
+  it('rakes from the upper left of the *screen*, which is behind the camera', () => {
+    // The camera looks down the -z axis, so a light with a positive z points
+    // out of the screen toward the viewer and flattens the terrain. Upper-left
+    // on screen is -x, +y and *into* the frame.
+    const m = /vec3 light = normalize\(vec3\(([^)]*)\)\)/.exec(reliefFrag);
+    expect(m).not.toBeNull();
+    const [x, y, z] = m![1]!.split(',').map((v) => Number(v.trim()));
+    expect(x!).toBeLessThan(0);
+    expect(y!).toBeGreaterThan(0);
+    expect(z!).toBeLessThan(0);
+    // And it stays raking: a high lamp lights the flats and pales the frame.
+    expect(y! / Math.hypot(x!, y!, z!)).toBeLessThan(0.35);
+  });
 });
 
 describe('breath shader', () => {
@@ -107,6 +122,16 @@ describe('blend', () => {
     expect(blendFrag).toContain('clamp(uW[4] / BREATH_FULL, 0.0, 1.0)');
   });
 
+  it('reads the relief slot as a vec4 and uses its alpha, never its colour alone', () => {
+    // The relief target is cleared to a *transparent* black, so the pixels the
+    // terrain does not cover carry colour 0 at alpha 0. Compositing them by the
+    // weight alone would darken the ink everywhere the terrain is not.
+    expect(blendFrag).toContain('vec4 relief = texture2D(uTex3, vUv);');
+    expect(blendFrag).toContain('relief.a');
+    // No bare `uTex3` read that drops the alpha.
+    expect(blendFrag).not.toMatch(/texture2D\(uTex3, vUv\)\.rgb/);
+  });
+
   it('deepens the darks with a smoothstep curve, on the clamped part only', () => {
     // `x²(3 − 2x)` goes negative above 1.5, and these buffers are HDR.
     expect(blendFrag).toContain('const float CONTRAST = 0.35;');
@@ -126,5 +151,15 @@ describe('strands', () => {
     expect(strandsVert).toContain('uThickness * uWidthScale');
     expect(strandsFrag).toMatch(/uniform float uAlphaScale;/);
     expect(strandsFrag).toContain('uAlphaScale');
+  });
+});
+
+describe('mirror', () => {
+  it('blends its figure in by a mix, so a fold count can never snap on screen', () => {
+    expect(mirrorFrag).toMatch(/uniform float uMix;/);
+    // The early-out is on the mix as well as the count: a pass at mix 0 must
+    // cost nothing and must be bit-identical to no pass at all.
+    expect(mirrorFrag).toContain('if (uFolds < 0.5 || uMix <= 0.0)');
+    expect(mirrorFrag).toContain('mix(src, figure, uMix)');
   });
 });

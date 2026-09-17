@@ -119,6 +119,70 @@ describe('direct', () => {
     }
   });
 
+  it('never cuts a scene weight, whatever the mood does', () => {
+    // Moods crossfade over seconds. Every weight is slewed toward its target
+    // before the mix is normalised, so no layer can appear or vanish between
+    // two frames however hard the mood layer steps.
+    const quiet = mood({ spoken: 0, arousal: 0.2, tension: 0.2 });
+    const talking = mood({ spoken: 1, arousal: 1, tension: 1, motion: 'swarm' });
+    const state = createDirector();
+    let prev = direct(state, quiet, fast(), FRAME, null, false);
+
+    const walk = (m: MoodVector, frames: number): void => {
+      for (let i = 0; i < frames; i++) {
+        const next = direct(state, m, fast(), FRAME, prev, false);
+        for (const k of Object.keys(next.weights) as (keyof RenderParams['weights'])[]) {
+          expect(Math.abs(next.weights[k] - prev!.weights[k])).toBeLessThan(0.05);
+        }
+        prev = next;
+      }
+    };
+    // Into speech, and back out again: both directions.
+    walk(talking, 240);
+    expect(prev.weights.breath).toBeGreaterThan(0.9);
+    walk(quiet, 240);
+    expect(prev.weights.breath).toBeLessThan(0.02);
+  });
+
+  it('crosses the speech gate smoothly rather than at a step', () => {
+    // `spoken ≥ 0.5 ? spoken : 0` put a whole layer on screen between two
+    // frames when Jev's answer moved by a hundredth. The gate is a smoothstep.
+    const state = createDirector();
+    let prev = direct(state, mood({ spoken: 0.49 }), fast(), FRAME, null, false);
+    for (let i = 0; i < 300; i++) {
+      const next = direct(state, mood({ spoken: 0.51 }), fast(), FRAME, prev, false);
+      expect(Math.abs(next.weights.breath - prev.weights.breath)).toBeLessThan(0.05);
+      prev = next;
+    }
+    // And below the gate's foot there is no voice layer at all.
+    expect(once(mood({ spoken: 0.3 }), fast()).weights.breath).toBe(0);
+    expect(once(mood({ spoken: 0.5 }), fast()).weights.breath).toBeGreaterThan(0);
+  });
+
+  it('fades the mirror rather than switching it', () => {
+    // `mirrorFolds` is an integer and cannot be crossfaded, so the *mix* is
+    // what moves: the figure fades out, the count changes while nobody can see
+    // it, and it fades back in.
+    const state = createDirector();
+    let prev = direct(state, mood({ hypnotic: 1, tension: 0 }), fast(), FRAME, null, false);
+    expect(prev.mirrorFolds).toBe(2);
+    expect(prev.mirrorMix).toBeCloseTo(1, 6);
+
+    const wanted = mood({ hypnotic: 1, tension: 1 });
+    let sawFade = false;
+    for (let i = 0; i < 300; i++) {
+      const next = direct(state, wanted, fast(), FRAME, prev, false);
+      expect(Math.abs(next.mirrorMix - prev.mirrorMix)).toBeLessThanOrEqual(0.04);
+      // The count may only move while the mirror is invisible.
+      if (next.mirrorFolds !== prev.mirrorFolds) expect(next.mirrorMix).toBeLessThan(0.05);
+      if (next.mirrorMix < 0.05) sawFade = true;
+      prev = next;
+    }
+    expect(sawFade).toBe(true);
+    expect(prev.mirrorFolds).toBe(6);
+    expect(prev.mirrorMix).toBeCloseTo(1, 2);
+  });
+
   it('is safe under the breath: no mirror, no chroma, no posterize, no flash', () => {
     // The speech scene must never flash, so everything that can flash it is
     // switched off at the source rather than trusted to be quiet.
@@ -128,7 +192,9 @@ describe('direct', () => {
       loud,
     );
     expect(p.weights.breath).toBeGreaterThan(0.5);
-    expect(p.mirrorFolds).toBe(0);
+    // The *mix* is what goes to zero, not the fold count: a count that snapped
+    // would be a cut, which is the one thing a safety rule must not introduce.
+    expect(p.mirrorMix).toBe(0);
     expect(p.chroma).toBe(0);
     expect(p.posterize).toBe(0);
     expect(p.bloomStrength).toBeLessThanOrEqual(0.4);
@@ -139,12 +205,54 @@ describe('direct', () => {
       fast({ impact: i % 2 === 0 ? 1 : 0, downbeatPulse: 1 }),
     );
     for (const f of frames) {
-      expect(f.mirrorFolds).toBe(0);
+      expect(f.mirrorMix).toBe(0);
       expect(f.chroma).toBe(0);
       expect(f.posterize).toBe(0);
       expect(f.bloomStrength).toBeLessThanOrEqual(0.4);
       expect(f.exposure).toBeCloseTo(1, 6);
     }
+  });
+
+  it('engages the safety on the same number the blend composites with', () => {
+    // The blend is already half breath at a weight of 0.25, so that is where
+    // the clamp comes down — not at the 0.5 the old gate used, which left a
+    // quarter of the range where the voice layer was visibly on screen and the
+    // kaleidoscope was still running over it.
+    const m = mood({
+      spoken: 0.5,
+      arousal: 1,
+      synthetic: 0,
+      tension: 1,
+      hypnotic: 1,
+      melancholy: 0,
+      aggression: 0,
+      genre: 'pop',
+    });
+    const state = createDirector();
+    let prev = direct(state, m, fast({ impact: 1 }), FRAME, null, false);
+    expect(prev.weights.breath).toBeGreaterThanOrEqual(0.25);
+    expect(prev.weights.breath).toBeLessThan(0.5);
+    expect(prev.mirrorMix).toBe(0);
+    expect(prev.chroma).toBe(0);
+
+    // Unclamped, that same hit would have put chroma on screen.
+    const loose = once(mood({ ...m, spoken: 0 }), fast({ impact: 1 }));
+    expect(loose.chroma).toBeGreaterThan(0.01);
+    expect(loose.mirrorMix).toBeGreaterThan(0.5);
+
+    // And it holds as the frames go by.
+    for (let i = 0; i < 120; i++) {
+      prev = direct(state, m, fast({ impact: i % 2 === 0 ? 1 : 0 }), FRAME, prev, false);
+      expect(prev.mirrorMix).toBe(0);
+      expect(prev.chroma).toBe(0);
+    }
+  });
+
+  it('picks the grain accent by warmth: fire above 0.4, the complement below', () => {
+    expect(once(mood({ warmth: 0.4 }), fast()).warmGrains).toBe(true);
+    expect(once(mood({ warmth: 1 }), fast()).warmGrains).toBe(true);
+    expect(once(mood({ warmth: 0.39 }), fast()).warmGrains).toBe(false);
+    expect(once(mood({ warmth: 0 }), fast()).warmGrains).toBe(false);
   });
 
   it('raises the relief for melancholy and for aggression, and not for a voice', () => {
@@ -191,8 +299,10 @@ describe('direct', () => {
     const p = once(m, fast());
     expect(p.weights.relief).toBeGreaterThan(0.5);
     expect(p.mirrorFolds).toBeGreaterThanOrEqual(2);
-    // Reduced motion still wins.
-    expect(once(m, fast(), true).mirrorFolds).toBe(0);
+    expect(p.mirrorMix).toBeCloseTo(1, 6);
+    // Reduced motion still wins — through the mix, which is the lever that can
+    // be moved without cutting.
+    expect(once(m, fast(), true).mirrorMix).toBe(0);
   });
 
   it('reads the relief height off the mood and the contrast off the tension', () => {
@@ -280,15 +390,15 @@ describe('direct', () => {
     // invariant that still means something is that no layer runs away with an
     // idle frame.
     const p = once(IDLE_MOOD, fast());
+    // The design rule, stated as a rule rather than as the arithmetic of the
+    // day: the silk may draw level with the ink but never lead it by enough to
+    // read as the subject, and a page that has heard nothing has no landscape
+    // on it. Pinning the gap to a hundredth made this test a tripwire on every
+    // future weight change rather than a statement about the picture.
+    expect(p.weights.strands).toBeLessThanOrEqual(p.weights.ink + 0.05);
+    expect(p.weights.relief).toBeLessThanOrEqual(0.1);
     expect(p.weights.ink).toBeGreaterThan(p.weights.particles);
-    expect(p.weights.ink).toBeGreaterThan(p.weights.relief);
-    expect(p.weights.strands).toBeLessThan(0.42);
-    expect(Math.abs(p.weights.strands - p.weights.ink)).toBeLessThan(0.02);
     expect(p.weights.breath).toBe(0);
-    // And barely any terrain: `IDLE_MOOD` is calm, so the only bid the relief
-    // has is melancholy and aggression at 0.1, which the blend's own
-    // `w²·1.6` opacity then renders all but invisible.
-    expect(p.weights.relief).toBeLessThan(0.07);
   });
 
   it('blooms into a soft explosion on the downbeat and settles back', () => {
@@ -366,18 +476,22 @@ describe('direct', () => {
 
   it('holds the fold count until a different one has been wanted for half a second', () => {
     // Tension wobbling across a rounding boundary would otherwise re-fold the
-    // whole screen several times a second.
+    // whole screen several times a second. The debounce is the first of two
+    // guards; the second is the fade in `fades the mirror rather than
+    // switching it`, which is why a full second here still shows two folds.
     const state = createDirector();
     let prev = direct(state, mood({ hypnotic: 1, tension: 0 }), fast(), FRAME, null, false);
     expect(prev.mirrorFolds).toBe(2);
 
     const wanted = mood({ hypnotic: 1, tension: 1 });
-    // A quarter of a second of wanting six is not enough.
+    // A quarter of a second of wanting six is not enough to start the fade.
     for (let i = 0; i < 15; i++) prev = direct(state, wanted, fast(), FRAME, prev, false);
     expect(prev.mirrorFolds).toBe(2);
-    // Another half second is.
+    expect(prev.mirrorMix).toBeCloseTo(1, 2);
+    // Half a second later the fade has begun, and the count has not moved yet.
     for (let i = 0; i < 30; i++) prev = direct(state, wanted, fast(), FRAME, prev, false);
-    expect(prev.mirrorFolds).toBe(6);
+    expect(prev.mirrorFolds).toBe(2);
+    expect(prev.mirrorMix).toBeLessThan(0.9);
   });
 
   it('honours reduced motion', () => {
@@ -385,7 +499,9 @@ describe('direct', () => {
     const loud = fast({ impact: 1, sub: 1 });
     const full = once(m, loud);
     const calm = once(m, loud, true);
-    expect(calm.mirrorFolds).toBe(0);
+    // The mirror goes out through its mix, not by snapping the fold count.
+    expect(calm.mirrorMix).toBe(0);
+    expect(full.mirrorMix).toBeGreaterThan(0.5);
     expect(calm.flowAmt).toBeCloseTo(full.flowAmt / 2, 6);
     expect(calm.pushKick).toBeCloseTo(full.pushKick / 2, 6);
     expect(calm.chroma).toBeCloseTo(full.chroma / 2, 6);

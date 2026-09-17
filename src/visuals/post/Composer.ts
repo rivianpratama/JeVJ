@@ -92,7 +92,7 @@ export class Composer {
     time: number,
   ): void {
     this.blend.setLayers(textures, weights);
-    this.mirror.set(p.mirrorFolds, this.aspect, time);
+    this.mirror.set(p.mirrorFolds, p.mirrorMix, this.aspect, time);
     this.chroma.set(p.chroma, p.posterize, fast.beatPhase);
     this.bloom.strength = p.bloomStrength;
     this.bloom.threshold = p.bloomThreshold;

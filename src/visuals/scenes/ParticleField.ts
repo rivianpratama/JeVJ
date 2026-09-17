@@ -320,11 +320,14 @@ export class ParticleField implements Scene {
       const rgb = p.palette.stops[s] ?? p.palette.stops[p.palette.stops.length - 1]!;
       stops[s]!.set(rgb[0], rgb[1], rgb[2]);
     }
-    (u['uAccent']!.value as THREE.Vector3).set(
-      p.palette.accent[0],
-      p.palette.accent[1],
-      p.palette.accent[2],
-    );
+    // The 12% accent grains, by the director's warmth rule: **warmth ≥ 0.4
+    // takes the palette's `ember`, below it the `accent`.** The accent is the
+    // complement, so on a warm palette it is a cold colour — right for a cold
+    // track, where the sparks are the one thing that is *not* the hue, and
+    // wrong for a warm one, where green sparks over a rust field read as debris
+    // from another picture. See `RenderParams.warmGrains`.
+    const grain = p.warmGrains ? p.palette.ember : p.palette.accent;
+    (u['uAccent']!.value as THREE.Vector3).set(grain[0], grain[1], grain[2]);
     u['uExposure']!.value = p.exposure;
 
     // The camera: a slow orbit that never repeats on a round number, pulled in
