@@ -149,13 +149,21 @@ export class CueTimeline {
    * Drop what has gone by — the live window keeps only the last couple of
    * seconds — except what is still *in force*.
    *
-   * The mood and the section are read as "the latest one at or before now",
-   * and a build cue is the left-hand end of the ramp running through now, so
+   * The mood and the section are read as "the latest one at or before now", so
    * the cue that established each of them is still being read however long ago
-   * it was written. Dropping it on age alone would
-   * silently reset the mood to nothing in the middle of a track, which in file
-   * mode — where a segment's mood cue can be minutes behind the playhead — is
-   * most of the time. At most three cues survive this way.
+   * it was written. Dropping it on age alone would silently reset the mood to
+   * nothing in the middle of a track, which in file mode — where a segment's
+   * mood cue can be minutes behind the playhead — is most of the time.
+   *
+   * A build cue is the left-hand end of the ramp running through now, and
+   * ramps are read *per source* (`buildAt`), so one survivor for the whole
+   * channel is not enough: a hole the detector released just before the cutoff
+   * would be kept and the anchor of the Jev ramp climbing underneath it thrown
+   * away, and that ramp would read nothing until its next sample landed. One
+   * per source, then — but only while it could still be read at all. Past
+   * `BUILD_SPAN_MAX` nothing can interpolate with it and nothing holds that
+   * long, so an old ramp anchor is not kept alive for a source that has gone
+   * quiet.
    */
   prune(before: number): void {
     const cut = this.insertionPoint(before);
@@ -163,17 +171,17 @@ export class CueTimeline {
     this.idx = null;
 
     let mood: Cue | null = null;
-    let build: Cue | null = null;
     let section: Cue | null = null;
+    const builds = new Map<CueSource, Cue>();
     for (let i = 0; i < cut; i++) {
       const c = this.list[i]!;
       if (carriesMood(c)) mood = c;
-      if (c.build !== undefined) build = c;
       if (c.section !== undefined) section = c;
+      if (c.build !== undefined && before - c.t <= BUILD_SPAN_MAX) builds.set(c.source, c);
     }
 
     const keep: Cue[] = [];
-    for (const c of [mood, build, section]) {
+    for (const c of [mood, section, ...builds.values()]) {
       if (c !== null && !keep.includes(c)) keep.push(c);
     }
     keep.sort((a, b) => a.t - b.t);

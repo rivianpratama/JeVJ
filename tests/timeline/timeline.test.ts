@@ -162,7 +162,7 @@ describe('CueTimeline', () => {
     const tl = new CueTimeline();
     tl.add(jevMood(0, 0.9));
     tl.add({ t: 0.5, source: 'jev', section: 'breakdown' });
-    tl.add({ t: 1, source: 'jev', build: 0.4 });
+    tl.add({ t: 9.9, source: 'jev', build: 0.4 });
     tl.add({ t: 10.1, source: 'jev', build: 1 });
     for (let t = 0; t <= 20; t += 0.5) tl.add({ t, source: 'grid', beat: true });
 
@@ -176,6 +176,41 @@ describe('CueTimeline', () => {
     expect(tl.cues().filter((c) => c.build !== undefined && c.t < 10)).toHaveLength(1);
     expect(tl.at(10).section).toBe('breakdown');
     expect(tl.cues().map((c) => c.t)).toEqual([...tl.cues().map((c) => c.t)].sort((a, b) => a - b));
+  });
+
+  it('keeps a ramp anchor for every source, not just the last one written', () => {
+    const tl = new CueTimeline();
+    // Jev's ramp from 9 to 13, and a hole the detector found at 12.03.
+    for (let t = 9; t < 13; t += 0.2) tl.add({ t, source: 'jev', build: (t - 9) / 4 });
+    tl.add({ t: 13, source: 'jev', build: 1 });
+    // A hole the detector found half a bar back, released just before the
+    // cutoff — so the last build cue before the cutoff is the detector's, and
+    // it is a zero.
+    tl.add({ t: 11.5, source: 'detector', build: 1 });
+    tl.add({ t: 12.05, source: 'detector', build: 0 });
+
+    const before = tl.at(12.15).build;
+    expect(before).toBeCloseTo(0.7875, 6);
+
+    // Keeping one survivor for the whole channel keeps that zero and drops
+    // Jev's anchor at 12.0, which leaves its climb with no left-hand end and
+    // reads nothing at all until the next sample lands.
+    tl.prune(12.1);
+
+    expect(tl.at(12.15).build).toBeCloseTo(before, 6);
+  });
+
+  it('does not keep a build cue too old to be read anyway', () => {
+    const tl = new CueTimeline();
+    tl.add({ t: 5, source: 'jev', build: 0.5 });
+    tl.add({ t: 5.2, source: 'detector', build: 1 });
+    for (let t = 9; t <= 12; t += 0.5) tl.add({ t, source: 'grid', beat: true });
+
+    tl.prune(10);
+
+    // Nothing can interpolate with a cue five seconds back and nothing holds
+    // that long, so keeping one per source is not a licence to keep them.
+    expect(tl.cues().filter((c) => c.build !== undefined)).toHaveLength(0);
   });
 
   it('lists what is coming inside the horizon', () => {
