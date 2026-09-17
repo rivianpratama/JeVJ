@@ -35,25 +35,44 @@ const float RING_RADIUS = 0.3;
 const float RING_WIDTH = 0.01;
 
 /**
- * The ambient wash: how much ink a second, at the fbm's midpoint, before
- * `INJECT_RATE` and the gain.
+ * The ambient wash: ink a second at the fbm's midpoint, before the vein gate,
+ * INJECT_RATE and the gain.
  *
- * Calibrated against the decay and the grain rather than chosen. What reaches
- * the screen is not this number but its equilibrium, `rate / (1 - decay)`,
- * and the idle decay of 0.99 a frame makes that a hundred frames' worth. At
- * 0.012 — the figure the direction asked for, which did not account for
- * `INJECT_RATE` — the field settles at a density of 0.024, which the soft
- * knee maps to 4% of the ramp: a relative luminance of 0.003, which is the
- * background with extra steps.
+ * Derived, not chosen. What reaches the screen is not this number but the
+ * equilibrium of the feedback loop,
  *
- * The grain sets the floor under that. It is a flat ±grain/2 in *linear*
- * light, so a field dimmer than the grain is amplitude is not a grained field,
- * it is noise with a tint: half its pixels clamp at black and the eye reads
- * static rather than texture. At this value the idle field settles around
- * stop 1-2, comfortably above the ±0.03 the grain swings, and the light stops
- * are left for the marbling to reach.
+ *     D = rate * dt / (1 - decay^(dt*60))
+ *
+ * — `inkEquilibriumDensity` in ../inkMath.ts — which the color stage then maps
+ * through the soft knee `1 - e^(-KNEE*D)`. At the idle decay of 0.99 a frame
+ * that is a hundred frames' worth of accumulation, so the rate and the level
+ * on screen differ by two orders of magnitude, and tuning the rate by eye is
+ * tuning the wrong number entirely.
+ *
+ * The target is a dark field with luminous marbling: mean level 0.22-0.32 over
+ * the frame, the darkest fifth of it below 0.08, the brightest twentieth above
+ * 0.7. Solving that equilibrium against the fbm's own distribution lands here
+ * — mean 0.27, 20th percentile 0.00, 95th 0.81, with two fifths of the frame
+ * at no ambient ink at all. The rate and the vein gate move together: a harder
+ * gate needs a higher rate to hold the same mean, and buys contrast with it,
+ * so the pair is solved jointly rather than each being picked.
+ *
+ * Two nearby settings are both wrong, and in opposite directions. The brief's
+ * 0.012 settles at mean 0.04: a field indistinguishable from the background.
+ * A rate this size *without* the vein gate below settles near mean 0.8 with a
+ * spread of a few hundredths and no darks at all, which on screen is a plane
+ * of pale lavender. tests/visuals/inkMath.test.ts holds all of it.
  */
-const float AMBIENT_RATE = 0.3;
+const float AMBIENT_RATE = 0.5;
+/**
+ * The wash pools into veins rather than lying flat: the same fbm that
+ * modulates it is also gated through a smoothstep, so below VEIN_LO no ambient
+ * ink is laid down at all. A field of uniform ambient is a plane, and a plane
+ * has no darks for the marbling to be luminous against — the picture is
+ * supposed to be a dark field with light in it, not a lit field.
+ */
+const float VEIN_LO = 0.42;
+const float VEIN_HI = 0.78;
 /** Where the inner lobes orbit, and how far the sub band pushes them out. */
 const float INNER_ORBIT = 0.22;
 const float INNER_ORBIT_SUB = 0.12;
@@ -85,8 +104,10 @@ void main() {
   // already marbled before a single beat lands: ink A carries it, B half as
   // much, C a third — which is the same weighting the color stage reads them
   // back with, so the wash sits low on the palette ramp rather than gray.
+  float vein = fbm(vUv * 3.0 + vec2(uTime * 0.02, -uTime * 0.013));
   float amb = AMBIENT_RATE
-    * (0.5 + 0.5 * fbm(vUv * 3.0 + vec2(uTime * 0.02, -uTime * 0.013)))
+    * (0.5 + 0.5 * vein)
+    * smoothstep(VEIN_LO, VEIN_HI, vein)
     * uInjectGain;
   ink.r += amb * (0.6 + 0.4 * uBands[2]);
   ink.g += amb * 0.5 * (0.3 + uBands[4]);
