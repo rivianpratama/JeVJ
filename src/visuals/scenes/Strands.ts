@@ -19,6 +19,16 @@
  * thickness from the bass, so a still, tense passage is a curtain of thin
  * ribbons leaning hard in one direction, and a low, calm one is a slack heavy
  * fall.
+ *
+ * Since v2 the ribbons are *wavy* and they are never still. A traveling sine
+ * runs down each one — amplitude off the low-mid band, wavelength off tension,
+ * speed off arousal — over a slow horizontal drift signed by the strand's own
+ * hash, so the curtain shears apart instead of swaying as one sheet. And a
+ * narrow band of light sweeps the length of every ribbon once a beat, which is
+ * the one thing in this layer locked to the music rather than merely lit by it.
+ * `strandOffsetX` in ../smokeMath.ts is the same arithmetic in TypeScript, and
+ * it is tested for the property the look depends on: there is no mood at which
+ * the displacement's time derivative is zero.
  */
 
 import * as THREE from 'three';
@@ -95,6 +105,13 @@ export class Strands implements Scene {
       u['uThickness']!.value = p.strandThickness;
       u['uDownbeat']!.value = fast.downbeatPulse;
       u['uExposure']!.value = p.exposure;
+      u['uWaveAmp']!.value = p.strandWaveAmp;
+      u['uWaveFreq']!.value = p.strandWaveFreq;
+      u['uWaveSpeed']!.value = p.strandWaveSpeed;
+      // The pulse that runs down every ribbon once a beat, and the swell a
+      // vocal entry puts under the whole curtain.
+      u['uBeatPhase']!.value = fast.beatPhase;
+      u['uGlow']!.value = p.strandGlow;
       // The layer's own weight, which is how many ribbons it draws. The
       // Composer scales the finished texture by the same number; this is the
       // *other* half of the fade, and it is what keeps a quiet mix from being a
@@ -188,6 +205,11 @@ function ribbonMaterial(widthScale: number, alphaScale: number): THREE.ShaderMat
       uWeight: { value: 0 },
       uWidthScale: { value: widthScale },
       uAlphaScale: { value: alphaScale },
+      uWaveAmp: { value: 0.12 },
+      uWaveFreq: { value: 2.5 },
+      uWaveSpeed: { value: 1.2 },
+      uBeatPhase: { value: 0 },
+      uGlow: { value: 0 },
     },
   });
 }

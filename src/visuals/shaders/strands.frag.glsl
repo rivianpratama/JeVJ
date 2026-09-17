@@ -27,6 +27,10 @@ uniform float uExposure;
 uniform float uWeight;
 /** 1 for the ribbon itself, 0.15 for the wide halo drawn around it. */
 uniform float uAlphaScale;
+/** Where in the beat we are: what drives the pulse down the ribbon. */
+uniform float uBeatPhase;
+/** How hard a `vocal_entry` flourish is burning the silk, 0..1. */
+uniform float uGlow;
 
 /** How much of each end is fade. */
 const float FADE = 0.14;
@@ -51,6 +55,21 @@ const float BASE_EXPOSURE = 1.25;
 const float VIS_RAMP = 0.45;
 /** How hard the light is pulled into the ribbon's centreline. */
 const float CORE_POWER = 2.2;
+/**
+ * The beat pulse: a bright band that sweeps the length of every ribbon once a
+ * beat, from the top to the bottom.
+ *
+ * It is the one thing in this layer that is *locked* to the music rather than
+ * merely lit by it, and it is what turns a curtain into an instrument: the
+ * strands hang still and a wave of light runs down them on the beat. The width
+ * is narrow on purpose — `exp(−d²/0.02)` is about a fifth of a ribbon — because
+ * a wide pulse is just the whole curtain flashing, which the downbeat lift
+ * already does.
+ */
+const float PULSE_GAIN = 1.5;
+const float PULSE_WIDTH = 0.02;
+/** How much brighter a vocal-entry flourish burns the silk. */
+const float GLOW_LIFT = 0.8;
 /**
  * One ribbon's emission at full core.
  *
@@ -102,6 +121,14 @@ void main() {
   if (mod(vId, 9.0) < 0.5) col = uAccent;
 
   col *= 1.0 + DOWNBEAT_LIFT * uDownbeat;
+  col *= 1.0 + GLOW_LIFT * uGlow;
+
+  // The pulse. `vT` runs 0..1 down the ribbon and the strand spans y ∈ [−2, 2],
+  // so the sweep is written in the same units the vertex shader displaces in.
+  float y = mix(-2.0, 2.0, vT);
+  float yPulse = mix(-2.0, 2.0, uBeatPhase);
+  float d = y - yPulse;
+  col *= 1.0 + PULSE_GAIN * exp(-(d * d) / PULSE_WIDTH);
 
   gl_FragColor = vec4(col * uExposure * BASE_EXPOSURE * EMISSION, fade * vis * core * uAlphaScale);
 }
