@@ -1,6 +1,6 @@
 # JeVJ Visualizer Implementation Plan
 
-**Status:** implemented (Tasks 1–12 on `feat/jevj-v1`); see `.superpowers/sdd/progress.md` for the ledger of departures.
+**Status:** superseded by `2026-09-17-jevj-v2-download-pipeline.md`. Tasks 1–12 are implemented on `feat/jevj-v1` and their modules are reused; the live tab capture, the YouTube iframe and the Vercel deployment this plan describes were removed in v2. See `.superpowers/sdd/progress.md` for the ledger of departures.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

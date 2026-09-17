@@ -1,115 +1,160 @@
 # JeVJ
 
-JeVJ is a browser audio visualizer: it listens to what is playing, describes the
-music to [TypeSafe](https://typesafe.ai)'s Jev model as a compact typed
-snapshot — tempo, key, dynamics, spectral shape, build cues — and turns the
-judgment that comes back (valence, arousal, genre, section, whether a drop is
-about to land) into three.js visuals that move with the track.
+JeVJ turns a track into a picture. Paste a YouTube link; the app downloads the
+audio, sweeps it with a music-theory-aware DSP pass, asks
+[TypeSafe](https://typesafe.ai)'s **Jev** model what each passage *feels* like
+and what each seam *is*, writes the answers onto a cue timeline stamped in track
+seconds, and only then lets a note of it play. What you watch is luminous smoke
+rolling around a small square of video, with the whole transcript of the asking
+scrolling past on the walls.
+
+It is a local app. It downloads video with `yt-dlp` and keeps gigabytes of it in
+`cache/`, which is a thing that runs on your own machine.
 
 ## Run it
 
+You need **Node 22+** and **[yt-dlp](https://github.com/yt-dlp/yt-dlp)** on your
+PATH. `ffmpeg` is optional — without it yt-dlp takes whatever single stream
+already has the audio in it, which is fine for everything here.
+
 ```sh
-cp .env.example .env   # then put your TypeSafe key in TYPESAFE_API_KEY
+cp .env.example .env    # put your TypeSafe key in TYPESAFE_API_KEY
 npm install
-npm run dev            # http://localhost:5173
+npm run dev             # http://localhost:5173
 ```
 
-The key is read server-side by the dev middleware and by the Vercel function; it
-never reaches the client bundle. The browser only ever calls `POST /api/mood`.
+yt-dlp moves fast and YouTube moves faster; a build more than a few months old
+will fail on some links with nothing more helpful than a signature error. If the
+one on your PATH is old, point `YT_DLP` at a current one rather than fighting
+your package manager:
 
-`npm test` runs the unit suite (vitest, Node environment); `npm run build`
-type-checks and builds; `npm run smoke` makes one real call per question set and
-prints what each costs.
+```sh
+python3 -m venv .ytvenv && .ytvenv/bin/pip install -U yt-dlp
+echo 'YT_DLP=.ytvenv/bin/yt-dlp' >> .env     # or an absolute path
+```
 
-### Chrome or Edge, for a YouTube link
+`npm run build && npm start` serves the built app from the same Node process on
+the same port, with the same routes. `npm test` runs the unit suite (vitest,
+Node environment, no GPU); `npm run smoke` makes one real Jev call per question
+set and prints what each costs.
 
-Live analysis of a YouTube video works by sharing this very tab's audio through
-`getDisplayMedia`, which only Chromium browsers offer. Elsewhere the page says
-so and everything else still works: the video plays, and a local audio file
-dropped anywhere on the page is analysed end to end. Paste a link, press play,
-and tick **Also share tab audio** in the share picker.
+The `TYPESAFE_API_KEY` is read by the server only — the dev middleware and the
+Node server both hold it, and the browser only ever calls `POST /api/mood` and
+`POST /api/transition`. `grep -ri typesafe dist/` must come back empty.
 
-Keys: **space** play/pause, **H** the diagnostics overlay, **F** fullscreen
-(the interface fades out and comes back under the pointer).
+**Personal use.** Downloading from YouTube is against its Terms of Service
+unless the video offers a download or is in the public domain. This is a tool
+for looking at music you already have the right to listen to, on your own
+machine; nothing here uploads, redistributes or keeps anything but a local
+cache. What you point it at is your call and your responsibility.
+
+Keys: **space** play/pause, **H** the diagnostics overlay, **F** fullscreen.
+Changing track is a reload — there is one media element for the life of the
+page, and the whole analysis is about the track that is in it.
 
 ## How it works
 
-**The fast layer** runs on every display frame, in the browser, and never asks
-anyone anything. An `AnalyserNode` hands `src/analysis/**` a 4096-point spectrum;
-out of it come the band energies, the onset envelope, a tempo and a beat grid, a
-Krumhansl–Kessler key estimate, loudness class and dynamic range, spectral
-centroid and flatness, a speech likeness, and the build cues (how much louder the
-last four and eight bars got, how much denser). All of it is pure — no DOM, no
-Web Audio — so the same code sweeps a dropped file offline before a sample of it
-plays. When the page is hidden the analysis moves off display frames onto a 33 ms
-timer, because the music does not stop when the user looks away.
+### The whole track, before any of it plays
 
-**The slow layer** is Jev. Every 2.5–8 seconds — sooner when the music changes,
-sooner still just before a phrase boundary — `src/analysis/summarizer.ts` packs
-the current state into about 150 tokens of JSON and asks for a judgment: two
-handfuls of Score, Noul and Choice questions about valence, arousal, tension,
-warmth, how synthetic and how large it sounds, whether it is speech, which genre,
-which part of the form, how abstract visuals should move, and, into a build,
-whether a drop is coming and how hard it will hit. The answers are decoded into a
-`MoodVector` and slewed rather than assigned, so the picture never flinches when
-the model speaks.
+A link goes to `POST /api/resolve`, which starts a yt-dlp job and streams its
+progress; the finished file is served back out of `cache/` and the browser
+decodes it. A dropped audio file skips straight to the decode. From there both
+paths are one pipeline (`src/app/trackFlow.ts`), and the caption counts it out:
+download 0–40%, features 40–60%, pass 1 60–85%, pass 2 85–100%, then `ready`.
 
-**The director** (`src/visuals/director.ts`) is the only place that decides
-anything about the look. It turns the mood and the current frame into one
-`RenderParams`: how the five scenes — ink feedback, particle cloud, silk strands,
-relief terrain, breath — are mixed, the palette, and every post-chain number.
-Two rules shape all of it. *Slew, don't cut*: every slow scalar moves toward its
-target with a 0.8 s time constant, because Jev's answers arrive as steps. *Never
-strobe*: exposure may not reverse direction more than three times a second, and
-`prefers-reduced-motion` halves the motion and puts the kaleidoscope away.
+**The sweep** (`src/analysis/**`, driven by `src/timeline/offlineAnalyzer.ts`)
+is the same pure DSP the live layer used to run, over the decoded samples at
+whatever speed the CPU manages. Out of it come band energies, an onset envelope,
+a tempo and a beat grid, a Krumhansl–Kessler key estimate, loudness class and
+dynamic range, spectral centroid and flatness, a speech likeness, a sung-voice
+and a harshness reading, and the build cues. It also cuts the track into
+sections and proposes *candidate moments* — the transients, the holes, the
+loudness jumps — which is where pass 2 starts.
 
-### How a drop lands on the beat
+### Two passes, and what each is for
 
-Jev's prediction is a count of beats, not an instant, so `timeline/jevWriter.ts`
-resolves it against the beat grid — the predicted downbeat nearest the count, or
-the downbeat that starts the next 16-bar phrase if that is within two bars of it
-— and writes an anticipation ramp from now to that target onto the 0.2 s cue
-timeline. The local drop detector watches the audio for the transient itself and
-re-anchors the impact to the exact frame it arrives on, within one analyser hop.
-Everything on the timeline is stamped in analysis time and read back at
-`now + latency` (`src/app/cueReader.ts`), so what the visuals do is what the
-listener is hearing rather than what the analysis has reached; the HUD's trim
-slider is there for whatever the latency estimate misses.
+The difference is the point: **a mood cross-fades and a moment does not.**
 
-## What a call costs
+**Pass 1 — what does this passage feel like.** One call per section.
+`src/analysis/summarizer.ts` packs that section's state into about 150 tokens of
+JSON and asks a set of Score, Noul and Choice questions: valence, arousal,
+tension, warmth, how synthetic and how large it sounds, whether it is speech,
+which genre, which part of the form, how abstract visuals should move. The
+answers are decoded into a `MoodVector` and written onto the timeline as a mood
+cue at the section's start. The renderer slews toward them, so nothing ever
+snaps.
 
-The payload is 143 estimated tokens for the reference example and 153 in the
-worst case, against a 160-token budget a test enforces. The questions are far
-more expensive than the payload, so a call only asks what is worth asking: ten
-core questions every time, four Nouls on alternate calls, and the four
-predictive ones only into a build. Measured against the live model on the same
-payload:
+**Pass 2 — what *is* this moment.** The candidates the sweep found, four to a
+request, each described by the bars either side of it: how far the loudness
+jumped, how long the hole was, whether a voice arrives, whether it turns harsh.
+Jev names the kind — `drop`, `breakdown`, `break_silence`, `scream_peak`,
+`vocal_entry`, `quiet_fall`, `build_start`, or `none` — and says how hard it
+hits. A batch that fails is asked once more after two seconds; a batch that
+fails twice is written off, the transcript says so, and the bar still reaches
+100%.
 
-| question set | questions | tokens | latency |
-| --- | --- | --- | --- |
-| everything | 18 | 3380 | 842 ms |
-| core + Nouls (every other call) | 14 | 2750 | 308 ms |
-| core only (the ordinary call) | 10 | 2456 | 718 ms |
+### The cue timeline
 
-Steady state, away from a build, is therefore about 2.6k tokens a call at one
-call every 2.5–8 seconds. A partial answer is not a partial mood: whatever a
-call did not ask is filled in from the previous vector, except the predictions,
-which are withdrawn rather than carried.
+Everything both passes said goes onto one timeline (`src/timeline/timeline.ts`)
+in **track seconds**, at a 0.2 s step, from named sources that can be replaced
+independently. A transition cue carries its kind, its exact detector timestamp —
+not the model's estimate of it — and an anticipation ramp that starts two bars
+early. At play and on every seek the whole thing is mapped onto the audio clock
+in one shift (`trackFlow.place`), and the renderer reads it at `now + latency`
+so what the picture does is what the listener is *hearing*. The HUD's trim
+slider covers whatever the latency estimate misses, a bluetooth speaker mostly.
 
-## Deploy
+Because the timeline is complete before playback, a drop lands on the sample it
+lands on. Nothing is predicted live and nothing has to be caught up with.
 
-Deploys to Vercel as a Vite app with serverless functions under `api/`:
+### The director
 
-```sh
-vercel link
-vercel env add TYPESAFE_API_KEY production   # and preview, if you use it
-vercel deploy --prod
-```
+`src/visuals/director.ts` is the only place that decides anything about the
+look. Mood plus this frame's features go in; one `RenderParams` comes out — how
+the five scenes (smoke, particle cloud, silk strands, relief terrain, breath)
+are mixed, the palette, and every post-chain number. Two rules shape all of it.
+*Slew, don't cut*: every slow scalar moves toward its target with a 0.8 s time
+constant. *Never strobe*: exposure may not reverse direction more than three
+times a second, and `prefers-reduced-motion` halves the motion and puts the
+kaleidoscope away.
 
-There is no client-side fallback: without the environment variable the function
-answers `mood service is not configured` and the visuals run on their idle mood.
-`npm run build` must be clean and `grep -ri typesafe dist/` must return nothing
-before a deploy — the key, and the SDK, are server-side only.
+The smoke itself (`src/visuals/scenes/Smoke.ts` and `shaders/smoke_*.glsl`) is a
+feedback loop: advect along a curl field, fade, smear *along the flow*, then
+inject this frame's light on an annulus around the card. Its rotation is a
+reaction rather than a rate — `0.22·arousal²·beatConf·regular·(1 − spoken)`, plus
+a drift of 0.004 rad/s so that a podcast's picture is still alive and is not
+spinning.
+
+### The transcript
+
+Every request and every response is kept with the track time it is about
+(`TrackAnalysis.log`) and printed down the two sides of the screen: questions on
+the left, travelling bottom to top, answers on the right, travelling top to
+bottom, both paced so the entry level with your eye is the one about the passage
+you are hearing (`src/ui/jsonColumns.ts`). Seeking jumps them; pausing holds
+them.
+
+## What a track costs
+
+Measured end to end through the app, with the analysis cache cleared. Pass 1 is
+one call per section and pass 2 is one call per four candidate moments, so the
+bill scales with how *eventful* a track is rather than with how long it is.
+
+| track | length | calls | input tokens | output tokens | elapsed |
+| --- | --- | --- | --- | --- | --- |
+| Satie, *Gymnopédie No. 1* | 4:05 | 43 | 167,893 | 24,703 | ~34 s |
+| Avicii, *Levels* | 3:18 | 35 | 143,395 | 20,047 | ~25 s |
+| Travis Scott, *SICKO MODE* | 5:14 | 50 | 189,136 | 28,586 | ~27 s |
+| Slipknot, *Duality* | 3:35 | 34 | 143,001 | 19,778 | ≤ 40 s |
+| Brian Eno, *An Ending (Ascent)* | 4:21 | 42 | 165,457 | 24,211 | ≤ 40 s |
+| Richard St. John, TED talk | 3:46 | 43 | 168,680 | 24,729 | ≤ 40 s |
+
+Around **4,000 input and 570 output tokens a call**, and **150k–190k input and
+20k–29k output for a four-minute track**, download included in the elapsed time.
+A second play of the same link is served from `cache/` and costs nothing.
+
+`docs/tuning-notes.md` has the rest of that pass: what each track's transitions
+came back as, whether the ear agrees, and what the picture did.
 
 ## Credits
 

@@ -1,5 +1,7 @@
 # JeVJ v2 — Download-first pipeline, two-pass Jev, TouchDesigner smoke
 
+**Status:** implemented (Tasks 13–18 on `feat/jevj-v1`); the scrolling JSON columns of Task 16 shipped in reduced form with Task 18. See `.superpowers/sdd/task-18-report.md` for the final measurements and `docs/tuning-notes.md` for the real-track pass.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Tasks 13–18 continue the numbering of `2026-09-17-jevj-visualizer.md`, whose modules they reuse.
 
 **Goal:** Paste a YouTube link → a local Node server downloads it with yt-dlp → the browser analyzes the whole track, runs Jev twice (segment moods, then transition/change-point judgments) and builds the complete cue timeline → playback of the downloaded video inside a small, heavily feathered square card, with a dramatic, full-screen, TouchDesigner-grade smoke field, wavy light strands, particles, and two scrolling JSON columns showing exactly what Jev was asked and answered, paced to the track.
