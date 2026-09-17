@@ -1,19 +1,21 @@
 /**
- * Wiring only: the UI pieces, the player and the audio graph know nothing
- * about each other, so this file is the one place where "paste a link" becomes
- * "a video is cued" and "press play" becomes "frames of features".
+ * Wiring only: the UI pieces, the player, the source switch and the analysis
+ * loop know nothing about each other, so this file is the one place where
+ * "paste a link" becomes "a video is cued" and "press play" becomes "frames of
+ * features". Everything it knows about the music it reads from
+ * `AnalysisLoop.latest()`; everything it knows about plumbing it asks
+ * `SourceSwitch` to do.
  */
 
 import './ui/styles.css';
 
-import { FeatureExtractor } from './analysis/features';
-import { createAudioGraph, type AudioGraph } from './source/audioGraph';
-import { createFileSource } from './source/fileSource';
+import { AnalysisLoop } from './app/analysisLoop';
+import { hudRows } from './app/hudRows';
+import { createSourceSwitch } from './app/sources';
 import { loadTrim, saveTrim } from './source/latency';
-import { captureTabAudio, isTabCaptureSupported } from './source/tabCapture';
+import { isTabCaptureSupported } from './source/tabCapture';
 import { parseYouTubeUrl } from './source/urlParse';
 import { createYouTubePlayer } from './source/youtubePlayer';
-import type { FrameFeatures } from './shared/types';
 import { createCard } from './ui/card';
 import { createControls } from './ui/controls';
 import { createHud } from './ui/hud';
@@ -30,6 +32,7 @@ if (!root) throw new Error('JeVJ: #ui is missing from the document');
 
 const card = createCard(root);
 const player = createYouTubePlayer(card.playerMount);
+const loop = new AnalysisLoop();
 
 /** Offset applied when analyser time is converted to cue time (task 5b). */
 let latencyTrimMs = loadTrim();
@@ -41,97 +44,52 @@ hud.update({ latencyTrimMs });
 
 let mode: 'video' | 'file' = 'video';
 let videoLoaded = false;
-let graph: AudioGraph | null = null;
-let extractor: FeatureExtractor | null = null;
-let capture: { stop(): void } | null = null;
-let fileEl: HTMLAudioElement | null = null;
+
+const sources = createSourceSwitch({
+  onGraph: (graph) => {
+    loop.start(graph);
+    setInterval(renderHud, HUD_INTERVAL_MS);
+  },
+  onTransport: (playing) => controls.setPlaying(playing),
+  onCaptureEnded: () => toast('tab sharing stopped', 'info'),
+});
 
 const controls = createControls(root, {
   onSubmitUrl: (url) => void submitUrl(url),
   onPlay: () => {
     if (mode === 'file') {
-      ensureGraph();
-      void fileEl?.play();
+      sources.ensureGraph();
+      void sources.fileEl()?.play();
       return;
     }
     player.play();
     if (videoLoaded) void startCapture();
   },
   onPause: () => {
-    if (mode === 'file') fileEl?.pause();
+    if (mode === 'file') sources.fileEl()?.pause();
     else player.pause();
   },
-  onFile: (file) => void openFile(file),
+  onFile: (f) => void openFile(f),
 });
 
-// ---- audio graph ---------------------------------------------------------
-
-/**
- * Built on first use, which is always inside a click: a context created at
- * load time starts suspended and its analyser would only ever see silence.
- */
-function ensureGraph(): AudioGraph {
-  if (!graph) {
-    graph = createAudioGraph();
-    extractor = new FeatureExtractor({ sampleRate: graph.ctx.sampleRate, fftSize: graph.analyser.fftSize });
-    requestAnimationFrame(tick);
-  }
-  void graph.ctx.resume();
-  return graph;
+function renderHud(): void {
+  const snap = loop.latest();
+  if (snap) hud.update(hudRows(snap));
 }
 
+// ---- sources -------------------------------------------------------------
+
 async function startCapture(): Promise<void> {
-  if (capture) return;
   if (!isTabCaptureSupported()) {
     showBanner(NO_CAPTURE);
     return;
   }
-
-  const g = ensureGraph();
   try {
-    const tab = await captureTabAudio(g.ctx);
-    // Analyser only: the iframe is already playing this to the speakers.
-    g.connectSource(tab.node, false);
-    tab.onEnded(() => {
-      capture = null;
-      g.disconnectSource();
-      toast('tab sharing stopped', 'info');
-    });
-    capture = tab;
+    await sources.captureTab();
   } catch (err) {
     toast(err instanceof Error ? err.message : 'could not capture tab audio', 'error');
   }
 }
-
-let lastHudAt = 0;
-
-function tick(now: number): void {
-  requestAnimationFrame(tick);
-  if (!graph || !extractor) return;
-
-  // Every frame, even when the HUD is throttled: flux and the band levels are
-  // sequential, so a skipped frame is a hole in the analysis.
-  const frame = graph.readFrame();
-  const features = extractor.extract(frame.mags, frame.time, frame.t);
-
-  if (now - lastHudAt < HUD_INTERVAL_MS) return;
-  lastHudAt = now;
-  hud.update({ mood: hudRows(features) });
-}
-
-/** rms, centroid and eight little bar graphs, as strings so the HUD prints them verbatim. */
-function hudRows(f: FrameFeatures): Record<string, string> {
-  const rows: Record<string, string> = {
-    rms: f.rms.toFixed(3),
-    centroid: `${Math.round(f.centroid)} Hz`,
-  };
-  for (let i = 0; i < f.bands.length; i++) {
-    rows[`b${i}`] = '█'.repeat(Math.round((f.bands[i] ?? 0) * 8));
-  }
-  return rows;
-}
-
-// ---- sources -------------------------------------------------------------
 
 async function submitUrl(url: string): Promise<void> {
   const parsed = parseYouTubeUrl(url);
@@ -140,6 +98,9 @@ async function submitUrl(url: string): Promise<void> {
     return;
   }
 
+  // The video is the source now; a file left playing would keep the transport
+  // lit and keep feeding the analyser underneath it.
+  sources.dropFile();
   mode = 'video';
   controls.setBusy(true);
   card.setMode('video');
@@ -158,30 +119,15 @@ async function submitUrl(url: string): Promise<void> {
   }
 }
 
-async function openFile(file: File): Promise<void> {
+async function openFile(f: File): Promise<void> {
   mode = 'file';
   card.setMode('file');
-  card.setLabel(file.name);
+  card.setLabel(f.name);
   player.pause();
   controls.setBusy(true);
 
-  const g = ensureGraph();
-  capture?.stop();
-  capture = null;
-
   try {
-    const source = await createFileSource(g.ctx, file);
-    if (fileEl) {
-      fileEl.pause();
-      URL.revokeObjectURL(fileEl.src);
-    }
-    fileEl = source.el;
-    for (const event of ['play', 'pause', 'ended']) {
-      source.el.addEventListener(event, () => controls.setPlaying(!source.el.paused));
-    }
-    // Both: nothing else is playing this file.
-    g.connectSource(source.node, true);
-    await source.el.play();
+    await sources.playFile(f);
   } catch (err) {
     toast(err instanceof Error ? err.message : 'could not play that file', 'error');
   } finally {

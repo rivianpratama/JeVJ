@@ -178,6 +178,17 @@ describe('FeatureExtractor', () => {
     expect(last.bands[1] ?? 0).toBeLessThanOrEqual(1);
   });
 
+  it('does not let a band lit only by window leakage normalise to full level', () => {
+    const mags = fftMagnitudes(sine(110)); // band 1 is 60-130 Hz; band 2 is 130-250
+    const fx = extractor();
+
+    let last = fx.extract(mags, null, 0);
+    for (let i = 1; i < 60; i++) last = fx.extract(mags, null, i / 60);
+
+    expect(last.bands[1] ?? 0).toBeGreaterThanOrEqual(0.8);
+    expect(last.bands[2] ?? 1).toBeLessThanOrEqual(0.3);
+  });
+
   it('counts zero crossings per second from the time frame', () => {
     const time = sine(100);
     const f = extractor().extract(fftMagnitudes(time), time, 0);

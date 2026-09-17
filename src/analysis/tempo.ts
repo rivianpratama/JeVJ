@@ -106,11 +106,11 @@ export function estimateTempo(envelope100Hz: Float32Array): TempoEstimate {
 
   const lag = applyOctaveRule(scores, best);
   const bpm = bpmOf(lag);
-  const mean_ = count > 0 ? total / count : 0;
   // A peak standing over a zero or negative average is as sharp as it gets;
   // dividing by that average would only turn a clear answer into infinity.
+  const average = count > 0 ? total / count : 0;
   const peak = scores[best]!;
-  const confidence = peak <= 0 ? 0 : mean_ <= 0 ? 1 : clamp01(peak / mean_ / CONFIDENCE_SCALE);
+  const confidence = peak <= 0 ? 0 : average <= 0 ? 1 : clamp01(peak / average / CONFIDENCE_SCALE);
 
   return { bpm, period: 60 / bpm, confidence, marking: tempoMarking(bpm) };
 }

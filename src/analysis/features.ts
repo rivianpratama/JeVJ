@@ -20,6 +20,17 @@ const BAND_COUNT = BAND_EDGES_HZ.length - 1;
 const PEAK_DECAY = 0.995;
 /** Keeps a silent band from normalising its own noise floor up to full scale. */
 const PEAK_FLOOR = 1e-4;
+/**
+ * And keeps a *quiet* band from doing the same. A 110 Hz sine leaks a little
+ * energy into 130-250 Hz through the window's skirts; against its own peak
+ * that trickle is "full level" and the bar lights up as if a bass note were
+ * playing there. No band may claim a peak smaller than this share of the
+ * loudest band's, so leakage stays down where it belongs. 5% (-26 dB) rather
+ * than the 3% the review suggested: a Hann main lobe is four bins wide, so a
+ * tone near a band edge spills real energy into its neighbour, and 3% still
+ * read that spill as half level.
+ */
+const PEAK_FLOOR_RATIO = 0.05;
 /** Fraction of the peak treated as floor, so hiss does not light the bar. */
 const BAND_GATE = 0.05;
 /** >1 makes the bars sit lower and punch harder. */
@@ -165,9 +176,19 @@ export class FeatureExtractor {
    */
   private adapt(raw: Float32Array): Float32Array {
     const out = new Float32Array(BAND_COUNT);
+
+    // Two passes: each band's own peak first, then the floor every band is
+    // held to, which depends on the loudest of them.
+    let loudest = 0;
+    for (let b = 0; b < BAND_COUNT; b++) {
+      this.peaks[b] = Math.max(raw[b]!, this.peaks[b]! * PEAK_DECAY);
+      loudest = Math.max(loudest, this.peaks[b]!);
+    }
+    const floor = Math.max(PEAK_FLOOR, PEAK_FLOOR_RATIO * loudest);
+
     for (let b = 0; b < BAND_COUNT; b++) {
       const value = raw[b]!;
-      const peak = Math.max(value, this.peaks[b]! * PEAK_DECAY, PEAK_FLOOR);
+      const peak = Math.max(this.peaks[b]!, floor);
       this.peaks[b] = peak;
 
       const norm = clamp((value - BAND_GATE * peak) / ((1 - BAND_GATE) * peak), 0, 1);
