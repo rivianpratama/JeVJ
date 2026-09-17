@@ -56,6 +56,8 @@ export interface FrameFeatures {
   zcr: number; // zero crossings per second
   chroma: Float32Array; // 12, sums to 1 (all zeros if silent)
   sub: number; // share of energy in 20-60 Hz, 0..1
+  pitch: number; // 0..1 harmonic-sum salience of the best f0 in 100-1000 Hz
+  formant: number; // 0..1 share of 200 Hz-8 kHz energy sitting in 1-3 kHz
 }
 
 /** The compact, human-readable summary of recent audio that Jev is asked about. */
@@ -82,6 +84,8 @@ export interface MoodInput {
   sub: number;
   bands: number[]; // 8 ints 0..9
   speech: number;
+  vocal: number; // 0..1 a sung voice is present
+  harsh: number; // 0..1 abrasive, distorted or screamed
   onsetsPerSec: number;
   slope4: number;
   slope8: number;
@@ -118,7 +122,66 @@ export interface MoodVector {
   confidence: number;
 }
 
-export type CueSource = 'jev' | 'grid' | 'detector' | 'offline';
+/**
+ * The moments pass 2 asks Jev to name.
+ *
+ * Local DSP finds *where* something happened; this is the vocabulary for
+ * *what*. Every kind is a thing a listener would describe in a sentence, and
+ * the order is the order the question's criteria are written in.
+ */
+export const TRANSITION_KINDS = [
+  'drop',
+  'build_start',
+  'breakdown',
+  'break_silence',
+  'vocal_entry',
+  'scream_peak',
+  'quiet_fall',
+  'tempo_change',
+  'key_change',
+  'none',
+] as const;
+export type TransitionKind = (typeof TRANSITION_KINDS)[number];
+
+/**
+ * One candidate moment, as Jev is shown it: the music either side of it and
+ * the handful of measurements that describe the seam itself.
+ */
+export interface TransitionInput {
+  /** When it happens, `m:ss`. */
+  at: string;
+  /** The four bars before it. */
+  before: MoodInput;
+  /** The four bars after it. */
+  after: MoodInput;
+  /** Loudness change across the moment, in dB. */
+  jumpDb: number;
+  /** Seconds of near-silence immediately before it. */
+  gapBeforeSec: number;
+  bpmBefore: number;
+  bpmAfter: number;
+  keyChanged: boolean;
+  /** How much more (or less) of a voice there is after it, -1..1. */
+  vocalDelta: number;
+  /** How much more (or less) abrasive it is after it, -1..1. */
+  harshDelta: number;
+}
+
+/** What Jev says one candidate moment is, and how hard it lands. */
+export interface TransitionVerdict {
+  kind: TransitionKind;
+  kindP: Record<TransitionKind, number>;
+  /** 0..1 how hard it hits. */
+  intensity: number;
+  /** Probability a listener feels a jolt at it. */
+  dramatic: number;
+  /** 0 tension-building .. 1 tension-releasing. */
+  release: number;
+  confidence: number;
+}
+
+export const CUE_SOURCES = ['jev', 'grid', 'detector', 'offline'] as const;
+export type CueSource = (typeof CUE_SOURCES)[number];
 
 /** A scheduled instruction for the visuals at audio-clock time `t`. */
 export interface Cue {
@@ -130,6 +193,10 @@ export interface Cue {
   beat?: boolean;
   downbeat?: boolean;
   build?: number; // build 0..1 anticipation ramp
+  /** Fire a one-shot flourish here: a moment Jev called dramatic. */
+  flourish?: boolean;
+  /** Which transition wrote this cue, when one did. */
+  transition?: TransitionKind;
 }
 
 export interface Timeline {
@@ -141,4 +208,51 @@ export interface MoodResponse {
   mood: MoodVector;
   usage: { input_tokens: number; output_tokens: number };
   latencyMs: number;
+}
+
+export interface TransitionResponse {
+  /** One verdict per candidate sent, in the order they were sent. */
+  verdicts: TransitionVerdict[];
+  usage: { input_tokens: number; output_tokens: number };
+  latencyMs: number;
+}
+
+/** One segment of the track, and what Jev said about it. */
+export interface AnalyzedSegment {
+  start: number;
+  end: number;
+  input: MoodInput;
+  mood: MoodVector;
+}
+
+/** One candidate moment, and what Jev said it was. */
+export interface AnalyzedTransition {
+  /** Track seconds. `input.at` is the same instant, written for the model. */
+  at: number;
+  input: TransitionInput;
+  verdict: TransitionVerdict;
+}
+
+/**
+ * Every request and response of one analysis, with the track time it is about.
+ *
+ * Kept as text rather than as objects because this is a transcript: it feeds
+ * the scrolling columns, which print it, and a cache, which stores it. Nothing
+ * downstream re-decides anything from it.
+ */
+export interface AnalysisLogEntry {
+  t: number;
+  dir: 'req' | 'res';
+  json: string;
+}
+
+/** The whole pre-analysis of one track: what to draw, and how we got there. */
+export interface TrackAnalysis {
+  videoId?: string;
+  title: string;
+  durationSec: number;
+  segments: AnalyzedSegment[];
+  transitions: AnalyzedTransition[];
+  cues: Cue[];
+  log: AnalysisLogEntry[];
 }

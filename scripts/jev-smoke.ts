@@ -42,6 +42,8 @@ const PAYLOAD: MoodInput = {
   sub: 0.8,
   bands: [9, 8, 6, 5, 5, 6, 7, 5],
   speech: 0.05,
+  vocal: 0.2,
+  harsh: 0.45,
   onsetsPerSec: 4.2,
   slope4: 3.5,
   slope8: 6.1,

@@ -25,6 +25,7 @@ import { OnsetDetector } from './onset';
 import { RhythmTracker } from './rhythm';
 import { SpeechDetector } from './speech';
 import { TimbreTracker, consonance } from './timbre';
+import { harshness, VocalDetector } from './vocal';
 import { estimateTempo, type TempoEstimate } from './tempo';
 import type { Attack, DynClass, FrameFeatures, Meter, Trend } from '../shared/types';
 
@@ -94,6 +95,10 @@ export interface AnalysisSnapshot {
   timbre: TimbreReading;
   /** 0..1: how much this sounds like talking rather than music. */
   speech: number;
+  /** 0..1: how much of a singing voice is present. */
+  vocal: number;
+  /** 0..1: how abrasive the sound is right now. */
+  harsh: number;
   /**
    * The last slam or hole the detector called, or null before the first one.
    *
@@ -113,6 +118,7 @@ export class AnalysisPipeline {
   private dynamics = new DynamicsTracker();
   private timbre = new TimbreTracker();
   private speech = new SpeechDetector();
+  private vocal = new VocalDetector();
   private drops = new DropDetector();
 
   private tempo: TempoEstimate | null = null;
@@ -184,6 +190,7 @@ export class AnalysisPipeline {
     this.timbre.push(features, onset, dt);
     this.dynamics.push(features.db, features.t);
     this.speech.push(features.rms, features.t, features);
+    this.vocal.push(features, dt);
 
     // The rhythm tracker counts beats from phase wraps, so it has to see every
     // frame, not only the ones an onset landed on — but those wraps are only
@@ -208,6 +215,7 @@ export class AnalysisPipeline {
     // stale `barLength` — and a stale `barSec` — in this snapshot.
     const grid = this.grid.state();
     const barSec = grid.period * grid.barLength;
+    const attack = this.timbre.attack();
     this.snapshot = {
       features,
       onset,
@@ -236,7 +244,7 @@ export class AnalysisPipeline {
         consonance: consonance(features.chroma),
         bright: this.timbre.brightness(),
         noise: this.timbre.noisiness(),
-        attack: this.timbre.attack(),
+        attack,
         sub: this.timbre.subWeight(),
         centroidSlope: this.timbre.centroidSlope(),
       },
@@ -244,6 +252,15 @@ export class AnalysisPipeline {
       // sit in the syllabic band, and the detector can only take them out of
       // the measurement if it is told where they are.
       speech: this.speech.score(grid.confidence, grid.period > 0 ? 1 / grid.period : 0),
+      vocal: this.vocal.score(),
+      // Read off the trackers already in this snapshot, so `harsh` describes
+      // the same instant as the brightness and the loudness it is made of.
+      harsh: harshness({
+        bright: this.timbre.brightness(),
+        flatness: this.timbre.noisiness(),
+        loudRel: this.dynamics.position(),
+        attack,
+      }),
       drop: this.drop,
     };
     return this.snapshot;

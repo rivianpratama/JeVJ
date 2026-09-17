@@ -363,6 +363,305 @@ export function amNoise(rateHz: number, seconds: number, sr = 44100, centerHz = 
   return normalisePeak(out, TONE_PEAK);
 }
 
+/** How many harmonics a sung vowel carries, as the brief specifies. */
+const VOWEL_PARTIALS = 12;
+/** The two formants a mid vowel sits on, and how wide each resonance is. */
+const FORMANT_1_HZ = 700;
+const FORMANT_2_HZ = 1200;
+const FORMANT_BANDWIDTH_HZ = 140;
+/** How much each formant lifts the partials inside it, over the 1/k baseline. */
+const FORMANT_GAIN = 9;
+/** A singer's vibrato: five a second, half a percent either way. */
+const VIBRATO_HZ = 5;
+const VIBRATO_DEPTH = 0.005;
+
+/**
+ * `seconds` of a sung vowel on `f0Hz`: twelve harmonics at 1/k, lifted where
+ * they fall inside a formant, with a slight vibrato.
+ *
+ * This is the signal the `vocal` feature exists to find, and every part of it
+ * is one of the three things that make a voice measurable. The harmonic series
+ * is what a pitch salience measures — twelve partials of one fundamental, so
+ * the harmonic sum at f0 collects nearly all of the energy and the sum at any
+ * other candidate collects almost none. The formants are what tells a voice
+ * from a violin: a resonance is a property of the *throat*, so it stays at
+ * 700 and 1200 Hz whatever the sung pitch, and the share of energy in the
+ * 1-3 kHz formant band is high however low the note. And the vibrato is what
+ * keeps the partials from reading as a synthesizer — a bare harmonic stack
+ * with no pitch movement is an organ.
+ *
+ * Deterministic, like everything else here: no dice, so a failure is the
+ * detector's.
+ */
+export function sungVowel(f0Hz: number, seconds: number, sr = 44100): Float32Array {
+  const n = Math.round(seconds * sr);
+  const out = new Float32Array(n);
+
+  // The vibrato is integrated rather than evaluated: sin(2π·f(t)·t) with a
+  // moving f is a discontinuity at every sample where f changed, not a warble.
+  let phase = 0;
+  for (let i = 0; i < n; i++) {
+    const t = i / sr;
+    const f0 = f0Hz * (1 + VIBRATO_DEPTH * Math.sin(2 * Math.PI * VIBRATO_HZ * t));
+    let v = 0;
+    for (let k = 1; k <= VOWEL_PARTIALS; k++) {
+      const hz = f0 * k;
+      if (hz >= sr / 2) break;
+      v += (formantGain(hz) / k) * Math.sin(k * phase);
+    }
+    out[i] = v;
+    phase += (2 * Math.PI * f0) / sr;
+  }
+  return normalisePeak(out, TONE_PEAK);
+}
+
+/** How much the two formants lift a partial at `hz`. */
+function formantGain(hz: number): number {
+  return 1 + FORMANT_GAIN * (resonance(hz, FORMANT_1_HZ) + resonance(hz, FORMANT_2_HZ));
+}
+
+/** A one-pole resonance: 1 at the centre, falling away over its bandwidth. */
+function resonance(hz: number, centerHz: number): number {
+  const d = (hz - centerHz) / FORMANT_BANDWIDTH_HZ;
+  return 1 / (1 + d * d);
+}
+
+/** How long one burst of `noiseBurstTrain` lasts, and how loud it is. */
+const BURST_SECONDS = 0.02;
+const BURST_PEAK = 0.95;
+/** How sharply a burst decays over its own length. */
+const BURST_DECAY = 6;
+
+/**
+ * `seconds` of bright noise bursts at `rateHz`: 20 ms of high-passed noise,
+ * struck over and over, close to full scale.
+ *
+ * The other end of the timbre axis from `sungVowel`, and what `harsh` is
+ * measured against: no pitch at all (flat spectrum, so the harmonic sum finds
+ * nothing to sum), a centroid up where a cymbal or a scream lives, transients
+ * sharp enough that the attack reads `sharp`, and loud. A distorted scream is
+ * this plus a voice; for the feature under test, this is the worst case.
+ *
+ * The noise is differenced white noise — a one-zero high pass, which tilts the
+ * spectrum up 6 dB an octave — and, as everywhere here, every burst is the
+ * *same* burst.
+ */
+export function noiseBurstTrain(rateHz: number, seconds: number, sr = 44100): Float32Array {
+  const out = new Float32Array(Math.round(seconds * sr));
+  const span = Math.max(1, Math.round(BURST_SECONDS * sr));
+  const rand = mulberry32(0xb1a55e7);
+
+  const burst = new Float32Array(span);
+  let prev = 0;
+  for (let i = 0; i < span; i++) {
+    const white = rand() * 2 - 1;
+    burst[i] = (white - prev) * Math.exp((-BURST_DECAY * i) / span);
+    prev = white;
+  }
+  normalisePeak(burst, BURST_PEAK);
+
+  if (!(rateHz > 0)) return out;
+  const period = sr / rateHz;
+  for (let hit = 0; hit * period < out.length; hit++) {
+    const start = Math.round(hit * period);
+    for (let i = 0; i < span; i++) {
+      const at = start + i;
+      if (at >= out.length) break;
+      out[at] = out[at]! + burst[i]!;
+    }
+  }
+  return out;
+}
+
+/** The tempo the song fixture runs at: 120 BPM puts a bar on every 2 s. */
+const SONG_BPM = 120;
+/** The section boundaries, in seconds. Each is a whole number of bars. */
+const SONG_BUILD_START = 12;
+const SONG_DROP = 24;
+const SONG_BREAKDOWN = 40;
+const SONG_SCREAM = 48;
+const SONG_QUIET = 52;
+const SONG_END = 60;
+/** How long the hole before the slam is. */
+const SONG_GAP_SEC = 0.4;
+/** A minor triad two octaves up from the kick, for the pad that opens the track. */
+const SONG_PAD_HZ = [220, 261.63, 329.63];
+
+export interface SongFixture {
+  signal: Float32Array;
+  /** What the analysis is supposed to find, in seconds. */
+  truth: { drop: number; breakdownStart: number; screamStart: number; quietStart: number };
+}
+
+/**
+ * Sixty seconds of music with a shape: intro, build, slam, drop, breakdown,
+ * scream, outro.
+ *
+ * Every fixture above this one tests a detector against the one thing it
+ * measures. This one tests the *pass*: a track long enough to be segmented,
+ * with four moments in it a listener would name, and the names written down in
+ * `truth` so a candidate finder or a transition writer can be held against
+ * them rather than against a hand-picked list of timestamps.
+ *
+ * The moments are what the four transition kinds are made of. The drop is a
+ * 0.4 s hole and then everything at once, which is what both the gap branch
+ * and the impact branch of the drop detector exist for. The breakdown takes
+ * the kit away and leaves the pad, so the loudness falls without the music
+ * stopping. The scream is `noiseBurstTrain` over a kick — loud, bright,
+ * transient, no pitch — and the outro is the pad again, quiet.
+ *
+ * 120 BPM throughout, so every boundary lands on a downbeat and a two-bar
+ * anticipation ramp is exactly four seconds. A tempo change would be a fifth
+ * thing to find and is not what this fixture is for.
+ */
+export function songFixture(sr = 44100): SongFixture {
+  const out = new Float32Array(Math.round(SONG_END * sr));
+  const at = (sec: number): number => Math.round(sec * sr);
+
+  // The pad runs under everything except the hole and the drop's own slam,
+  // which is what keeps a section boundary a change of energy rather than a
+  // change of whether there is any music at all.
+  addPad(out, at(0), at(SONG_BREAKDOWN) - Math.round(SONG_GAP_SEC * sr), sr, 0.1);
+  addPad(out, at(SONG_BREAKDOWN), at(SONG_END), sr, 0.16);
+
+  // Intro: a soft kick on every downbeat only.
+  addKicks(out, at(0), at(SONG_BUILD_START), sr, 0.35, 4);
+
+  // Build: a kick on every beat, hats doubling from eighths to sixteenths, and
+  // the whole thing rising. The hole is cut at the end, so the slam arrives
+  // out of silence.
+  const buildEnd = at(SONG_DROP) - Math.round(SONG_GAP_SEC * sr);
+  addKicks(out, at(SONG_BUILD_START), buildEnd, sr, 0.3, 1);
+  addHats(out, at(SONG_BUILD_START), at(18), sr, 0.25, 0.5);
+  addHats(out, at(18), buildEnd, sr, 0.3, 0.25);
+  ramp(out, at(SONG_BUILD_START), buildEnd, 0.45, 0.95);
+  out.fill(0, buildEnd, at(SONG_DROP));
+
+  // Drop: full kit, a second pad layer and a bass note on every beat — and
+  // decisively louder than the end of the build, which is what makes the slam
+  // a slam rather than the build continuing.
+  addPad(out, at(SONG_DROP), at(SONG_BREAKDOWN), sr, 0.18);
+  addKicks(out, at(SONG_DROP), at(SONG_BREAKDOWN), sr, 1.5, 1);
+  addHats(out, at(SONG_DROP), at(SONG_BREAKDOWN), sr, 0.4, 0.5);
+  addBass(out, at(SONG_DROP), at(SONG_BREAKDOWN), sr, 1.1);
+
+  // Scream: bright noise bursts twice a beat over a kick.
+  const scream = noiseBurstTrain(4, SONG_QUIET - SONG_SCREAM, sr);
+  for (let i = 0; i < scream.length; i++) {
+    const j = at(SONG_SCREAM) + i;
+    if (j >= out.length) break;
+    out[j] = out[j]! + scream[i]! * 0.9;
+  }
+  addKicks(out, at(SONG_SCREAM), at(SONG_QUIET), sr, 0.9, 1);
+
+  // Outro: the pad alone, taken down to a whisper.
+  ramp(out, at(SONG_QUIET), at(SONG_END), 0.35, 0.15);
+
+  return {
+    signal: out,
+    truth: {
+      drop: SONG_DROP,
+      breakdownStart: SONG_BREAKDOWN,
+      screamStart: SONG_SCREAM,
+      quietStart: SONG_QUIET,
+    },
+  };
+}
+
+/** The sustained triad, at `amp`, added into `out[from..to)`. */
+function addPad(out: Float32Array, from: number, to: number, sr: number, amp: number): void {
+  const span = Math.max(0, Math.min(to, out.length) - from);
+  if (span === 0) return;
+  const voice = new Float32Array(span);
+  for (const hz of SONG_PAD_HZ) addSaw(voice, hz, 0, span, sr);
+  normalisePeak(voice, amp);
+  for (let i = 0; i < span; i++) out[from + i] = out[from + i]! + voice[i]!;
+}
+
+/** The swept kick of `kickPad`, on every `everyBeats`-th beat of the section. */
+function addKicks(
+  out: Float32Array,
+  from: number,
+  to: number,
+  sr: number,
+  amp: number,
+  everyBeats: number,
+): void {
+  const span = Math.round(0.25 * sr);
+  const kick = new Float32Array(span);
+  let phase = 0;
+  for (let i = 0; i < span; i++) {
+    const t = i / sr;
+    const hz = t < KICK_SWEEP_SEC ? KICK_SWEEP_HZ + (KICK_HZ - KICK_SWEEP_HZ) * (t / KICK_SWEEP_SEC) : KICK_HZ;
+    kick[i] = amp * Math.exp((-5 * i) / span) * Math.sin(phase);
+    phase += (2 * Math.PI * hz) / sr;
+  }
+
+  const period = (60 / SONG_BPM) * sr * everyBeats;
+  for (let beat = 0; from + beat * period < to; beat++) {
+    const start = Math.round(from + beat * period);
+    for (let i = 0; i < span; i++) {
+      const j = start + i;
+      if (j >= to || j >= out.length) break;
+      out[j] = out[j]! + kick[i]!;
+    }
+  }
+}
+
+/** A hi-hat every `everyBeats` beats — 0.5 for eighths, 0.25 for sixteenths. */
+function addHats(
+  out: Float32Array,
+  from: number,
+  to: number,
+  sr: number,
+  amp: number,
+  everyBeats: number,
+): void {
+  const span = Math.round(HAT_SECONDS * sr);
+  const rand = mulberry32(0x5eed0a7);
+  const hat = new Float32Array(span);
+  for (let k = 0; k < HAT_PARTIALS; k++) {
+    const hz = HAT_LO_HZ + (HAT_HI_HZ - HAT_LO_HZ) * rand();
+    const phase = rand() * 2 * Math.PI;
+    for (let i = 0; i < span; i++) hat[i] = hat[i]! + Math.sin((2 * Math.PI * hz * i) / sr + phase);
+  }
+  normalisePeak(hat, amp);
+  for (let i = 0; i < span; i++) hat[i] = hat[i]! * Math.exp((-5 * i) / span);
+
+  const period = (60 / SONG_BPM) * sr * everyBeats;
+  for (let hit = 0; from + hit * period < to; hit++) {
+    const start = Math.round(from + hit * period);
+    for (let i = 0; i < span; i++) {
+      const j = start + i;
+      if (j >= to || j >= out.length) break;
+      out[j] = out[j]! + hat[i]!;
+    }
+  }
+}
+
+/** A decaying two-octave bass note on every beat: the weight a drop lands with. */
+function addBass(out: Float32Array, from: number, to: number, sr: number, amp: number): void {
+  const period = (60 / SONG_BPM) * sr;
+  const span = Math.round(0.4 * sr);
+  for (let beat = 0; from + beat * period < to; beat++) {
+    const start = Math.round(from + beat * period);
+    for (let i = 0; i < span; i++) {
+      const j = start + i;
+      if (j >= to || j >= out.length) break;
+      const env = Math.exp((-3 * i) / span);
+      const phase = (2 * Math.PI * i) / sr;
+      out[j] = out[j]! + amp * env * (Math.sin(55 * phase) + 0.6 * Math.sin(110 * phase));
+    }
+  }
+}
+
+/** Scales `out[from..to)` by a gain sliding linearly from `a` to `b`. */
+function ramp(out: Float32Array, from: number, to: number, a: number, b: number): void {
+  const end = Math.min(to, out.length);
+  const span = Math.max(1, end - from);
+  for (let i = from; i < end; i++) out[i] = out[i]! * (a + (b - a) * ((i - from) / span));
+}
+
 /** One sawtooth voice added into `out[from..to)`. Partials past Nyquist are dropped. */
 function addSaw(out: Float32Array, hz: number, from: number, to: number, sr: number): void {
   for (let k = 1; k <= SAW_PARTIALS; k++) {

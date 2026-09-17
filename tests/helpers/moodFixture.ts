@@ -3,7 +3,7 @@
  * tested against, plus a set of model answers shaped exactly like the SDK's.
  */
 
-import type { MoodInput } from '../../src/shared/types';
+import type { MoodInput, TransitionInput, TransitionVerdict } from '../../src/shared/types';
 
 export const EXAMPLE_INPUT: MoodInput = {
   pos: '1:32/4:05',
@@ -28,6 +28,8 @@ export const EXAMPLE_INPUT: MoodInput = {
   sub: 0.8,
   bands: [9, 8, 6, 5, 5, 6, 7, 5],
   speech: 0.05,
+  vocal: 0.2,
+  harsh: 0.45,
   onsetsPerSec: 4.2,
   slope4: 3.5,
   slope8: 6.1,
@@ -37,6 +39,44 @@ export const EXAMPLE_INPUT: MoodInput = {
   barsSinceChange: 14,
   barInPhrase: 14,
 };
+
+/**
+ * A candidate moment: quiet, sparse music before, loud dense music after, and
+ * a hole in between — the shape of a drop, which is the case every consumer of
+ * a `TransitionInput` has an opinion about.
+ */
+export function exampleTransition(at = '2:04', over: Partial<TransitionInput> = {}): TransitionInput {
+  return {
+    at,
+    before: { ...EXAMPLE_INPUT, loud: 'p', bands: [3, 3, 2, 2, 2, 3, 4, 2], trend: 'building' },
+    after: { ...EXAMPLE_INPUT, loud: 'ff', bands: [9, 9, 7, 6, 6, 7, 8, 6] },
+    jumpDb: 12.4,
+    gapBeforeSec: 0.4,
+    bpmBefore: 128,
+    bpmAfter: 128,
+    keyChanged: false,
+    vocalDelta: -0.1,
+    harshDelta: 0.3,
+    ...over,
+  };
+}
+
+/** A verdict with every field set, for the writers and the record. */
+export function exampleVerdict(over: Partial<TransitionVerdict> = {}): TransitionVerdict {
+  const kindP: Record<string, number> = {
+    drop: 0.6, build_start: 0.1, breakdown: 0.05, break_silence: 0.05, vocal_entry: 0.05,
+    scream_peak: 0.05, quiet_fall: 0.02, tempo_change: 0.02, key_change: 0.02, none: 0.04,
+  };
+  return {
+    kind: 'drop',
+    kindP: kindP as TransitionVerdict['kindP'],
+    intensity: 0.9,
+    dramatic: 0.8,
+    release: 0.7,
+    confidence: 0.75,
+    ...over,
+  };
+}
 
 function scoreAnswer(score: number, levels: number, confidence = 0.8): Record<string, unknown> {
   const probabilities: Record<string, number> = {};

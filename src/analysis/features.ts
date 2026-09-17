@@ -51,6 +51,44 @@ const NOISE_LO_HZ = FLUX_LO_HZ;
 const NOISE_HI_HZ = FLUX_HI_HZ;
 const CHROMA_MIN_HZ = 60;
 const ROLLOFF_FRACTION = 0.95;
+
+/**
+ * The fundamentals `pitch` searches over, and the band its answer is a share
+ * of.
+ *
+ * 100-1000 Hz is the range a sung note lives in — below it is bass, above it
+ * is whistling — and the share is taken over 100 Hz to 4 kHz because that is
+ * where the first few harmonics of such a note land. A wider denominator would
+ * make the measurement a question about how much cymbal is in the mix.
+ */
+const PITCH_F0_LO_HZ = 100;
+const PITCH_F0_HI_HZ = 1000;
+const PITCH_TOTAL_LO_HZ = 100;
+const PITCH_TOTAL_HI_HZ = 4000;
+/** How many harmonics the sum collects: f, 2f, 3f. */
+const PITCH_HARMONICS = 3;
+/**
+ * How finely the fundamentals are scanned, in bins.
+ *
+ * Quarter-bin steps, not whole ones. A harmonic sum taken at whole bins can
+ * only find a fundamental that happens to sit on one: at 4096 points and
+ * 44.1 kHz a bin is 10.8 Hz, so the third harmonic of a candidate one bin away
+ * from the real note is three bins off, and the sum misses it entirely. A
+ * quarter of a bin keeps every harmonic inside its own peak window.
+ */
+const PITCH_STEP_BINS = 0.25;
+/**
+ * How many bins either side of a harmonic count as that harmonic. A Hann main
+ * lobe is four bins wide, so a partial is never in one bin alone, and a note
+ * a few hertz off the candidate has moved by less than this.
+ */
+const PITCH_PEAK_HALF_WIDTH = 1;
+
+/** The formant band, and the band it is measured as a share of. */
+const FORMANT_LO_HZ = 1000;
+const FORMANT_HI_HZ = 3000;
+const FORMANT_TOTAL_LO_HZ = 200;
+const FORMANT_TOTAL_HI_HZ = 8000;
 /** Keeps log(0) out of the flatness geometric mean. */
 const FLATNESS_EPS = 1e-12;
 /** -100 dBFS is the quietest thing we bother to distinguish. */
@@ -156,7 +194,78 @@ export class FeatureExtractor {
       zcr: time ? (zeroCrossings(time) * this.sampleRate) / time.length : 0,
       chroma: chromaFromMagnitudes(mags, this.sampleRate, this.fftSize),
       sub: this.subShare(mags),
+      pitch: this.pitchSalience(mags),
+      formant: this.formantShare(mags),
     };
+  }
+
+  /**
+   * How much of the 100 Hz - 4 kHz energy belongs to one harmonic series:
+   * the best (f, 2f, 3f) sum over every fundamental in 100-1000 Hz, as a share
+   * of the whole band.
+   *
+   * This is the "is there a voice here" half of the `vocal` feature, and it is
+   * a *harmonic* question rather than a spectral one, which is why it cannot
+   * be read off the chroma: chroma folds octaves together, and folding f and
+   * 2f onto the same pitch class is exactly the structure being looked for.
+   *
+   * Near 1 for a single sung or bowed note, low for a chord (three series, so
+   * the best one holds a third of the energy), and lower still for noise,
+   * whose flat spectrum puts no more under a harmonic comb than under any
+   * other nine bins.
+   */
+  private pitchSalience(mags: Float32Array): number {
+    const loBin = Math.max(1, Math.ceil(PITCH_TOTAL_LO_HZ / this.hzPerBin));
+    const hiBin = Math.min(this.bins, Math.floor(PITCH_TOTAL_HI_HZ / this.hzPerBin) + 1);
+
+    let total = 0;
+    for (let k = loBin; k < hiBin; k++) total += mags[k]! * mags[k]!;
+    if (!(total > 0)) return 0;
+
+    const from = PITCH_F0_LO_HZ / this.hzPerBin;
+    const to = PITCH_F0_HI_HZ / this.hzPerBin;
+    let best = 0;
+    for (let f0 = from; f0 <= to; f0 += PITCH_STEP_BINS) {
+      let sum = 0;
+      for (let h = 1; h <= PITCH_HARMONICS; h++) sum += this.peakEnergy(mags, Math.round(h * f0));
+      if (sum > best) best = sum;
+    }
+    return clamp(best / total, 0, 1);
+  }
+
+  /** Energy in `k` and the bins either side of it — one partial's whole lobe. */
+  private peakEnergy(mags: Float32Array, k: number): number {
+    let sum = 0;
+    for (let j = k - PITCH_PEAK_HALF_WIDTH; j <= k + PITCH_PEAK_HALF_WIDTH; j++) {
+      if (j < 1 || j >= mags.length) continue;
+      sum += mags[j]! * mags[j]!;
+    }
+    return sum;
+  }
+
+  /**
+   * Share of the 200 Hz - 8 kHz energy sitting in 1-3 kHz.
+   *
+   * The other half of `vocal`. A formant is a resonance of the throat, so it
+   * stays where it is whatever note is sung, and a voice therefore always has
+   * weight in this band — a bass line and a pad do not, whatever their
+   * harmonic structure. Together with the salience it separates a sung vowel
+   * from a cello, which noise and a pitch measurement alone cannot.
+   */
+  private formantShare(mags: Float32Array): number {
+    let band = 0;
+    let total = 0;
+    const loBin = Math.max(1, Math.ceil(FORMANT_TOTAL_LO_HZ / this.hzPerBin));
+    const hiBin = Math.min(this.bins, Math.floor(FORMANT_TOTAL_HI_HZ / this.hzPerBin) + 1);
+    const bandLo = Math.max(loBin, Math.ceil(FORMANT_LO_HZ / this.hzPerBin));
+    const bandHi = Math.min(hiBin, Math.floor(FORMANT_HI_HZ / this.hzPerBin) + 1);
+
+    for (let k = loBin; k < hiBin; k++) {
+      const e = mags[k]! * mags[k]!;
+      total += e;
+      if (k >= bandLo && k < bandHi) band += e;
+    }
+    return total > 0 ? clamp(band / total, 0, 1) : 0;
   }
 
   /** Only used when there is no time-domain frame — see MAGS_RMS_SCALE. */

@@ -25,6 +25,8 @@ function frame(t: number, db: number, low = 0.2): FrameFeatures {
     zcr: 900,
     chroma: new Float32Array(12).fill(1 / 12),
     sub: 0.3,
+    pitch: 0.2,
+    formant: 0.15,
   };
 }
 

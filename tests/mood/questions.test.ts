@@ -96,9 +96,12 @@ describe('buildState', () => {
   });
 
   it('stays inside the per-call state budget', () => {
-    // The legend is fixed text (~233 estimated tokens) and the payload is
-    // ~143: the brief's 320 is not reachable with the legend it also mandates.
-    expect(estimateTokens(JSON.stringify(buildState(EXAMPLE_INPUT)))).toBeLessThanOrEqual(400);
+    // The legend is fixed text (~250 estimated tokens) and the payload is
+    // ~150: the brief's 320 is not reachable with the legend it also mandates.
+    // 420 rather than v1's 400 because v2 added two features to the payload —
+    // `vocal` and `harsh` — and a feature the legend does not explain is a
+    // field the model has to guess the units of.
+    expect(estimateTokens(JSON.stringify(buildState(EXAMPLE_INPUT)))).toBeLessThanOrEqual(420);
   });
 });
 

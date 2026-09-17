@@ -41,6 +41,8 @@ function snapshot(t: number): AnalysisSnapshot {
       zcr: 1500,
       chroma: new Float32Array(12).fill(1 / 12),
       sub: 0.5,
+      pitch: 0.2,
+      formant: 0.15,
     },
     onset: 0,
     grid: grid({ nextBeat: t + 0.2 }),
@@ -52,6 +54,8 @@ function snapshot(t: number): AnalysisSnapshot {
     dynamics: { loud: 'f', range: 0.2, trend: 'building', crest: 0.3, slope4: 1, slope8: 2, gap: false },
     timbre: { consonance: 0.6, bright: 0.7, noise: 0.4, attack: 'sharp', sub: 0.8, centroidSlope: 0.4 },
     speech: 0.05,
+    vocal: 0.2,
+    harsh: 0.45,
     drop: null,
   };
 }

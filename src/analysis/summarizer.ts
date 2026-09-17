@@ -27,6 +27,8 @@ import type { RhythmTracker } from './rhythm';
 import type { SpeechDetector } from './speech';
 import type { TimbreTracker } from './timbre';
 import { consonance } from './timbre';
+import type { VocalDetector } from './vocal';
+import { harshness } from './vocal';
 import { tempoMarking, type TempoEstimate } from './tempo';
 import type {
   Attack,
@@ -94,6 +96,10 @@ export interface MoodReadings {
     centroidSlope: number;
   };
   speech: number;
+  /** 0..1 how much of a singing voice is present. */
+  vocal: number;
+  /** 0..1 how abrasive the sound is. */
+  harsh: number;
 }
 
 /**
@@ -109,9 +115,10 @@ export interface SummarizerDeps {
   grid: Pick<BeatGrid, 'state'>;
   key: Pick<KeyTracker, 'estimate'>;
   rhythm: Pick<RhythmTracker, 'syncopation' | 'regularity' | 'meter' | 'onsetsPerSec' | 'onsetRatio'>;
-  dyn: Pick<DynamicsTracker, 'loudClass' | 'range' | 'trend' | 'crest' | 'slopeDb' | 'gap'>;
+  dyn: Pick<DynamicsTracker, 'loudClass' | 'range' | 'trend' | 'crest' | 'slopeDb' | 'gap' | 'position'>;
   timbre: Pick<TimbreTracker, 'brightness' | 'noisiness' | 'attack' | 'subWeight' | 'centroidSlope'>;
   speech: Pick<SpeechDetector, 'score'>;
+  vocal: Pick<VocalDetector, 'score'>;
   tempo: () => TempoEstimate | null;
   frame: () => FrameFeatures;
 }
@@ -121,10 +128,11 @@ export class Summarizer {
 
   /** Read every tracker at `now` and write the page. */
   snapshot(now: number, positionSec: number, durationSec: number | null): MoodInput {
-    const { grid, key, rhythm, dyn, timbre, speech } = this.d;
+    const { grid, key, rhythm, dyn, timbre, speech, vocal } = this.d;
     const state = grid.state();
     const barSec = state.period * state.barLength;
     const frame = this.d.frame();
+    const attack = timbre.attack();
 
     return Summarizer.fromSnapshot(
       {
@@ -152,7 +160,7 @@ export class Summarizer {
           consonance: consonance(frame.chroma),
           bright: timbre.brightness(),
           noise: timbre.noisiness(),
-          attack: timbre.attack(),
+          attack,
           sub: timbre.subWeight(),
           centroidSlope: timbre.centroidSlope(),
         },
@@ -161,6 +169,13 @@ export class Summarizer {
         // the measurement if it is told where they are. Same call as
         // `AnalysisPipeline.step` — see `pipeline.ts`.
         speech: speech.score(state.confidence, state.period > 0 ? 1 / state.period : 0),
+        vocal: vocal.score(),
+        harsh: harshness({
+          bright: timbre.brightness(),
+          flatness: timbre.noisiness(),
+          loudRel: dyn.position(),
+          attack,
+        }),
       },
       positionSec,
       durationSec,
@@ -193,6 +208,8 @@ export class Summarizer {
       sub: r.timbre.sub,
       bands: bandDigits(r.features.bands),
       speech: r.speech,
+      vocal: r.vocal,
+      harsh: r.harsh,
       onsetsPerSec: r.rhythm.onsetsPerSec,
       slope4: r.dynamics.slope4,
       slope8: r.dynamics.slope8,
@@ -316,6 +333,14 @@ function normalize(m: MoodInput): MoodInput {
     sub: unit(m.sub),
     bands: bandInts(m.bands),
     speech: unit(m.speech),
+    // Tenths, not hundredths, and the only two fields rounded that coarsely.
+    // The payload is two characters over its 160-token ceiling with them at
+    // two decimals, and the second decimal of a detector score that is only
+    // ever read as "is there a voice" or "is this abrasive" is not a decimal
+    // anyone acts on — the candidate rules cross at 0.5 and 0.6, and they
+    // cross on the unrounded frame values, not on this page.
+    vocal: tenths(m.vocal, 0, 1),
+    harsh: tenths(m.harsh, 0, 1),
     onsetsPerSec: tenths(m.onsetsPerSec, 0, MAX_ONSET_RATE),
     slope4: tenths(m.slope4, -MAX_SLOPE_DB, MAX_SLOPE_DB),
     slope8: tenths(m.slope8, -MAX_SLOPE_DB, MAX_SLOPE_DB),
@@ -368,6 +393,10 @@ function vector(m: MoodInput): number[] {
     m.noise,
     m.sub,
     m.speech,
+    // A voice arriving and a passage turning abrasive are both changes a
+    // listener would name, so both are worth a segment boundary.
+    m.vocal,
+    m.harsh,
     ...m.bands.map((b) => b / BAND_LEVELS),
     m.slope8 / 30,
     m.onsetRatio / 4,

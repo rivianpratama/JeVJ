@@ -49,19 +49,36 @@ function levelsOf(id: string): number {
   return q !== undefined && q.type === 'score' ? q.criteria.length : 2;
 }
 
-/** Confidences gathered while decoding, averaged into `MoodVector.confidence`. */
-type Confidences = number[];
+/** Confidences gathered while decoding, averaged into a verdict's own. */
+export type Confidences = number[];
+
+/**
+ * A score answer as a 0..1 knob, given how many levels it was asked with.
+ *
+ * Exported because the transition pass asks its own rubrics — five levels for
+ * `intensity`, three for `release` — and the arithmetic that makes two
+ * differently-scaled rubrics comparable belongs in one place, not in each
+ * caller. `conf` collects the confidences the answers carry, which is what
+ * every decoder here averages into its own `confidence` field.
+ */
+export function readScore(a: unknown, levels: number, fallback: number, conf: Confidences): number {
+  if (!isRecord(a) || !finite(a['score'])) return fallback;
+  if (finite(a['confidence'])) conf.push(clamp(a['confidence'], 0, 1));
+  return levels > 1 ? clamp(a['score'], 0, levels - 1) / (levels - 1) : fallback;
+}
+
+/** A noul answer, which is already a probability and stays one. */
+export function readNoul(a: unknown, fallback: number): number {
+  if (!isRecord(a) || !finite(a['noul'])) return fallback;
+  return clamp(a['noul'], 0, 1);
+}
 
 function decodeScore(a: unknown, id: string, fallback: number, conf: Confidences): number {
-  if (!isRecord(a) || !finite(a['score'])) return fallback;
-  const levels = levelsOf(id);
-  if (finite(a['confidence'])) conf.push(clamp(a['confidence'], 0, 1));
-  return clamp(a['score'], 0, levels - 1) / (levels - 1);
+  return readScore(a, levelsOf(id), fallback, conf);
 }
 
 function decodeNoul(a: unknown, fallback: number): number {
-  if (!isRecord(a) || !finite(a['noul'])) return fallback;
-  return clamp(a['noul'], 0, 1);
+  return readNoul(a, fallback);
 }
 
 /**
@@ -69,7 +86,7 @@ function decodeNoul(a: unknown, fallback: number): number {
  * what is left is renormalized; an empty or unusable map falls back to
  * `fallbackP`, which already sums to 1 and already leans on `fallbackLabel`.
  */
-function decodeChoice<K extends string>(
+export function decodeChoice<K extends string>(
   a: unknown,
   labels: readonly K[],
   fallbackLabel: K,
@@ -188,7 +205,7 @@ export function decodeAnswers(
   return checked.ok ? checked.value : { ...NEUTRAL_MOOD };
 }
 
-function uniform<K extends string>(labels: readonly K[]): Record<K, number> {
+export function uniform<K extends string>(labels: readonly K[]): Record<K, number> {
   const out = {} as Record<K, number>;
   for (const k of labels) out[k] = 1 / labels.length;
   return out;

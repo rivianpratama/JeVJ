@@ -1,10 +1,16 @@
 import {
   BEATS_TO_CHANGE,
+  CUE_SOURCES,
   GENRES,
   MOTIONS,
   PRE_DROP_STYLES,
   SECTIONS,
+  TRANSITION_KINDS,
+  type AnalysisLogEntry,
+  type AnalyzedSegment,
+  type AnalyzedTransition,
   type Attack,
+  type Cue,
   type DynClass,
   type Genre,
   type Meter,
@@ -15,6 +21,9 @@ import {
   type Motion,
   type Section,
   type TempoMarking,
+  type TrackAnalysis,
+  type TransitionInput,
+  type TransitionVerdict,
   type Trend,
 } from './types';
 
@@ -63,6 +72,8 @@ const INPUT_UNIT_FIELDS = [
   'noise',
   'sub',
   'speech',
+  'vocal',
+  'harsh',
 ] as const;
 
 /** MoodVector fields that carry a plain 0..1 score. */
@@ -187,6 +198,8 @@ export function validateMoodInput(x: unknown): Valid<MoodInput> | Invalid {
       sub: v.sub,
       bands: [...v.bands],
       speech: v.speech,
+      vocal: v.vocal,
+      harsh: v.harsh,
       onsetsPerSec: v.onsetsPerSec,
       slope4: v.slope4,
       slope8: v.slope8,
@@ -246,6 +259,141 @@ export function validateMoodVector(x: unknown): Valid<MoodVector> | Invalid {
       confidence: v.confidence,
     },
   };
+}
+
+/** `m:ss` — where a transition happens, without the track length after it. */
+const AT_RE = /^\d+:\d{2}$/;
+/** The widest loudness jump worth stating; past this the number is noise. */
+const MAX_JUMP_DB = 120;
+/** A hole longer than this is a track boundary, not a break. */
+const MAX_GAP_SEC = 60;
+
+export function validateTransitionInput(x: unknown): Valid<TransitionInput> | Invalid {
+  if (!isRecord(x)) return bad('transition', 'an object');
+  if (typeof x['at'] !== 'string' || !AT_RE.test(x['at'])) return bad('at', '"m:ss"');
+
+  const before = validateMoodInput(x['before']);
+  if (!before.ok) return bad('before', before.error);
+  const after = validateMoodInput(x['after']);
+  if (!after.ok) return bad('after', after.error);
+
+  if (!num(x['jumpDb'], -MAX_JUMP_DB, MAX_JUMP_DB)) return bad('jumpDb', `a finite number in ±${MAX_JUMP_DB}`);
+  if (!num(x['gapBeforeSec'], 0, MAX_GAP_SEC)) return bad('gapBeforeSec', `a finite number in 0..${MAX_GAP_SEC}`);
+  if (!num(x['bpmBefore'], 0, 300)) return bad('bpmBefore', 'a finite number in 0..300');
+  if (!num(x['bpmAfter'], 0, 300)) return bad('bpmAfter', 'a finite number in 0..300');
+  if (typeof x['keyChanged'] !== 'boolean') return bad('keyChanged', 'a boolean');
+  if (!num(x['vocalDelta'], -1, 1)) return bad('vocalDelta', 'a finite number in -1..1');
+  if (!num(x['harshDelta'], -1, 1)) return bad('harshDelta', 'a finite number in -1..1');
+
+  const v = x as unknown as TransitionInput;
+  return {
+    ok: true,
+    value: {
+      at: v.at,
+      before: before.value,
+      after: after.value,
+      jumpDb: v.jumpDb,
+      gapBeforeSec: v.gapBeforeSec,
+      bpmBefore: v.bpmBefore,
+      bpmAfter: v.bpmAfter,
+      keyChanged: v.keyChanged,
+      vocalDelta: v.vocalDelta,
+      harshDelta: v.harshDelta,
+    },
+  };
+}
+
+export function validateTransitionVerdict(x: unknown): Valid<TransitionVerdict> | Invalid {
+  if (!isRecord(x)) return bad('verdict', 'an object');
+  const badUnit = firstBadUnit(x, ['intensity', 'dramatic', 'release', 'confidence']);
+  if (badUnit) return bad(badUnit, 'a finite number in 0..1');
+  if (!oneOf(x['kind'], TRANSITION_KINDS)) return bad('kind', `one of ${TRANSITION_KINDS.join(', ')}`);
+  const kindPErr = distError(x['kindP'], TRANSITION_KINDS);
+  if (kindPErr) return bad('kindP', kindPErr);
+
+  const v = x as unknown as TransitionVerdict;
+  return {
+    ok: true,
+    value: {
+      kind: v.kind,
+      kindP: pickDist(x['kindP'] as Record<string, unknown>, TRANSITION_KINDS),
+      intensity: v.intensity,
+      dramatic: v.dramatic,
+      release: v.release,
+      confidence: v.confidence,
+    },
+  };
+}
+
+/**
+ * A whole analysis record, as it arrives from a cache file or a POST.
+ *
+ * Deliberately shallower than the two validators above. Every segment and
+ * every transition in here was built by our own pass and checked on the way
+ * in; what this guards against is a *truncated or corrupt file*, not a hostile
+ * payload field by field — so it insists on the shape, the times and the
+ * kinds, and copies the rest. Anything it rejects is a cache entry we throw
+ * away and rebuild, which costs one re-analysis and never a wrong picture.
+ */
+export function validateTrackAnalysis(x: unknown): Valid<TrackAnalysis> | Invalid {
+  if (!isRecord(x)) return bad('analysis', 'an object');
+  if (typeof x['title'] !== 'string') return bad('title', 'a string');
+  if (!num(x['durationSec'], 0, 24 * 3600)) return bad('durationSec', 'a finite number of seconds');
+  if (x['videoId'] !== undefined && typeof x['videoId'] !== 'string') return bad('videoId', 'a string');
+
+  const segments: AnalyzedSegment[] = [];
+  if (!Array.isArray(x['segments'])) return bad('segments', 'an array');
+  for (const raw of x['segments']) {
+    if (!isRecord(raw)) return bad('segments', 'an array of objects');
+    const input = validateMoodInput(raw['input']);
+    const mood = validateMoodVector(raw['mood']);
+    if (!input.ok) return bad('segments[].input', input.error);
+    if (!mood.ok) return bad('segments[].mood', mood.error);
+    if (!num(raw['start'], 0, Infinity) || !num(raw['end'], 0, Infinity)) {
+      return bad('segments[]', 'a start and end in seconds');
+    }
+    segments.push({ start: raw['start'], end: raw['end'], input: input.value, mood: mood.value });
+  }
+
+  const transitions: AnalyzedTransition[] = [];
+  if (!Array.isArray(x['transitions'])) return bad('transitions', 'an array');
+  for (const raw of x['transitions']) {
+    if (!isRecord(raw)) return bad('transitions', 'an array of objects');
+    if (!num(raw['at'], 0, Infinity)) return bad('transitions[].at', 'a time in seconds');
+    const input = validateTransitionInput(raw['input']);
+    const verdict = validateTransitionVerdict(raw['verdict']);
+    if (!input.ok) return bad('transitions[].input', input.error);
+    if (!verdict.ok) return bad('transitions[].verdict', verdict.error);
+    transitions.push({ at: raw['at'], input: input.value, verdict: verdict.value });
+  }
+
+  if (!Array.isArray(x['cues'])) return bad('cues', 'an array');
+  const cues: Cue[] = [];
+  for (const raw of x['cues']) {
+    if (!isRecord(raw) || !num(raw['t'], -Infinity, Infinity)) return bad('cues[]', 'a cue with a time');
+    if (!oneOf(raw['source'], CUE_SOURCES)) return bad('cues[].source', `one of ${CUE_SOURCES.join(', ')}`);
+    cues.push(raw as unknown as Cue);
+  }
+
+  if (!Array.isArray(x['log'])) return bad('log', 'an array');
+  const log: AnalysisLogEntry[] = [];
+  for (const raw of x['log']) {
+    if (!isRecord(raw) || !num(raw['t'], -Infinity, Infinity)) return bad('log[]', 'an entry with a time');
+    if (raw['dir'] !== 'req' && raw['dir'] !== 'res') return bad('log[].dir', '"req" or "res"');
+    if (typeof raw['json'] !== 'string') return bad('log[].json', 'a string');
+    log.push({ t: raw['t'], dir: raw['dir'], json: raw['json'] });
+  }
+
+  const out: TrackAnalysis = {
+    title: x['title'],
+    durationSec: x['durationSec'],
+    segments,
+    transitions,
+    cues,
+    log,
+  };
+  if (typeof x['videoId'] === 'string') out.videoId = x['videoId'];
+  return { ok: true, value: out };
 }
 
 /**

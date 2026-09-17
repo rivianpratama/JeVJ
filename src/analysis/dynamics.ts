@@ -96,10 +96,24 @@ export class DynamicsTracker {
     this.hi = Math.max(now, this.hi - EXTREME_DECAY_DB_PER_SEC * dt);
   }
 
+  /**
+   * 0..1: where the present sits between the session's quietest and loudest.
+   *
+   * A range narrower than `MIN_SPAN_DB` is not a range — a track that has only
+   * played one bar, or a fixture that is one sustained sound — and reads 0.5,
+   * the middle, rather than whichever end the noise happened to fall on.
+   * `harsh` is built on this, so a degenerate range must not be able to make
+   * silence read as a scream.
+   */
+  position(): number {
+    const span = this.hi - this.lo;
+    if (!(span > MIN_SPAN_DB)) return 0.5;
+    return clamp((this.loudness(this.lastT) - this.lo) / span, 0, 1);
+  }
+
   /** Where the present sits in the session's own range, named like a score. */
   loudClass(): DynClass {
-    const span = this.hi - this.lo;
-    const position = span > MIN_SPAN_DB ? (this.loudness(this.lastT) - this.lo) / span : 0.5;
+    const position = this.position();
     for (const step of LOUD_STEPS) if (position < step.upTo) return step.name;
     return 'ff';
   }

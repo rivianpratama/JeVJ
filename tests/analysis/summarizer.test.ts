@@ -29,6 +29,8 @@ const EXAMPLE: MoodInput = {
   sub: 0.8,
   bands: [9, 8, 6, 5, 5, 6, 7, 5],
   speech: 0.05,
+  vocal: 0.2,
+  harsh: 0.5,
   onsetsPerSec: 4.2,
   slope4: 3.5,
   slope8: 6.1,
@@ -63,6 +65,8 @@ function stubFrame(): FrameFeatures {
     zcr: 1500,
     chroma: chromaFsMinor(),
     sub: 0.8,
+    pitch: 0.2,
+    formant: 0.15,
   };
 }
 
@@ -95,6 +99,8 @@ function exampleReadings(over: Partial<MoodReadings> = {}): MoodReadings {
     },
     timbre: { consonance: 0.6, bright: 0.7, noise: 0.4, attack: 'sharp', sub: 0.8, centroidSlope: 0.4 },
     speech: 0.05,
+    vocal: 0.2,
+    harsh: 0.52,
     ...over,
   };
 }
@@ -118,6 +124,7 @@ function stubDeps(r: MoodReadings = exampleReadings()): SummarizerDeps {
       crest: () => r.dynamics.crest,
       slopeDb: (barsBack: number) => (barsBack === 4 ? r.dynamics.slope4 : r.dynamics.slope8),
       gap: () => r.dynamics.gap,
+      position: () => 0.4,
     },
     timbre: {
       brightness: () => r.timbre.bright,
@@ -127,6 +134,7 @@ function stubDeps(r: MoodReadings = exampleReadings()): SummarizerDeps {
       centroidSlope: () => r.timbre.centroidSlope,
     },
     speech: { score: () => r.speech },
+    vocal: { score: () => r.vocal },
     tempo: () => r.tempo,
     frame: stubFrame,
   };
@@ -150,6 +158,8 @@ describe('Summarizer.fromSnapshot', () => {
       dynamics: { ...exampleReadings().dynamics, slope4: -999, slope8: 999, range: NaN },
       timbre: { ...exampleReadings().timbre, centroidSlope: -4, consonance: Infinity },
       speech: NaN,
+      vocal: 2,
+      harsh: -1,
       key: { key: 'H#', mode: 'unclear', modeConf: -3, fit: 0, modal: 'unclear', tonic: -1 },
     });
 
@@ -243,6 +253,8 @@ describe('Summarizer.serialize', () => {
       sub: 0.99,
       bands: [9, 9, 9, 9, 9, 9, 9, 9],
       speech: 0.99,
+      vocal: 0.99,
+      harsh: 0.99,
       onsetsPerSec: 19.9,
       slope4: -59.9,
       slope8: -59.9,
@@ -308,6 +320,8 @@ describe('Summarizer.novelty', () => {
       noise: 0,
       sub: 0,
       speech: 0,
+      vocal: 0,
+      harsh: 0,
       bands: [0, 0, 0, 0, 0, 0, 0, 0],
       slope4: -60,
       slope8: -60,
@@ -329,6 +343,8 @@ describe('Summarizer.novelty', () => {
       noise: 1,
       sub: 1,
       speech: 1,
+      vocal: 1,
+      harsh: 1,
       bands: [9, 9, 9, 9, 9, 9, 9, 9],
       slope4: 60,
       slope8: 60,

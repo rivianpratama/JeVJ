@@ -65,6 +65,8 @@ export const MOOD_PREAMBLE: Record<string, string> = {
   sub: '0-1 sub-bass weight',
   bands: '8 log bands 20Hz-16kHz, 0-9',
   speech: '0-1 speech-likeness',
+  vocal: '0-1 a sung voice is present',
+  harsh: '0-1 abrasive, distorted or screamed',
   'slope4/slope8': 'loudness change in dB over last 4/8 bars',
   onsetRatio: 'note density now vs 8 bars ago',
   centroidSlope: '-1 darkening..1 brightening',
