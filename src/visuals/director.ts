@@ -1,0 +1,281 @@
+/**
+ * The director: what the music feels like → what the renderer should do.
+ *
+ * This is the only place that decides anything about the look. The scenes and
+ * the passes are dumb — they take numbers and draw — and the mood layer knows
+ * nothing about rendering. Everything in between is here, as formulas, so that
+ * the whole visual language of the app can be read in one file and tested in
+ * Node without a GPU.
+ *
+ * Two rules shape the whole thing:
+ *
+ *  - **Slew, don't cut.** Every slow scalar moves toward its target with a
+ *    0.8 s time constant. Jev answers arrive seconds apart and land as steps;
+ *    without the slew the picture would snap on every answer. What must *not*
+ *    be slewed is anything driven by `impact`, because a hit that arrives
+ *    smoothed is not a hit.
+ *  - **Never strobe.** Exposure is the one parameter that can flash the whole
+ *    screen, so its *direction* is rate-limited: the luminance may not reverse
+ *    more than three times a second however hard the music alternates. A
+ *    frame-alternating impact would otherwise drive a 30 Hz flash.
+ *
+ * Pure: no three.js, no DOM. The only state it keeps is the strobe limiter's
+ * clock, which restarts whenever it is called with `prev === null`.
+ */
+
+import { paletteFor, type Palette } from './palette';
+import { GENRES, MOTIONS, SECTIONS } from '../shared/types';
+import type { Genre, Motion, MoodVector, Section } from '../shared/types';
+
+/** What the renderer needs to know about *this* frame of audio. */
+export interface FastFrame {
+  rms: number;
+  bands: Float32Array;
+  sub: number;
+  onset: number;
+  beatPhase: number;
+  /** 1 on a downbeat, decaying with τ = 0.3 s. */
+  downbeatPulse: number;
+  impact: number;
+  build: number;
+}
+
+export interface RenderParams {
+  /** How much of each scene is in the mix; sums to 1. */
+  weights: { ink: number; particles: number; strands: number; relief: number; breath: number };
+  palette: Palette;
+
+  // ink
+  flowAmt: number;
+  decay: number;
+  turbulence: number;
+  injectGain: number;
+  pushKick: number;
+
+  // particles (Task 10)
+  particleSpeed: number;
+  attractor: 'sphere' | 'plane' | 'vortex' | 'explode' | 'swarm';
+  pointSize: number;
+
+  // strands (Task 10)
+  strandBend: number;
+  strandThickness: number;
+
+  // relief (Task 11)
+  reliefHeight: number;
+  reliefContrast: number;
+
+  // post
+  bloomStrength: number;
+  bloomThreshold: number;
+  chroma: number;
+  /** Color levels; 0 is off. */
+  posterize: number;
+  /** Kaleidoscope folds; 0 is off. */
+  mirrorFolds: number;
+  grain: number;
+  vignette: number;
+  exposure: number;
+
+  flowStyle: Motion;
+}
+
+/** Seconds for a slewed scalar to cover ~63% of the distance to its target. */
+const SLEW_TAU = 0.8;
+/** The strobe cap: at most three luminance reversals a second. */
+const MIN_FLIP_SEC = 1 / 3;
+/** Exposure moves smaller than this do not count as a direction. */
+const FLIP_EPS = 1e-4;
+/** Reduced motion never lets the screen get brighter than this. */
+const REDUCED_MAX_EXPOSURE = 1.1;
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+function clamp01(x: number): number {
+  return x < 0 ? 0 : x > 1 ? 1 : x;
+}
+
+function leaning<K extends string>(keys: readonly K[], chosen: K, p = 0.6): Record<K, number> {
+  const rest = (1 - p) / (keys.length - 1);
+  const out = {} as Record<K, number>;
+  for (const k of keys) out[k] = k === chosen ? p : rest;
+  return out;
+}
+
+/**
+ * What the page believes before it has heard anything: calm, spacious, a touch
+ * bright, drifting. Not neutral — neutral would sit at arousal 0.5 and pulse
+ * at a page that has no music.
+ */
+export const IDLE_MOOD: MoodVector = {
+  valence: 0.55,
+  arousal: 0.25,
+  tension: 0.3,
+  warmth: 0.45,
+  synthetic: 0.5,
+  space: 0.7,
+  aggression: 0.1,
+  melancholy: 0.1,
+  hypnotic: 0.1,
+  euphoricPeak: 0.1,
+  spoken: 0.1,
+  genre: 'ambient_drone' satisfies Genre,
+  genreP: leaning(GENRES, 'ambient_drone'),
+  section: 'intro' satisfies Section,
+  sectionP: leaning(SECTIONS, 'intro'),
+  motion: 'drift' satisfies Motion,
+  motionP: leaning(MOTIONS, 'drift'),
+  dropImminent: 0,
+  beatsToChange: 'none',
+  impact: 0,
+  preDropStyle: 'none',
+  confidence: 0,
+};
+
+/** Which particle attractor each motion label implies (Task 10 consumes it). */
+const ATTRACTOR: Record<Motion, RenderParams['attractor']> = {
+  flow: 'plane',
+  pulse: 'sphere',
+  shatter: 'explode',
+  drift: 'plane',
+  swarm: 'swarm',
+  bloom: 'vortex',
+};
+
+// ---- strobe limiter state ------------------------------------------------
+// The limiter has to remember *when* the luminance last reversed, which no
+// argument carries. `prev === null` means a fresh start, which is also how the
+// tests get a clean limiter.
+let clock = 0;
+let lastFlipAt = Number.NEGATIVE_INFINITY;
+let lastDir = 0;
+/**
+ * The slewed *base* of chroma, kept aside because `RenderParams.chroma` is the
+ * base plus an instant impact term and the two cannot be told apart again
+ * from the previous frame's total.
+ */
+let heldChromaBase = 0;
+
+/**
+ * Hold `desired` back when taking it would reverse the screen's luminance
+ * sooner than `MIN_FLIP_SEC` after the last reversal.
+ */
+function limitStrobe(desired: number, held: number): number {
+  const delta = desired - held;
+  const dir = Math.abs(delta) < FLIP_EPS ? 0 : Math.sign(delta);
+  if (dir === 0) return held;
+  if (lastDir !== 0 && dir !== lastDir && clock - lastFlipAt < MIN_FLIP_SEC) return held;
+  if (dir !== lastDir) {
+    lastFlipAt = clock;
+    lastDir = dir;
+  }
+  return desired;
+}
+
+export function direct(
+  mood: MoodVector,
+  fast: FastFrame,
+  dt: number,
+  prev: RenderParams | null,
+  reducedMotion: boolean,
+): RenderParams {
+  const step = Math.max(0, Math.min(0.1, dt));
+  if (prev === null) {
+    clock = 0;
+    lastFlipAt = Number.NEGATIVE_INFINITY;
+    lastDir = 0;
+  }
+  clock += step;
+
+  // One frame's worth of a first-order lag. With prev === null there is
+  // nothing to lag from, so the first frame is the target.
+  const k = prev === null ? 1 : 1 - Math.exp(-step / SLEW_TAU);
+  const slew = (target: number, from: number): number => from + (target - from) * k;
+
+  const arousal = clamp01(mood.arousal);
+  const valence = clamp01(mood.valence);
+  const tension = clamp01(mood.tension);
+  const synthetic = clamp01(mood.synthetic);
+  const hypnotic = clamp01(mood.hypnotic);
+  const space = clamp01(mood.space);
+  const impact = clamp01(fast.impact);
+  const build = clamp01(fast.build);
+
+  // The brief's `grain = lerp(0.02, 0.12, noise)` wants the *noisiness* of the
+  // sound, which the mood vector does not carry as such: it is a fact about
+  // the spectrum, not a judgment. The nearest judgment is "gritty and not
+  // machine-made" — aggression, and the absence of synthetic — so that is what
+  // stands in for it, and it lands in the same 0..1 range.
+  const noise = clamp01(0.5 * clamp01(mood.aggression) + 0.5 * (1 - synthetic));
+
+  // Ink.
+  let flowAmtTarget = lerp(0.15, 0.9, arousal);
+  const decayTarget = lerp(0.93, 0.985, clamp01(build * 0.6 + hypnotic * 0.4));
+  const turbulenceTarget = lerp(0.1, 1.0, tension);
+  const injectGainTarget = lerp(0.6, 1.6, arousal);
+  // Impact-driven: a kick that has been slewed is not a kick.
+  let pushKick = clamp01(fast.sub) * 0.02 + impact * 0.08;
+
+  // Post.
+  const bloomStrengthTarget = lerp(0.3, 1.4, arousal);
+  const bloomThresholdTarget = lerp(0.85, 0.55, valence);
+  const chromaBaseTarget = lerp(0, 0.012, synthetic * arousal);
+  if (prev === null) heldChromaBase = chromaBaseTarget;
+  else heldChromaBase += (chromaBaseTarget - heldChromaBase) * k;
+  let chroma = heldChromaBase + impact * 0.02;
+  const grainTarget = lerp(0.02, 0.12, noise);
+  const vignetteTarget = lerp(0.55, 0.2, space);
+
+  // The acid look is reserved for hard electronic peaks; everywhere else it
+  // would read as a bug.
+  const posterize = synthetic > 0.7 && arousal > 0.7 ? 6 : 0;
+  const mirrored = hypnotic >= 0.6 || (mood.genre === 'electronic_dance' && hypnotic >= 0.4);
+  let mirrorFolds = mirrored ? Math.round(lerp(0, 8, tension)) : 0;
+
+  if (reducedMotion) {
+    flowAmtTarget *= 0.5;
+    pushKick *= 0.5;
+    chroma *= 0.5;
+    mirrorFolds = 0;
+  }
+
+  // Exposure is instant (it is impact-driven), then capped, then rate-limited
+  // in *direction* so it can never strobe.
+  let exposure = 1 + 0.25 * impact + 0.1 * clamp01(fast.downbeatPulse) * arousal;
+  if (reducedMotion) exposure = Math.min(exposure, REDUCED_MAX_EXPOSURE);
+  exposure = prev === null ? exposure : limitStrobe(exposure, prev.exposure);
+
+  return {
+    weights: { ink: 1, particles: 0, strands: 0, relief: 0, breath: 0 },
+    palette: paletteFor(mood),
+
+    flowAmt: slew(flowAmtTarget, prev?.flowAmt ?? flowAmtTarget),
+    decay: slew(decayTarget, prev?.decay ?? decayTarget),
+    turbulence: slew(turbulenceTarget, prev?.turbulence ?? turbulenceTarget),
+    injectGain: slew(injectGainTarget, prev?.injectGain ?? injectGainTarget),
+    pushKick,
+
+    particleSpeed: slew(lerp(0.1, 1.2, arousal), prev?.particleSpeed ?? 0),
+    attractor: ATTRACTOR[mood.motion],
+    pointSize: slew(lerp(1, 3, clamp01(fast.rms)), prev?.pointSize ?? 1),
+
+    strandBend: slew(tension, prev?.strandBend ?? tension),
+    strandThickness: slew(lerp(0.4, 1.6, arousal), prev?.strandThickness ?? 1),
+
+    reliefHeight: slew(lerp(0.2, 1, clamp01(fast.rms)), prev?.reliefHeight ?? 0.2),
+    reliefContrast: slew(lerp(0.3, 1, tension), prev?.reliefContrast ?? 0.3),
+
+    bloomStrength: slew(bloomStrengthTarget, prev?.bloomStrength ?? bloomStrengthTarget),
+    bloomThreshold: slew(bloomThresholdTarget, prev?.bloomThreshold ?? bloomThresholdTarget),
+    chroma,
+    posterize,
+    mirrorFolds,
+    grain: slew(grainTarget, prev?.grain ?? grainTarget),
+    vignette: slew(vignetteTarget, prev?.vignette ?? vignetteTarget),
+    exposure,
+
+    flowStyle: mood.motion,
+  };
+}

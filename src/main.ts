@@ -17,6 +17,7 @@ import { hudRows } from './app/hudRows';
 import { MoodFeed } from './app/moodFeed';
 import { MoodLink } from './app/moodLink';
 import { createSourceSwitch, type DecodedFile } from './app/sources';
+import { createVisualLink } from './app/visualLink';
 import { MoodClient } from './mood/moodClient';
 import { NEUTRAL_MOOD } from './shared/moodSchema';
 import { estimateCaptureLatency, loadTrim, saveTrim } from './source/latency';
@@ -78,6 +79,15 @@ const moodLink = new MoodLink({
   client: moodClient,
   onMood: (mood, now) => writeJevCues(timeline, mood, loop.beatGrid(), now),
 });
+
+// And the visuals, on their own rAF but the same audio clock. Started here and
+// never stopped: before there is any audio it runs its idle mode, so the page
+// is never a dead black rectangle. Everything it needs to assemble a frame —
+// the fast features, the timeline's impact and build, the effective mood — it
+// reads from the pieces above.
+const bg = document.querySelector<HTMLCanvasElement>('#bg');
+if (!bg) throw new Error('JeVJ: #bg is missing from the document');
+createVisualLink({ canvas: bg, loop, cues, mood: () => moodLink.mood() }).start();
 
 /** Whether audio is actually running — the mood layer stays quiet if not. */
 let playing = false;
