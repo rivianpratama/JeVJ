@@ -47,6 +47,58 @@ const BLOOM_RADIUS = 0.6;
  */
 const BLOOM_SCALE = 0.5;
 
+/**
+ * The viewport that covers a drawing buffer of `bufferW × bufferH` device
+ * pixels, in the CSS pixels `WebGLRenderer.setViewport` takes.
+ *
+ * `setViewport` stores what it is given and multiplies by the pixel ratio on
+ * the way to GL, so covering the buffer means dividing by that ratio here. A
+ * ratio that is not a positive number is read as 1 rather than divided by: 0
+ * would make the viewport infinite and `NaN` would make it nothing, and both of
+ * those are a black canvas — which is the failure this exists to prevent.
+ */
+export function outputViewport(
+  bufferW: number,
+  bufferH: number,
+  ratio: number,
+): [number, number] {
+  const r = Number.isFinite(ratio) && ratio > 0 ? ratio : 1;
+  return [Math.max(1, bufferW) / r, Math.max(1, bufferH) / r];
+}
+
+/** As much of a renderer as `coverDrawingBuffer` touches. */
+export interface ViewportRenderer {
+  /** The canvas, read for the real size of its backing store. */
+  domElement: { width: number; height: number };
+  getPixelRatio(): number;
+  setViewport(x: number, y: number, width: number, height: number): void;
+}
+
+/**
+ * Pin the viewport to the whole drawing buffer, whatever the chain left it at.
+ *
+ * Every pass in this file binds a render target of its own and every bind sets
+ * the viewport to that target's size: the scenes at half the frame, the bloom's
+ * five mips from 720 px down to 34, the afterimage's feedback pair. What puts
+ * it back for the pass that draws to the screen is three restoring the
+ * *renderer's* stored size, and that size comes from `setSize` rather than from
+ * the canvas — so the composite covers the canvas only for as long as those two
+ * agree. Anything that resizes the drawing buffer without going through
+ * `setSize`, or any future cap on an internal target that is applied to the
+ * renderer rather than to a target, leaves the picture in a corner of a black
+ * frame.
+ *
+ * So the size is read off `canvas.width`/`canvas.height` — the backing store
+ * itself — rather than off `getDrawingBufferSize`, which is the renderer's own
+ * stored size multiplied back out and so would agree with a stale viewport by
+ * construction.
+ */
+export function coverDrawingBuffer(renderer: ViewportRenderer): void {
+  const { width, height } = renderer.domElement;
+  const [w, h] = outputViewport(width, height, renderer.getPixelRatio());
+  renderer.setViewport(0, 0, w, h);
+}
+
 export class Composer {
   private readonly renderer: THREE.WebGLRenderer;
   private readonly composer: EffectComposer;
@@ -146,6 +198,10 @@ export class Composer {
     this.bloom.threshold = p.bloomThreshold;
     this.bloom.radius = BLOOM_RADIUS;
     this.grain.set(p.grain, p.vignette, time, this.aspect);
+    // The last pass draws to the screen with whatever viewport three restores,
+    // which is the renderer's stored size rather than the canvas's. See
+    // `coverDrawingBuffer`.
+    coverDrawingBuffer(this.renderer);
     this.composer.render();
   }
 
