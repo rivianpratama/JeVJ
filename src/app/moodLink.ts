@@ -29,12 +29,13 @@ export interface MoodLinkOptions {
   client?: MoodClient;
   state?: MoodState;
   /**
-   * Told about each answer as it is applied, with the audio time it is applied
-   * at. Task 8's Jev writer hangs off this: an answer is both a mood to slew
-   * toward and a set of cues to schedule, and only this file knows when one
-   * has landed.
+   * Told about each answer as it is applied, with the audio time the question
+   * it answers was *sent* at — not the time it came back. Task 8's Jev writer
+   * hangs off this: an answer is both a mood to slew toward and a set of cues
+   * to schedule, the cues are counted in beats from the moment Jev was looking
+   * at, and only this file knows when that was.
    */
-  onMood?: (mood: MoodVector, now: number) => void;
+  onMood?: (mood: MoodVector, askedAt: number) => void;
 }
 
 export interface MoodTick {
@@ -49,7 +50,7 @@ export class MoodLink {
   private readonly feed: MoodFeed;
   private readonly client: MoodClient;
   private readonly state: MoodState;
-  private readonly onMood: ((mood: MoodVector, now: number) => void) | undefined;
+  private readonly onMood: ((mood: MoodVector, askedAt: number) => void) | undefined;
   /** The most recent audio time, which a late answer is applied at. */
   private now = 0;
 
@@ -87,10 +88,16 @@ export class MoodLink {
     if (pending !== null) {
       // Only now is this payload the one novelty is measured against.
       this.feed.markSent(reading.input);
+      // The instant the question went out. The answer describes the music as
+      // it was then — "a drop in eight beats" counts from the frame Jev was
+      // shown, not from whenever the reply got back — so the cues are written
+      // against `askedAt`. The mood *slew*, on the other hand, starts moving
+      // when the answer lands, because that is when the app learned anything.
+      const askedAt = now;
       void pending.then((res) => {
         if (res === null) return;
         this.state.setTarget(res.mood, this.now);
-        this.onMood?.(res.mood, this.now);
+        this.onMood?.(res.mood, askedAt);
       });
     }
 

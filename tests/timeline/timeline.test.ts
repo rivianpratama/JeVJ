@@ -58,16 +58,37 @@ describe('CueTimeline', () => {
     expect(tl.at(3.2).impact).toBeCloseTo(0.5, 6);
   });
 
-  it('holds the latest build value, and reads no build before one', () => {
+  it('interpolates the build between the cues bracketing it', () => {
     const tl = new CueTimeline();
     expect(tl.at(0).build).toBe(0);
 
-    tl.add({ t: 1, source: 'jev', build: 0.25 });
-    tl.add({ t: 2, source: 'jev', build: 0.75 });
+    tl.add({ t: 1, source: 'jev', build: 0 });
+    tl.add({ t: 2, source: 'jev', build: 1 });
 
-    expect(tl.at(1.9).build).toBe(0.25);
-    expect(tl.at(2).build).toBe(0.75);
-    expect(tl.at(50).build).toBe(0.75);
+    expect(tl.at(1.5).build).toBeCloseTo(0.5, 6);
+    expect(tl.at(1.9).build).toBeCloseTo(0.9, 6);
+    expect(tl.at(2).build).toBe(1);
+  });
+
+  it('lets the build fall back to nothing once its ramp is over', () => {
+    const tl = new CueTimeline();
+    tl.add({ t: 1, source: 'jev', build: 0.75 });
+
+    // One step of hold covers the gap between two samples of a live ramp…
+    expect(tl.at(1.15).build).toBeCloseTo(0.75, 6);
+    // …and past that, with nothing written after it, the ramp is over.
+    expect(tl.at(1.5).build).toBe(0);
+    expect(tl.at(50).build).toBe(0);
+  });
+
+  it('does not ramp across two build cues that are not one ramp', () => {
+    const tl = new CueTimeline();
+    tl.add({ t: 1, source: 'jev', build: 0 });
+    tl.add({ t: 40, source: 'detector', build: 1 });
+
+    // A hole 39 seconds away is not something to tighten into now.
+    expect(tl.at(20).build).toBe(0);
+    expect(tl.at(40).build).toBe(1);
   });
 
   it('reports the section last written', () => {
@@ -112,6 +133,7 @@ describe('CueTimeline', () => {
     tl.add(jevMood(0, 0.9));
     tl.add({ t: 0.5, source: 'jev', section: 'breakdown' });
     tl.add({ t: 1, source: 'jev', build: 0.4 });
+    tl.add({ t: 10.1, source: 'jev', build: 1 });
     for (let t = 0; t <= 20; t += 0.5) tl.add({ t, source: 'grid', beat: true });
 
     tl.prune(10);
@@ -119,7 +141,9 @@ describe('CueTimeline', () => {
     // The beats are gone; what the renderer would read at 10 is not.
     expect(tl.cues().filter((c) => c.source === 'grid' && c.t < 10)).toHaveLength(0);
     expect(tl.at(10).mood.valence).toBeCloseTo(0.9, 6);
-    expect(tl.at(10).build).toBe(0.4);
+    // The build cue that opens the ramp still runs at 10: without it the ramp
+    // into 10.1 would have no left-hand end.
+    expect(tl.cues().filter((c) => c.build !== undefined && c.t < 10)).toHaveLength(1);
     expect(tl.at(10).section).toBe('breakdown');
     expect(tl.cues().map((c) => c.t)).toEqual([...tl.cues().map((c) => c.t)].sort((a, b) => a - b));
   });

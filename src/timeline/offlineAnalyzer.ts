@@ -11,10 +11,13 @@
  * Three things fall out of the sweep and all three end up on the timeline:
  *
  * - **beats**, from the same grid the live path uses, which is what a cue can
- *   be snapped to;
- * - **impacts and holes**, at the instant the detector called them, less its
- *   reporting lag. These are the exact timestamps the plan asks for; nothing
- *   here is quantized to the 200 ms step;
+ *   be snapped to — back-filled to the top of the track, because the grid
+ *   cannot lock until it has heard a few seconds and those seconds still have
+ *   to be danced to;
+ * - **impacts and holes**, at the instant the detector called them. These are
+ *   exact timestamps; nothing here is quantized to the 200 ms step. Like every
+ *   other writer this one compensates for nothing — the reporting lag comes
+ *   off once, in the reader (`src/app/cueReader.ts`);
  * - **moods**, one per segment, at the segment's start, which the timeline
  *   then cross-fades between.
  *
@@ -32,9 +35,9 @@
 import { fftMagnitudes } from '../analysis/fft';
 import { FeatureExtractor } from '../analysis/features';
 import { AnalysisPipeline } from '../analysis/pipeline';
-import { ONSET_REPORT_LAG_SEC } from '../analysis/onset';
 import { Summarizer } from '../analysis/summarizer';
 import { CueTimeline } from './timeline';
+import type { Beat, GridState } from '../analysis/grid';
 import type { Cue, FrameFeatures, MoodInput, MoodVector } from '../shared/types';
 
 /** 60 frames a second, as the live loop gets from the display. */
@@ -58,6 +61,8 @@ const MAX_SEGMENTS = 40;
 const SWEEP_SHARE = 0.8;
 /** Frames between yields, so a browser can paint a progress toast. */
 const YIELD_EVERY = 256;
+/** The shortest a hole's release may be: one beat at 120 BPM. */
+const MIN_GAP_RELEASE_SEC = 0.5;
 
 export interface OfflineSegment {
   start: number;
@@ -101,6 +106,8 @@ export async function analyzeOffline(
   let referenceAt = -Infinity;
   let nextSampleAt = 0;
   let lastDropAt = Number.NaN;
+  /** Whether the beats before the grid locked have been written yet. */
+  let backfilled = false;
 
   const window = new Float32Array(OFFLINE_FFT_SIZE);
   const frames = Math.ceil(mono.length / hop);
@@ -117,19 +124,31 @@ export async function analyzeOffline(
 
     for (const beat of snap.beats) {
       tl.add({ t: beat.t, source: 'offline', beat: true, downbeat: beat.downbeat });
+      // The first beat the grid ever emits is several seconds into the track,
+      // because that is how long a tempo takes to measure. The beats before it
+      // were still played, at the same period and the same downbeat phase, and
+      // offline is the one mode that can say so after the fact.
+      if (!backfilled) {
+        backfilled = true;
+        backfill(tl, beat, snap.grid);
+      }
     }
 
     const drop = snap.drop;
     if (drop !== null && drop.t !== lastDropAt) {
       lastDropAt = drop.t;
-      // The detector reports a frame late; the file's own clock has no
-      // capture or output latency to take off beyond that.
-      const at = Math.max(0, drop.t - ONSET_REPORT_LAG_SEC);
-      tl.add(
-        drop.kind === 'impact'
-          ? { t: at, source: 'offline', impact: drop.strength }
-          : { t: at, source: 'offline', build: 1 },
-      );
+      if (drop.kind === 'impact') {
+        tl.add({ t: drop.t, source: 'offline', impact: drop.strength });
+      } else {
+        // Full tension when the floor goes, released a beat later: a hole
+        // nothing follows up on is a quiet passage, not a held breath.
+        const beatSec = snap.grid.period > 0 && Number.isFinite(snap.grid.period)
+          ? snap.grid.period
+          : 0;
+        const release = Math.max(beatSec, MIN_GAP_RELEASE_SEC);
+        tl.add({ t: drop.t, source: 'offline', build: 1 });
+        tl.add({ t: drop.t + release, source: 'offline', build: 0 });
+      }
     }
 
     if (t >= nextSampleAt) {
@@ -166,7 +185,7 @@ export async function analyzeOffline(
     if (i % YIELD_EVERY === YIELD_EVERY - 1) await yieldToHost();
   }
 
-  const segments = merged(spans(bounds, duration), samples);
+  const segments = mergeSegments(spans(bounds, duration), samples);
 
   // Sequential on purpose: forty parallel calls would be forty rate-limit
   // errors, and nothing downstream can start before the last of them anyway.
@@ -179,6 +198,33 @@ export async function analyzeOffline(
 
   progress(1);
   return { features, timeline: [...tl.cues()], segments };
+}
+
+/**
+ * The beats before `first`, back to the top of the track.
+ *
+ * The grid needs a few seconds of music before it can say anything, so its
+ * first beat is never the track's first beat. Offline, the period and the
+ * downbeat phase it settled on are known facts about what already played:
+ * step backwards at that period, keeping the bar count going, and the opening
+ * of the track has a grid too. Live, nothing can do this — which is the whole
+ * point of the offline pass.
+ */
+function backfill(tl: CueTimeline, first: Beat, grid: GridState): void {
+  const { period, barLength, downbeatOffset } = grid;
+  if (!(period > 0) || !Number.isFinite(period)) return;
+
+  for (let k = 1; ; k++) {
+    const t = first.t - k * period;
+    if (t < 0) return;
+    const index = first.index - k;
+    tl.add({
+      t,
+      source: 'offline',
+      beat: true,
+      downbeat: ((index % barLength) + barLength) % barLength === downbeatOffset,
+    });
+  }
 }
 
 /** `out` filled with the `out.length` samples ending at `end`; short reads are silence. */
@@ -206,7 +252,7 @@ function spans(bounds: number[], duration: number): Array<{ start: number; end: 
  * and repeating: the shortest span is the one whose boundary was least worth
  * spending a call on, and its shorter neighbour is the one that least dilutes.
  */
-function merged(
+export function mergeSegments(
   raw: Array<{ start: number; end: number }>,
   samples: Array<{ t: number; input: MoodInput }>,
 ): OfflineSegment[] {

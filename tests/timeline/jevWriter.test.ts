@@ -88,13 +88,27 @@ describe('writeJevCues', () => {
     expect(builds.length).toBeGreaterThanOrEqual(20);
     expect(builds[0]!.t).toBeCloseTo(10, 6);
     expect(builds[0]!.build).toBeCloseTo(0, 6);
-    expect(builds[builds.length - 1]!.build).toBeCloseTo(1, 6);
+    expect(builds[builds.length - 2]!.build).toBeCloseTo(1, 6);
+    expect(builds[builds.length - 1]!.build).toBe(0);
 
-    for (let i = 1; i < builds.length; i++) {
-      expect(builds[i]!.build!).toBeGreaterThan(builds[i - 1]!.build!);
-      expect(builds[i]!.t - builds[i - 1]!.t).toBeLessThanOrEqual(0.2 + 1e-9);
+    // Up to the hit the ramp only rises; the cue after it is the release.
+    const ramp = builds.slice(0, -1);
+    for (let i = 1; i < ramp.length; i++) {
+      expect(ramp[i]!.build!).toBeGreaterThan(ramp[i - 1]!.build!);
+      expect(ramp[i]!.t - ramp[i - 1]!.t).toBeLessThanOrEqual(0.2 + 1e-9);
     }
     expect(tl.at(12).build).toBeCloseTo(0.5, 2);
+  });
+
+  it('lets the ramp go once the hit it was drawn for has passed', () => {
+    const tl = new CueTimeline();
+    writeJevCues(tl, mood({ dropImminent: 0.9, beatsToChange: '8', impact: 0.8 }), grid120(10), 10);
+
+    // Target is 14: full at the hit, and back to nothing just after it rather
+    // than pinned at 1 for the rest of the track.
+    expect(tl.at(14).build).toBeCloseTo(1, 6);
+    expect(tl.at(14.5).build).toBe(0);
+    expect(tl.at(60).build).toBe(0);
   });
 
   it('snaps the target to a phrase boundary within two bars of it', () => {

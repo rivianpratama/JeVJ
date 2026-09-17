@@ -13,12 +13,16 @@
  * EDM and pop actually put the drop.
  *
  * Then the anticipation: a `build` ramp on the timeline's own 0.2 s step from
- * now to the target, so the visuals tighten into the hit rather than reacting
- * to it. The hit itself is one exact cue, which the detector will re-anchor
+ * now to the target, released one step after it, so the visuals tighten into
+ * the hit and then let go rather than staying wound up for the rest of the
+ * track. The hit itself is one exact cue, which the detector will re-anchor
  * when the transient really arrives (`detectorWriter`) and which decays on its
- * own if it never does.
+ * own afterwards if it never does.
  *
- * Pure: no clock of its own, no DOM.
+ * Pure: no clock of its own, no DOM. `now` is the audio time the *question*
+ * was asked at, not the time the answer came back — a model that takes half a
+ * second to reply is describing the music it was shown, and "eight beats from
+ * now" counts from then. `MoodLink` keeps that time for us.
  */
 
 import type { BeatGrid } from '../analysis/grid';
@@ -83,6 +87,10 @@ export function writeJevCues(tl: CueTimeline, mood: MoodVector, grid: GridLike, 
     tl.add({ t, source: 'jev', build: (t - now) / span });
   }
   tl.add({ t: target, source: 'jev', impact: mood.impact, build: 1, section: 'drop_climax' });
+  // And the ramp is closed one step after the hit. Without this the build
+  // stays at 1 for as long as nobody writes another one — the anticipation was
+  // for the drop, and the drop has happened.
+  tl.add({ t: target + tl.step, source: 'jev', build: 0 });
 }
 
 /**

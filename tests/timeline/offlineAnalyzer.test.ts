@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { ONSET_REPORT_LAG_SEC } from '../../src/analysis/onset';
 import { NEUTRAL_MOOD } from '../../src/shared/moodSchema';
-import { analyzeOffline } from '../../src/timeline/offlineAnalyzer';
+import { analyzeOffline, mergeSegments } from '../../src/timeline/offlineAnalyzer';
 import { clickTrack, concatSignals } from '../helpers/synth';
+import { EXAMPLE_INPUT } from '../helpers/moodFixture';
 import type { MoodInput, MoodVector } from '../../src/shared/types';
 
 const SR = 44100;
@@ -92,14 +94,29 @@ describe('analyzeOffline', () => {
     }
     expect(result.timeline.every((c) => c.source === 'offline')).toBe(true);
 
-    // The slam is on the timeline at the instant it happened.
+    // The slam is on the timeline at the frame the detector called it on —
+    // analysis time, one reporting lag after the sound. The reader takes that
+    // off once, for every source at once.
     const impacts = result.timeline.filter((c) => c.impact !== undefined);
-    expect(impacts.some((c) => Math.abs(c.t - SWITCH_SEC) <= 0.03)).toBe(true);
+    expect(impacts.some((c) => Math.abs(c.t - (SWITCH_SEC + ONSET_REPORT_LAG_SEC)) <= 0.03)).toBe(
+      true,
+    );
 
-    // Beats cover the track from the moment the tempo is first measurable.
+    // Every hole lets go again rather than pinning the build at 1.
+    const builds = result.timeline.filter((c) => c.build !== undefined);
+    for (const held of builds.filter((c) => c.build === 1)) {
+      expect(builds.some((c) => c.build === 0 && c.t > held.t && c.t - held.t <= 1.5)).toBe(true);
+    }
+
+    // Beats cover the track — including the part that played before the tempo
+    // was measurable, back-filled at the period the grid settled on.
     const beats = result.timeline.filter((c) => c.beat === true);
     expect(beats.length).toBeGreaterThan(40);
-    expect(beats[0]!.t).toBeLessThan(12);
+    // The first beat is inside the first period: nothing before it is missing.
+    const firstPeriod = beats[1]!.t - beats[0]!.t;
+    expect(firstPeriod).toBeGreaterThan(0.2);
+    expect(beats[0]!.t).toBeLessThan(firstPeriod);
+    expect(beats.some((c) => c.t < 5 && c.downbeat === true)).toBe(true);
     expect(beats[beats.length - 1]!.t).toBeGreaterThan(TOTAL_SEC - 1.5);
     expect(beats.some((c) => c.downbeat === true)).toBe(true);
     // Sorted, and nothing before the track started.
@@ -125,6 +142,23 @@ describe('analyzeOffline', () => {
     expect(result.timeline.filter((c) => c.impact !== undefined)).toHaveLength(0);
   });
 
+  it('back-fills the beats before the tempo was known', { timeout: 60_000 }, async () => {
+    const jev = fakeJev();
+    const result = await analyzeOffline(twoHalves(), SR, jev.ask);
+    const beats = result.timeline.filter((c) => c.beat === true).map((c) => c.t);
+
+    // The grid cannot lock until it has heard a few seconds, but the track
+    // started at 0 and the visuals have to have something to hit before then.
+    expect(beats[0]!).toBeGreaterThanOrEqual(0);
+    expect(beats[0]!).toBeLessThan(1);
+    // Evenly spaced from the start: the back-fill uses the settled period.
+    const early = beats.filter((t) => t < 5);
+    expect(early.length).toBeGreaterThan(4);
+    for (let i = 2; i < early.length; i++) {
+      expect(early[i]! - early[i - 1]!).toBeCloseTo(early[1]! - early[0]!, 3);
+    }
+  });
+
   it('has nothing to say about an empty buffer', { timeout: 10_000 }, async () => {
     const jev = fakeJev();
     const result = await analyzeOffline(new Float32Array(0), SR, jev.ask);
@@ -133,5 +167,59 @@ describe('analyzeOffline', () => {
     expect(result.segments).toHaveLength(0);
     expect(result.timeline).toHaveLength(0);
     expect(jev.inputs).toHaveLength(0);
+  });
+});
+
+describe('mergeSegments', () => {
+  /** Payloads every half second, as the sweep takes them. */
+  function samplesTo(duration: number): Array<{ t: number; input: MoodInput }> {
+    const out: Array<{ t: number; input: MoodInput }> = [];
+    for (let t = 0; t < duration; t += 0.5) out.push({ t, input: { ...EXAMPLE_INPUT } });
+    return out;
+  }
+
+  /** `count` spans, every `runtEvery`-th of them a one-second runt. */
+  function spans(count: number, runtEvery: number): Array<{ start: number; end: number }> {
+    const out: Array<{ start: number; end: number }> = [];
+    let at = 0;
+    for (let i = 0; i < count; i++) {
+      const length = i > 0 && i % runtEvery === 0 ? 1 : 9;
+      out.push({ start: at, end: at + length });
+      at += length;
+    }
+    return out;
+  }
+
+  it('folds the shortest span into its shorter neighbour until the ceiling', () => {
+    const raw = spans(45, 8);
+    const duration = raw[raw.length - 1]!.end;
+    const samples = samplesTo(duration);
+    const takenAt = (input: MoodInput): number => samples.find((s) => s.input === input)!.t;
+    const out = mergeSegments(raw, samples);
+
+    expect(out).toHaveLength(40);
+    // Still one unbroken cover of the track, in order.
+    expect(out[0]!.start).toBe(0);
+    expect(out[out.length - 1]!.end).toBe(duration);
+    for (let i = 1; i < out.length; i++) expect(out[i]!.start).toBe(out[i - 1]!.end);
+    // The runts are what went: the five shortest spans, and only those.
+    expect(out.filter((s) => s.end - s.start === 1)).toHaveLength(0);
+    // And each one is described by a payload from inside it.
+    for (const s of out) {
+      expect(takenAt(s.input)).toBeGreaterThanOrEqual(s.start - 0.5);
+      expect(takenAt(s.input)).toBeLessThanOrEqual(s.end + 0.5);
+    }
+  });
+
+  it('leaves a list already inside the ceiling alone', () => {
+    const raw = spans(12, 8);
+    const out = mergeSegments(raw, samplesTo(raw[raw.length - 1]!.end));
+
+    expect(out.map((s) => [s.start, s.end])).toEqual(raw.map((s) => [s.start, s.end]));
+  });
+
+  it('drops a span it has no payload for', () => {
+    const out = mergeSegments([{ start: 0, end: 10 }], []);
+    expect(out).toHaveLength(0);
   });
 });

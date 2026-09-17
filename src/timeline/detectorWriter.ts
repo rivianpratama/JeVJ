@@ -3,29 +3,40 @@
  *
  * Jev says a drop is coming and roughly where; this says *now*. When the two
  * agree — a measured slam within a beat of a predicted one — the prediction is
- * not replaced but moved onto the measurement (`reanchor`), so everything that
- * was scheduled against it, the grid included, slides with it and the
- * anticipation that has been building for two bars still lands on the hit.
- * When nothing predicted it, the hit is written on its own: less anticipation,
- * same exact instant. When a prediction is never confirmed, this writer does
- * nothing at all and the timeline's decay takes care of it — a drop that did
- * not happen must not be shown.
+ * not replaced but moved onto the measurement (`reanchor`), so the ramp that
+ * has been building for two bars still lands on the hit. The grid moves with
+ * it, but only until the next HUD tick: `writeGridCues` rewrites the grid's
+ * whole horizon from the grid's own phase at 15 Hz, so the shift is a stopgap
+ * that keeps one frame's reading honest, not a correction to the beat grid.
+ * (The grid itself learns the same transient through `onOnset`.)
  *
- * Two clocks are reconciled here. The detector stamps an event with the frame
- * it was *called* on, which is one analyser window after the transient
- * sounded (`ONSET_REPORT_LAG_SEC`), and the sound itself reached the ears a
- * capture-and-output latency before that. Both come off before the cue time,
- * so what goes on the timeline is when the listener heard it.
+ * When nothing predicted the hit, it is written on its own: less anticipation,
+ * same exact instant. When a prediction is never confirmed this writer does
+ * nothing, and the prediction still fires at its target — the timeline only
+ * decays it *afterwards*. That is deliberate: a scheduled hit is what the
+ * anticipation was drawn for. The `source` tag is what tells them apart, so a
+ * director that would rather not flash on an unconfirmed prediction can gate
+ * on `jev` versus `detector` itself.
+ *
+ * One clock: the event's own timestamp goes on the timeline untouched. It is
+ * the frame the detector was *called* on, one analyser window after the
+ * transient sounded, and that is the same late clock the grid, the frames and
+ * Jev's cues are on — comparing a measurement with a prediction only works
+ * because neither has been shifted. `src/app/cueReader.ts` takes the lag and
+ * the capture latency off once, when the timeline is read.
  *
  * Pure: no DOM, no Web Audio.
  */
 
-import { ONSET_REPORT_LAG_SEC } from '../analysis/onset';
 import type { DropEvent } from '../analysis/drop';
 import type { Cue } from '../shared/types';
 import type { CueTimeline } from './timeline';
 
-/** How far from a prediction a measurement still counts as the same hit. */
+/**
+ * How far from a prediction a measurement still counts as the same hit, and
+ * the shortest a hole's release may be: half a second is one beat at 120 BPM,
+ * which is the assumption to make when there is no grid to ask.
+ */
 const DEFAULT_BEAT_SEC = 0.5;
 /**
  * How old an event may be and still be worth writing down. The live timeline
@@ -37,8 +48,6 @@ const STALE_SEC = 2;
 export interface DetectorWriterOptions {
   /** One beat, in seconds — the window a prediction may be off by. */
   beatSec?: number;
-  /** Measured capture + output latency, plus the user's trim, in seconds. */
-  latencySec?: number;
 }
 
 export function applyDetectorEvent(
@@ -48,13 +57,16 @@ export function applyDetectorEvent(
   o: DetectorWriterOptions = {},
 ): void {
   const beat = o.beatSec !== undefined && o.beatSec > 0 ? o.beatSec : DEFAULT_BEAT_SEC;
-  const t = ev.t - ONSET_REPORT_LAG_SEC - (o.latencySec ?? 0);
+  const t = ev.t;
   if (now - t > STALE_SEC) return;
 
   if (ev.kind === 'gap') {
     // A hole is the far end of an anticipation, not a hit: the visuals should
-    // be at full tension when the floor drops out.
+    // be at full tension when the floor drops out — and then let go again. A
+    // hole that nothing follows up on is a quiet passage, not a held breath,
+    // so the ramp is closed a beat later rather than left standing.
     tl.add({ t, source: 'detector', build: 1 });
+    tl.add({ t: t + Math.max(beat, DEFAULT_BEAT_SEC), source: 'detector', build: 0 });
     return;
   }
 

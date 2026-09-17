@@ -9,8 +9,10 @@
 
 import './ui/styles.css';
 
+import { ONSET_REPORT_LAG_SEC } from './analysis/onset';
 import { Summarizer } from './analysis/summarizer';
 import { AnalysisLoop } from './app/analysisLoop';
+import { createCueReader } from './app/cueReader';
 import { hudRows } from './app/hudRows';
 import { MoodFeed } from './app/moodFeed';
 import { MoodLink } from './app/moodLink';
@@ -58,9 +60,11 @@ if (!root) throw new Error('JeVJ: #ui is missing from the document');
 const card = createCard(root);
 const player = createYouTubePlayer(card.playerMount);
 const loop = new AnalysisLoop();
-// What the visuals will read: every writer puts its cues here, on the audio
-// clock, and the HUD lists what is coming.
+// What the visuals will read: every writer puts its cues here, in analysis
+// time, and the reader is the one place that time is turned back into the
+// listener's — see `cueReader`.
 const timeline = new CueTimeline();
+const cues = createCueReader(timeline, latencySec);
 const moodClient = new MoodClient();
 // Nothing else tells the grid a section ended, and the phrase count it keeps
 // is counted from there. The feed is what hears boundaries, so it is what says
@@ -88,9 +92,34 @@ let offlineCues: Cue[] = [];
 let lastDropAt = Number.NaN;
 /** Consecutive failures in the offline pass; see `OFFLINE_GIVE_UP`. */
 let offlineFailures = 0;
+/** Which pre-analysis pass is the current one; a late one is ignored. */
+let filePass = 0;
 
-/** Offset applied when analyser time is converted to cue time. */
+/**
+ * Whatever pre-analysis is running is about a track that is being replaced.
+ * Bumping the counter is all it takes: the pass itself checks before it writes.
+ */
+function cancelPreAnalysis(): void {
+  filePass += 1;
+}
+
+/** The user's own correction on top of the measured latency, in ms. */
 let latencyTrimMs = loadTrim();
+
+/**
+ * How far the analysis runs behind what the listener hears.
+ *
+ * The detector reports a transient one analyser window late, and everything
+ * else on the timeline is derived from the same frames. A captured tab adds
+ * the browser's capture and output latency on top; a local file is decoded
+ * straight off disk, so it has none of that. The trim slider covers whatever
+ * the estimate misses. This is the only latency number in the app, and it is
+ * applied in exactly one place: reading the timeline.
+ */
+function latencySec(): number {
+  const capture = mode === 'file' ? 0 : captureLatencySec;
+  return ONSET_REPORT_LAG_SEC + capture + latencyTrimMs / 1000;
+}
 const hud = createHud(root, (ms) => {
   latencyTrimMs = ms;
   saveTrim(latencyTrimMs);
@@ -152,10 +181,7 @@ function renderHud(): void {
   const drop = snap.drop;
   if (drop !== null && drop.t !== lastDropAt) {
     lastDropAt = drop.t;
-    applyDetectorEvent(timeline, drop, now, {
-      beatSec: snap.grid.period,
-      latencySec: captureLatencySec + latencyTrimMs / 1000,
-    });
+    applyDetectorEvent(timeline, drop, now, { beatSec: snap.grid.period });
   }
 
   timeline.prune(now - CUE_HISTORY_SEC);
@@ -183,17 +209,20 @@ function renderHud(): void {
  * so they only show when there is nothing more interesting to say.
  */
 function upcomingRows(now: number): Array<{ dt: number; label: string }> {
-  const cues = timeline.upcoming(now, CUE_HORIZON_SEC);
-  const notable = cues.filter(
+  // From the compensated instant, so a cue's countdown is how long until the
+  // listener hears it rather than how long until the analysis reaches it.
+  const from = cues.readTime(now);
+  const due = cues.upcoming(now, CUE_HORIZON_SEC);
+  const notable = due.filter(
     (c) =>
       c.impact !== undefined ||
       c.section !== undefined ||
       c.mood !== undefined ||
       c.downbeat === true,
   );
-  return (notable.length > 0 ? notable : cues)
+  return (notable.length > 0 ? notable : due)
     .slice(0, UPCOMING_ROWS)
-    .map((c) => ({ dt: c.t - now, label: cueLabel(c) }));
+    .map((c) => ({ dt: c.t - from, label: cueLabel(c) }));
 }
 
 function cueLabel(c: Cue): string {
@@ -242,6 +271,7 @@ async function submitUrl(url: string): Promise<void> {
   // The video is the source now; a file left playing would keep the transport
   // lit and keep feeding the analyser underneath it.
   sources.dropFile();
+  cancelPreAnalysis();
   mode = 'video';
   controls.setBusy(true);
   card.setMode('video');
@@ -261,6 +291,9 @@ async function submitUrl(url: string): Promise<void> {
 }
 
 async function openFile(f: File): Promise<void> {
+  // Before the decode, not after: the sweep already running is about the file
+  // this one is replacing, whatever happens to this one.
+  cancelPreAnalysis();
   mode = 'file';
   card.setMode('file');
   card.setLabel(f.name);
@@ -284,30 +317,49 @@ async function openFile(f: File): Promise<void> {
  * the timeline before playback starts, so the anticipation leading into a hit
  * is exact rather than predicted. It costs a few seconds and a handful of
  * model calls; a track whose pre-analysis fails still plays, just live.
+ *
+ * A sweep takes seconds, and the user can drop a second file into the middle
+ * of one. Every pass carries a number, and a pass that is no longer the
+ * current one writes nothing, toasts nothing and asks nothing more: the
+ * sweep it belongs to is about a track nobody is listening to. `sources`
+ * makes the same check before it plays the element.
  */
 async function preAnalyse({ el, buffer }: DecodedFile): Promise<void> {
+  const pass = ++filePass;
+  const current = (): boolean => pass === filePass;
+
   offlineCues = [];
   offlineFailures = 0;
   timeline.replaceSource('offline', 0, []);
 
   let shown = 0;
   try {
-    const result = await analyzeOffline(downmix(buffer), buffer.sampleRate, askJevOnce, (p) => {
-      const step = Math.floor(p * 10) * 10;
-      if (step <= shown) return;
-      shown = step;
-      toast(`analysing the track… ${step}%`);
-    });
+    const result = await analyzeOffline(
+      downmix(buffer),
+      buffer.sampleRate,
+      (input) => askJevOnce(input, current),
+      (p) => {
+        const step = Math.floor(p * 10) * 10;
+        if (step <= shown || !current()) return;
+        shown = step;
+        toast(`analysing the track… ${step}%`);
+      },
+    );
+    if (!current()) return;
     offlineCues = result.timeline;
     toast(`timeline ready — ${result.segments.length} sections`);
   } catch {
+    if (!current()) return;
     toast('could not pre-analyse that file; playing it live', 'error');
   }
+  if (!current()) return;
 
   // Cue times come out of the sweep in *track* time. Only the transport knows
   // where that sits on the audio clock, and only once it is running — and it
   // moves every time the user seeks.
-  const place = (): void => writeOfflineCues(el);
+  const place = (): void => {
+    if (current()) writeOfflineCues(el);
+  };
   el.addEventListener('play', place);
   el.addEventListener('seeked', place);
 }
@@ -329,10 +381,12 @@ function writeOfflineCues(el: HTMLAudioElement): void {
  *
  * The neutral mood on failure is not a fallback so much as an admission: the
  * segment still exists and still has to have a cue, it just has nothing
- * interesting to say about itself.
+ * interesting to say about itself. A sweep whose file has been replaced stops
+ * asking for the same reason, except that it is not even an admission — the
+ * answers are about to be thrown away.
  */
-async function askJevOnce(input: MoodInput): Promise<MoodVector> {
-  if (offlineFailures >= OFFLINE_GIVE_UP) return NEUTRAL_MOOD;
+async function askJevOnce(input: MoodInput, current: () => boolean): Promise<MoodVector> {
+  if (!current() || offlineFailures >= OFFLINE_GIVE_UP) return NEUTRAL_MOOD;
   const res = await moodClient.ask(input, graph?.ctx.currentTime ?? 0);
   if (res === null) {
     offlineFailures += 1;

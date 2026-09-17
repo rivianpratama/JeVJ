@@ -9,7 +9,18 @@
  * arrives a frame late, moved (`reanchor`) without anything downstream
  * knowing; an offline pass can write a whole track's cues before playback
  * starts (`replaceSource`); and a model answer that lands 400 ms after the
- * question was asked still lands *at* the instant it was asked about.
+ * question was asked is still written at the instant it was asked about,
+ * because `writeJevCues` is handed the time of the question, not of the reply.
+ *
+ * **One clock, and one place where it is corrected.** Every time written here
+ * is *analysis time*: the audio clock as the analysis chain sees it, which
+ * runs late relative to what the listener hears by the detector's reporting
+ * lag plus, for a captured tab, the capture and output latency. Frames,
+ * onsets, grid predictions, detector events and the Jev cues derived from the
+ * grid are all on that one clock, so they can be compared with each other
+ * without anybody subtracting anything. No writer compensates. The *reader*
+ * does it once — `src/app/cueReader.ts` asks for `now + latencySec` — which is
+ * the only place the two clocks ever meet.
  *
  * Three kinds of value live here, and each is read differently:
  *
@@ -19,11 +30,11 @@
  * - **impact** is a hit. It is not interpolated and never quantized: it fires
  *   at its exact timestamp and decays exponentially (τ = 0.25 s), which is
  *   what makes an unconfirmed prediction fade instead of firing a fake drop.
- * - **build** is a ramp already sampled at the timeline's 0.2 s step, so it is
- *   held: the latest value at or before `now`.
+ * - **build** is a ramp, so it is interpolated between the two cues either
+ *   side of `now` and falls back to nothing once the ramp is over. Every
+ *   writer that opens a ramp closes it; see `buildAt`.
  *
- * Every time here is audio-clock seconds. Pure: no DOM, no Web Audio, no
- * wall clock.
+ * Pure: no DOM, no Web Audio, no wall clock.
  */
 
 import type { Cue, CueSource, MoodVector, Section } from '../shared/types';
@@ -45,6 +56,22 @@ const IMPACT_LOOKBACK = 5 * IMPACT_TAU;
  * frame, and a grid beat written 20 ms early is the same beat.
  */
 const REANCHOR_TOLERANCE = 0.05;
+/**
+ * How long a build value stands with nothing written after it: one step, the
+ * distance between two samples of a live ramp. Past that the ramp is over and
+ * the build is nothing — an anticipation nobody is renewing is not an
+ * anticipation, and a `1` left standing would pin the visuals at full tension
+ * for the rest of the track.
+ */
+const BUILD_HOLD_SEC = STEP;
+/**
+ * The widest two build cues may be apart and still be read as one ramp. No
+ * writer draws a ramp with a wider gap in it — 0.2 s steps, and a beat for a
+ * hole's release — so past this the two cues are about different moments, and
+ * sliding between them would tighten the visuals for half a minute into a
+ * hole nobody can hear coming yet.
+ */
+const BUILD_SPAN_MAX = 2;
 
 /** What the renderer reads for one instant. */
 export interface CueReading {
@@ -52,7 +79,7 @@ export interface CueReading {
   mood: Partial<MoodVector>;
   /** 0..1, decayed from the sharpest hit still ringing. */
   impact: number;
-  /** 0..1 anticipation ramp; the latest value written at or before `t`. */
+  /** 0..1 anticipation ramp, interpolated between the cues either side of `t`. */
   build: number;
   /** The section last declared at or before `t`, if any. */
   section?: Section;
@@ -99,9 +126,10 @@ export class CueTimeline {
    * Drop what has gone by — the live window keeps only the last couple of
    * seconds — except what is still *in force*.
    *
-   * The mood, the build level and the section are read as "the latest one at
-   * or before now", so the cue that established each of them is still being
-   * read however long ago it was written. Dropping it on age alone would
+   * The mood and the section are read as "the latest one at or before now",
+   * and a build cue is the left-hand end of the ramp running through now, so
+   * the cue that established each of them is still being read however long ago
+   * it was written. Dropping it on age alone would
    * silently reset the mood to nothing in the middle of a track, which in file
    * mode — where a segment's mood cue can be minutes behind the playhead — is
    * most of the time. At most three cues survive this way.
@@ -137,35 +165,31 @@ export class CueTimeline {
   at(t: number): CueReading {
     const last = this.lastAtOrBefore(t);
 
-    let build = 0;
     let section: Section | undefined;
     let prevMood: Cue | null = null;
-    let haveBuild = false;
+    let prevBuild: Cue | null = null;
 
     for (let i = last; i >= 0; i--) {
       const c = this.list[i]!;
-      if (!haveBuild && c.build !== undefined) {
-        build = c.build;
-        haveBuild = true;
-      }
+      if (prevBuild === null && c.build !== undefined) prevBuild = c;
       if (section === undefined && c.section !== undefined) section = c.section;
       if (prevMood === null && carriesMood(c)) prevMood = c;
-      if (haveBuild && section !== undefined && prevMood !== null) break;
+      if (prevBuild !== null && section !== undefined && prevMood !== null) break;
     }
 
     let nextMood: Cue | null = null;
+    let nextBuild: Cue | null = null;
     for (let i = last + 1; i < this.list.length; i++) {
       const c = this.list[i]!;
-      if (carriesMood(c)) {
-        nextMood = c;
-        break;
-      }
+      if (nextMood === null && carriesMood(c)) nextMood = c;
+      if (nextBuild === null && c.build !== undefined) nextBuild = c;
+      if (nextMood !== null && nextBuild !== null) break;
     }
 
     return {
       mood: blend(prevMood, nextMood, t),
       impact: this.impactAt(t, last),
-      build,
+      build: buildAt(prevBuild, nextBuild, t),
       ...(section === undefined ? {} : { section }),
     };
   }
@@ -283,6 +307,30 @@ function merge(a: Cue, b: Cue): Cue {
     out.impact = Math.max(a.impact ?? 0, b.impact ?? 0);
   }
   return out;
+}
+
+/**
+ * The build at `t`: a ramp, read between the cues either side of it.
+ *
+ * A writer samples a ramp every 0.2 s, but the renderer draws at 60 fps, so
+ * holding the last sample would step the anticipation up in visible stairs.
+ * Between two cues the value slides; the step only sets how often a writer has
+ * to say something.
+ *
+ * Nothing after `a` means the ramp is over: the value stands for one step —
+ * long enough that a live ramp being written one sample at a time never
+ * flickers — and is then nothing. That is what makes every ramp terminate,
+ * and it is why each writer closes its own: a `build: 0` after the hit, a
+ * release a beat after a hole.
+ */
+function buildAt(a: Cue | null, b: Cue | null, t: number): number {
+  if (a === null || a.build === undefined) return 0;
+  if (b?.build !== undefined && b.t - a.t <= BUILD_SPAN_MAX) {
+    const span = b.t - a.t;
+    const w = span > 0 ? (t - a.t) / span : 1;
+    return a.build + (b.build - a.build) * Math.min(1, Math.max(0, w));
+  }
+  return t - a.t <= BUILD_HOLD_SEC ? a.build : 0;
 }
 
 /**
