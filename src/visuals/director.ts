@@ -56,9 +56,19 @@ export interface RenderParams {
   pushKick: number;
 
   // particles (Task 10)
+  /** World units per second the dust travels at full tilt. */
   particleSpeed: number;
+  /** Scales the impact kick and the onset scatter; halved under reduced motion. */
+  particleImpulse: number;
   attractor: 'sphere' | 'plane' | 'vortex' | 'explode' | 'swarm';
+  /** The shell the sphere attractor pulls toward; breathes on a pulse. */
+  attractorRadius: number;
+  /** How hard the attractor pulls. Below 1 only for the bloom's soft burst. */
+  attractorForce: number;
+  /** Point sprite size in CSS pixels, before the device pixel ratio. */
   pointSize: number;
+  /** How far an impact snaps the camera out. 0 under reduced motion. */
+  dollySnap: number;
 
   // strands (Task 10)
   strandBend: number;
@@ -142,7 +152,7 @@ export const IDLE_MOOD: MoodVector = {
   confidence: 0,
 };
 
-/** Which particle attractor each motion label implies (Task 10 consumes it). */
+/** Which particle attractor each motion label implies. */
 const ATTRACTOR: Record<Motion, RenderParams['attractor']> = {
   flow: 'plane',
   pulse: 'sphere',
@@ -151,6 +161,19 @@ const ATTRACTOR: Record<Motion, RenderParams['attractor']> = {
   swarm: 'swarm',
   bloom: 'vortex',
 };
+
+/** The ink is always under everything; the other layers are mixed on top of it. */
+const INK_BED = 0.55;
+/** The shell the sphere attractor gathers onto. */
+const SHELL_RADIUS = 1.2;
+/** How far a pulse breathes that shell, per beat. */
+const SHELL_BREATH = 0.25;
+/** A bloom's burst, as a fraction of a real explosion. */
+const BLOOM_FORCE = 0.35;
+/** How much of a downbeat pulse is still "on the downbeat". */
+const BLOOM_GATE = 0.5;
+/** How far an impact snaps the particle camera out. */
+const DOLLY_SNAP = 0.8;
 
 /**
  * Everything `direct` has to remember between frames and cannot read back off
@@ -299,11 +322,55 @@ export function direct(
   const foldTarget = hypnotic >= 0.6 ? Math.round(lerp(MIN_FOLDS, MAX_FOLDS, tension)) : 0;
   let mirrorFolds = holdFolds(state, foldTarget, prev === null);
 
+  // The mix.
+  //
+  // The ink is a constant bed and the other two layers are bid on top of it,
+  // then the lot is normalised — so the *ratio* is what the formulas decide and
+  // the total is always exactly one frame's worth of light. Particles want
+  // energy and machines; strands want stillness and tension; both get out of
+  // the way of a voice, because dust and silk over speech read as decoration
+  // over a person talking.
+  const spoken = clamp01(mood.spoken);
+  const motion = mood.motion;
+  let wParticles = arousal * (1 - spoken) * (0.6 + 0.4 * synthetic);
+  let wStrands = (1 - arousal) * (0.5 + 0.5 * tension) * (1 - spoken);
+  // The motion bonuses fade with speech too. Added flat they would put a
+  // swarm's dust back over a talking voice at full strength, which is the one
+  // thing the `(1 − spoken)` factors above exist to prevent.
+  if (motion === 'swarm') wParticles += 0.3 * (1 - spoken);
+  if (motion === 'drift') wStrands += 0.2 * (1 - spoken);
+  const total = INK_BED + wParticles + wStrands;
+
+  // Particles.
+  let particleSpeed = lerp(0.2, 2.2, arousal);
+  let particleImpulse = 1;
+  let dollySnap = DOLLY_SNAP;
+  // A bloom is a soft burst *on the downbeat* and a vortex the rest of the
+  // time; it is the one motion whose attractor is not a constant.
+  const blooming = motion === 'bloom' && clamp01(fast.downbeatPulse) >= BLOOM_GATE;
+  const attractor = blooming ? 'explode' : ATTRACTOR[motion];
+  const attractorForce = blooming ? BLOOM_FORCE : 1;
+  const attractorRadius =
+    motion === 'pulse'
+      ? SHELL_RADIUS + SHELL_BREATH * Math.sin(2 * Math.PI * fast.beatPhase)
+      : SHELL_RADIUS;
+  // Synthetic music has hard, discrete grains; acoustic music has fine dust.
+  const pointSizeTarget = lerp(1.2, 3.0, synthetic) * (motion === 'shatter' ? 1.6 : 1);
+  if (motion === 'shatter') chroma *= 2;
+
+  // Strands: how far the current bends the silk, and how fat each ribbon is.
+  const strandBendTarget = lerp(0.2, 1.4, tension);
+
   if (reducedMotion) {
     flowAmtTarget *= 0.5;
     pushKick *= 0.5;
     chroma *= 0.5;
     mirrorFolds = 0;
+    particleSpeed *= 0.5;
+    particleImpulse *= 0.5;
+    // Not halved: a camera that lunges at the viewer is exactly what reduced
+    // motion is asking us not to do.
+    dollySnap = 0;
   }
 
   // Exposure is instant (it is impact-driven), then capped, then rate-limited
@@ -313,7 +380,14 @@ export function direct(
   exposure = prev === null ? exposure : limitStrobe(state, exposure, prev.exposure);
 
   return {
-    weights: { ink: 1, particles: 0, strands: 0, relief: 0, breath: 0 },
+    weights: {
+      ink: INK_BED / total,
+      particles: wParticles / total,
+      strands: wStrands / total,
+      // Task 11.
+      relief: 0,
+      breath: 0,
+    },
     palette: paletteFor(mood),
 
     flowAmt: slew(flowAmtTarget, prev?.flowAmt ?? flowAmtTarget),
@@ -322,12 +396,18 @@ export function direct(
     injectGain: slew(injectGainTarget, prev?.injectGain ?? injectGainTarget),
     pushKick,
 
-    particleSpeed: slew(lerp(0.1, 1.2, arousal), prev?.particleSpeed ?? 0),
-    attractor: ATTRACTOR[mood.motion],
-    pointSize: slew(lerp(1, 3, clamp01(fast.rms)), prev?.pointSize ?? 1),
+    particleSpeed: slew(particleSpeed, prev?.particleSpeed ?? particleSpeed),
+    particleImpulse,
+    attractor,
+    attractorRadius,
+    attractorForce,
+    pointSize: slew(pointSizeTarget, prev?.pointSize ?? pointSizeTarget),
+    dollySnap,
 
-    strandBend: slew(tension, prev?.strandBend ?? tension),
-    strandThickness: slew(lerp(0.4, 1.6, arousal), prev?.strandThickness ?? 1),
+    strandBend: slew(strandBendTarget, prev?.strandBend ?? strandBendTarget),
+    // Not slewed: the thickness *is* the bass, and silk that swells a second
+    // after the note is silk that is not listening.
+    strandThickness: lerp(0.004, 0.02, clamp01(fast.sub)),
 
     reliefHeight: slew(lerp(0.2, 1, clamp01(fast.rms)), prev?.reliefHeight ?? 0.2),
     reliefContrast: slew(lerp(0.3, 1, tension), prev?.reliefContrast ?? 0.3),

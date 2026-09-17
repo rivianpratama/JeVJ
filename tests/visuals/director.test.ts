@@ -7,6 +7,7 @@ import {
   type RenderParams,
 } from '../../src/visuals/director';
 import { NEUTRAL_MOOD } from '../../src/shared/moodSchema';
+import { MOTIONS } from '../../src/shared/types';
 import type { MoodVector } from '../../src/shared/types';
 
 const FRAME = 1 / 60;
@@ -52,11 +53,104 @@ function once(m: MoodVector, f: FastFrame = fast(), reduced = false): RenderPara
 }
 
 describe('direct', () => {
-  it('puts everything into the ink scene for now', () => {
-    const p = once(IDLE_MOOD, fast());
-    expect(p.weights.ink).toBe(1);
-    const sum = Object.values(p.weights).reduce((a, b) => a + b, 0);
-    expect(sum).toBeCloseTo(1, 6);
+  it('always mixes to exactly one, with the ink as the bed', () => {
+    for (const m of [IDLE_MOOD, mood({}), mood({ arousal: 1 }), mood({ arousal: 0, tension: 1 })]) {
+      const p = once(m, fast());
+      const sum = Object.values(p.weights).reduce((a, b) => a + b, 0);
+      expect(sum).toBeCloseTo(1, 6);
+      expect(p.weights.ink).toBeGreaterThan(0);
+      expect(p.weights.relief).toBe(0);
+      expect(p.weights.breath).toBe(0);
+    }
+  });
+
+  it('gives the frame to the particles when the music is loud and not spoken', () => {
+    const p = once(mood({ arousal: 1, spoken: 0 }), fast());
+    expect(p.weights.particles).toBeGreaterThan(p.weights.strands);
+    expect(p.weights.particles).toBeGreaterThan(0.3);
+  });
+
+  it('gives the frame to the strands when the music is quiet and tense', () => {
+    const p = once(mood({ arousal: 0.1, tension: 0.9, spoken: 0 }), fast());
+    expect(p.weights.strands).toBeGreaterThan(p.weights.particles);
+    expect(p.weights.strands).toBeGreaterThan(0.3);
+  });
+
+  it('clears the frame for the voice: speech leaves only the ink', () => {
+    // Dust and silk both read as *decoration* over a talking voice; the ink is
+    // the one layer that can carry a podcast without competing with it.
+    for (const motion of MOTIONS) {
+      const p = once(mood({ spoken: 1, arousal: 1, tension: 1, motion }), fast());
+      expect(p.weights.particles).toBeCloseTo(0, 6);
+      expect(p.weights.strands).toBeCloseTo(0, 6);
+      expect(p.weights.ink).toBeCloseTo(1, 6);
+    }
+  });
+
+  it('reads the attractor off the motion label', () => {
+    expect(once(mood({ motion: 'swarm' }), fast()).attractor).toBe('swarm');
+    expect(once(mood({ motion: 'pulse' }), fast()).attractor).toBe('sphere');
+    expect(once(mood({ motion: 'shatter' }), fast()).attractor).toBe('explode');
+    expect(once(mood({ motion: 'flow' }), fast()).attractor).toBe('plane');
+    expect(once(mood({ motion: 'drift' }), fast()).attractor).toBe('plane');
+  });
+
+  it('swarms harder and drifts wider than the base weights ask', () => {
+    const m = { arousal: 0.5, tension: 0.5, spoken: 0 };
+    const base = once(mood({ ...m, motion: 'flow' }), fast());
+    const swarm = once(mood({ ...m, motion: 'swarm' }), fast());
+    const drift = once(mood({ ...m, motion: 'drift' }), fast());
+    expect(swarm.weights.particles).toBeGreaterThan(base.weights.particles);
+    expect(drift.weights.strands).toBeGreaterThan(base.weights.strands);
+  });
+
+  it('blooms into a soft explosion on the downbeat and settles back', () => {
+    const m = mood({ motion: 'bloom' });
+    const onIt = once(m, fast({ downbeatPulse: 1 }));
+    const after = once(m, fast({ downbeatPulse: 0 }));
+    expect(onIt.attractor).toBe('explode');
+    // A bloom is not a shatter: the force is a fraction of a real burst.
+    expect(onIt.attractorForce).toBeLessThan(0.5);
+    expect(after.attractor).toBe('vortex');
+    expect(after.attractorForce).toBeCloseTo(1, 6);
+  });
+
+  it('breathes the sphere radius across the bar when the motion is a pulse', () => {
+    const m = mood({ motion: 'pulse' });
+    expect(once(m, fast({ beatPhase: 0 })).attractorRadius).toBeCloseTo(1.2, 6);
+    expect(once(m, fast({ beatPhase: 0.25 })).attractorRadius).toBeCloseTo(1.45, 6);
+    expect(once(m, fast({ beatPhase: 0.75 })).attractorRadius).toBeCloseTo(0.95, 6);
+    // Every other motion holds the shell still.
+    expect(once(mood({ motion: 'flow' }), fast({ beatPhase: 0.25 })).attractorRadius).toBeCloseTo(
+      1.2,
+      6,
+    );
+  });
+
+  it('shatters into bigger, more fringed points', () => {
+    const calmly = once(mood({ motion: 'flow', synthetic: 1, arousal: 1 }), fast({ impact: 1 }));
+    const hard = once(mood({ motion: 'shatter', synthetic: 1, arousal: 1 }), fast({ impact: 1 }));
+    expect(hard.pointSize).toBeCloseTo(calmly.pointSize * 1.6, 6);
+    expect(hard.chroma).toBeCloseTo(calmly.chroma * 2, 6);
+  });
+
+  it('scales the particle speed and the strands with the music', () => {
+    expect(once(mood({ arousal: 1 }), fast()).particleSpeed).toBeCloseTo(2.2, 6);
+    expect(once(mood({ arousal: 0 }), fast()).particleSpeed).toBeCloseTo(0.2, 6);
+    expect(once(mood({ tension: 1 }), fast()).strandBend).toBeCloseTo(1.4, 6);
+    expect(once(mood({ tension: 0 }), fast()).strandBend).toBeCloseTo(0.2, 6);
+    expect(once(mood({}), fast({ sub: 1 })).strandThickness).toBeCloseTo(0.02, 6);
+    expect(once(mood({}), fast({ sub: 0 })).strandThickness).toBeCloseTo(0.004, 6);
+  });
+
+  it('halves the particle motion and drops the dolly snap under reduced motion', () => {
+    const m = mood({ arousal: 1 });
+    const full = once(m, fast({ impact: 1 }));
+    const calm = once(m, fast({ impact: 1 }), true);
+    expect(calm.particleSpeed).toBeCloseTo(full.particleSpeed / 2, 6);
+    expect(calm.particleImpulse).toBeCloseTo(full.particleImpulse / 2, 6);
+    expect(full.dollySnap).toBeGreaterThan(0);
+    expect(calm.dollySnap).toBe(0);
   });
 
   it('opens the flow and the bloom up at full arousal', () => {

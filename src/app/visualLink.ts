@@ -28,6 +28,8 @@ import {
   type RenderParams,
 } from '../visuals/director';
 import { InkFeedback } from '../visuals/scenes/InkFeedback';
+import { ParticleField } from '../visuals/scenes/ParticleField';
+import { Strands } from '../visuals/scenes/Strands';
 import { createFrameClock } from './frameClock';
 import { createVisuals, type Visuals } from '../visuals/renderer';
 import { mergeMood, type MoodSource } from './effectiveMood';
@@ -72,7 +74,12 @@ export interface VisualLink {
 export function createVisualLink(o: VisualLinkOptions): VisualLink {
   const visuals: Visuals = createVisuals(o.canvas);
   const ink = new InkFeedback();
+  // Slot order does not matter to the renderer — it matches scenes to weights
+  // by name — but the ink is added first because it is the bed the others are
+  // mixed over.
   visuals.addScene(ink);
+  visuals.addScene(new ParticleField());
+  visuals.addScene(new Strands());
 
   const reduceQuery =
     typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;

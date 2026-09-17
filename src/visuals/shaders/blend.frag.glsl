@@ -1,12 +1,23 @@
 // The scene mix: up to five scene textures, weighted by the director.
 //
-// Weighted addition rather than alpha compositing, because the scenes are all
-// light: ink, particles, strands, relief and breath are things that *emit*,
-// and adding them is what lets a crossfade between two of them pass through a
-// moment where both are half-lit instead of one occluding the other.
+// The scenes are all *light* — ink, particles, strands, relief and breath are
+// things that emit — so the mix is addition, not alpha compositing. That is
+// what lets a crossfade between two layers pass through a moment where both are
+// half-lit instead of one occluding the other.
 //
-// Only the ink exists today; the rest are bound to a 1×1 black texture at
-// weight 0 and cost one tap each.
+// One exception: the dust over the ink is a screen blend, `1 − (1 − a)(1 − b)`.
+// Straight addition lets a dense shell sitting over an already-bright fold of
+// ink run away to white, and the shape of the shell — the thing the dust is
+// for — disappears into the blowout. Screen compresses as it approaches one,
+// so the shell stays legible over any ink. The strands add normally: they are
+// thin, they are meant to sum where they cross, and screening them would flatten
+// a curtain of four hundred veils into one.
+//
+// Screen is only defined on 0..1, and these buffers are HDR — the ink pushes
+// its highlights past one so the bloom has something to catch. So the screen is
+// taken on the clamped parts and whatever was above one is added back on top,
+// which agrees with the plain formula everywhere inside the unit range and
+// keeps the headroom outside it.
 
 varying vec2 vUv;
 
@@ -18,9 +29,16 @@ uniform sampler2D uTex3;
 uniform sampler2D uTex4;
 uniform float uW[5];
 
+vec3 screen(vec3 a, vec3 b) {
+  vec3 lo = 1.0 - (1.0 - min(a, 1.0)) * (1.0 - min(b, 1.0));
+  return lo + max(a - 1.0, 0.0) + max(b - 1.0, 0.0);
+}
+
 void main() {
-  vec3 col = texture2D(uTex0, vUv).rgb * uW[0]
-           + texture2D(uTex1, vUv).rgb * uW[1]
+  vec3 ink = texture2D(uTex0, vUv).rgb * uW[0];
+  vec3 particles = texture2D(uTex1, vUv).rgb * uW[1];
+
+  vec3 col = screen(ink, particles)
            + texture2D(uTex2, vUv).rgb * uW[2]
            + texture2D(uTex3, vUv).rgb * uW[3]
            + texture2D(uTex4, vUv).rgb * uW[4];
