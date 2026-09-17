@@ -28,6 +28,13 @@ export interface MoodLinkOptions {
   feed: MoodFeed;
   client?: MoodClient;
   state?: MoodState;
+  /**
+   * Told about each answer as it is applied, with the audio time it is applied
+   * at. Task 8's Jev writer hangs off this: an answer is both a mood to slew
+   * toward and a set of cues to schedule, and only this file knows when one
+   * has landed.
+   */
+  onMood?: (mood: MoodVector, now: number) => void;
 }
 
 export interface MoodTick {
@@ -42,6 +49,7 @@ export class MoodLink {
   private readonly feed: MoodFeed;
   private readonly client: MoodClient;
   private readonly state: MoodState;
+  private readonly onMood: ((mood: MoodVector, now: number) => void) | undefined;
   /** The most recent audio time, which a late answer is applied at. */
   private now = 0;
 
@@ -49,6 +57,7 @@ export class MoodLink {
     this.feed = o.feed;
     this.client = o.client ?? new MoodClient();
     this.state = o.state ?? new MoodState();
+    this.onMood = o.onMood;
   }
 
   /** One HUD-rate frame: build the payload, maybe ask, advance the mood. */
@@ -79,7 +88,9 @@ export class MoodLink {
       // Only now is this payload the one novelty is measured against.
       this.feed.markSent(reading.input);
       void pending.then((res) => {
-        if (res !== null) this.state.setTarget(res.mood, this.now);
+        if (res === null) return;
+        this.state.setTarget(res.mood, this.now);
+        this.onMood?.(res.mood, this.now);
       });
     }
 

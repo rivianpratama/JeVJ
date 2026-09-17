@@ -130,6 +130,21 @@ export class MoodClient {
     return this.send(input, now);
   }
 
+  /**
+   * Ask once, outside the cadence.
+   *
+   * The offline pass in file mode has a whole track to get through and its own
+   * idea of when to ask — one call per segment, as fast as the server will
+   * take them — but it should still share this client's error handling, its
+   * decode and its token count, and it must not have a live request running
+   * underneath it. Returns null when one already is.
+   */
+  ask(input: MoodInput, now: number): Promise<MoodResponse | null> {
+    if (this.inFlight) return Promise.resolve(null);
+    this.inFlight = true;
+    return this.send(input, now);
+  }
+
   /** The earliest audio time a request could go out, as things stand. */
   nextAllowedAt(): number {
     const first = Number.isNaN(this.startedAt) ? Infinity : this.startedAt + this.firstDelay;

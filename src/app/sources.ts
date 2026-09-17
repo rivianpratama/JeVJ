@@ -23,6 +23,14 @@ import { captureTabAudio } from '../source/tabCapture';
 /** Element events that mean "the transport changed". */
 const TRANSPORT_EVENTS = ['play', 'pause', 'ended'] as const;
 
+/** A decoded file, before a sample of it has played. */
+export interface DecodedFile {
+  el: HTMLAudioElement;
+  /** The whole file in memory, for the offline pass.  */
+  buffer: AudioBuffer;
+  ctx: AudioContext;
+}
+
 export interface SourceHandlers {
   /** The graph has just been built: whatever wants to read it, start now. */
   onGraph(graph: AudioGraph): void;
@@ -36,8 +44,15 @@ export interface SourceSwitch {
   ensureGraph(): AudioGraph;
   /** Analyse the tab the user picks. Does nothing if already sharing. */
   captureTab(): Promise<void>;
-  /** Play a local file through the graph, replacing whatever was playing. */
-  playFile(f: File): Promise<void>;
+  /**
+   * Play a local file through the graph, replacing whatever was playing.
+   *
+   * `beforePlay` is awaited between the decode and the first sample: file mode
+   * analyses the whole track before it starts (Task 8), and a track that is
+   * already playing while its timeline is being built would play its first
+   * seconds blind.
+   */
+  playFile(f: File, beforePlay?: (source: DecodedFile) => Promise<void> | void): Promise<void>;
   /** The element playing a local file, if one is. */
   fileEl(): HTMLAudioElement | null;
   /** Let the local file go: another source is taking over. */
@@ -86,7 +101,10 @@ export function createSourceSwitch(h: SourceHandlers): SourceSwitch {
       capture = tab;
     },
 
-    async playFile(f: File): Promise<void> {
+    async playFile(
+      f: File,
+      beforePlay?: (source: DecodedFile) => Promise<void> | void,
+    ): Promise<void> {
       const g = ensureGraph();
       capture?.stop();
       capture = null;
@@ -110,6 +128,11 @@ export function createSourceSwitch(h: SourceHandlers): SourceSwitch {
       };
       // Both: nothing else is playing this file.
       g.connectSource(source.node, true);
+      await beforePlay?.({ el, buffer: source.buffer, ctx: g.ctx });
+      // The file may have been dropped while the pre-analysis ran — the user
+      // pasted a link, or dropped another file. Playing it now would put two
+      // sources through one graph.
+      if (file?.el !== el) return;
       await el.play();
     },
   };
