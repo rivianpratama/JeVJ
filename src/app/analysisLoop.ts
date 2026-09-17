@@ -16,6 +16,7 @@
  * about when.
  */
 
+import { DropDetector, type DropEvent } from '../analysis/drop';
 import { DynamicsTracker } from '../analysis/dynamics';
 import { FeatureExtractor } from '../analysis/features';
 import { BeatGrid, type Beat, type GridState } from '../analysis/grid';
@@ -94,6 +95,15 @@ export interface AnalysisSnapshot {
   timbre: TimbreReading;
   /** 0..1: how much this sounds like talking rather than music. */
   speech: number;
+  /**
+   * The last slam or hole the detector called, or null before the first one.
+   *
+   * Sticky: it stays in the snapshot after the frame it fired on, so a
+   * consumer reading at its own rate — the HUD at 15 Hz, the visuals at 60 —
+   * cannot miss one. `t` says which event this is; a consumer that must act
+   * once per event compares it against the `t` it acted on last.
+   */
+  drop: DropEvent | null;
 }
 
 export class AnalysisLoop {
@@ -104,6 +114,7 @@ export class AnalysisLoop {
   private dynamics = new DynamicsTracker();
   private timbre = new TimbreTracker();
   private speech = new SpeechDetector();
+  private drops = new DropDetector();
 
   private graph: AudioGraph | null = null;
   private extractor: FeatureExtractor | null = null;
@@ -115,6 +126,8 @@ export class AnalysisLoop {
   private prevFrameT = NaN;
   /** The meter last handed to the grid, so it is only told when it changes. */
   private meter: Meter = 'unclear';
+  /** The last event the drop detector called, kept for the next snapshot. */
+  private drop: DropEvent | null = null;
 
   /**
    * Start reading `graph`. Safe to call again with the same graph; a different
@@ -137,7 +150,9 @@ export class AnalysisLoop {
       this.dynamics = new DynamicsTracker();
       this.timbre = new TimbreTracker();
       this.speech = new SpeechDetector();
+      this.drops = new DropDetector();
       this.tempo = null;
+      this.drop = null;
       this.snapshot = null;
       this.nextTempoAt = Infinity;
       this.prevFrameT = NaN;
@@ -181,6 +196,12 @@ export class AnalysisLoop {
 
     const onset = this.onset.push(features);
     if (onset > 0) this.grid.onOnset(features.t, onset, this.onset.lowOnsetStrength());
+
+    // Every frame, ahead of everything slower: an impact has a deadline no
+    // tracker here does, and the detector needs the frames in order to have a
+    // dip to measure the next one against.
+    const drop = this.drops.push(features, onset);
+    if (drop !== null) this.drop = drop;
 
     // The first measurement waits a full window: a tempo taken off a quarter
     // second of audio is a guess, and the grid would anchor to it.
@@ -261,6 +282,7 @@ export class AnalysisLoop {
         centroidSlope: this.timbre.centroidSlope(),
       },
       speech: this.speech.score(grid.confidence),
+      drop: this.drop,
     };
   }
 

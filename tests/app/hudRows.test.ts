@@ -54,6 +54,25 @@ describe('hudRows', () => {
     }
   });
 
+  it('prints what the mood feed knows, once it knows it', () => {
+    const snap = after(clickTrack(120, 12, FS), 12);
+    const quiet = after(new Float32Array(2 * FS), 2);
+
+    // A dash until there is something to print. Nothing ever happens in
+    // silence, so that is where "no drop yet" can be read honestly.
+    expect(hudRows(snap).mood!['novelty']).toBe('—');
+    expect(hudRows(snap).mood!['tokens']).toBe('—');
+    expect(hudRows(quiet).mood!['drop']).toBe('—');
+
+    const mood = hudRows({ ...snap, drop: { t: 3, strength: 0.75, kind: 'impact' } }, {
+      novelty: 0.4267,
+      tokens: 142,
+    }).mood!;
+    expect(mood['novelty']).toBe('0.43');
+    expect(mood['tokens']).toBe(142);
+    expect(mood['drop']).toBe('impact 0.75');
+  });
+
   it('says nothing has been measured before anything has', () => {
     const rows = hudRows(after(new Float32Array(2 * FS), 2));
 

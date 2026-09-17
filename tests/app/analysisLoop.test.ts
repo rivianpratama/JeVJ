@@ -117,6 +117,41 @@ describe('AnalysisLoop', () => {
     expect(snap.key.tonic).toBeGreaterThanOrEqual(-1);
   });
 
+  it('carries the last drop it heard, and nothing before one', () => {
+    const loop = new AnalysisLoop();
+    loop.start(fakeGraph(clickTrack(120, 12, FS)));
+    loop.step();
+    expect(loop.latest()!.drop).toBeNull();
+
+    const kinds = new Set<string>();
+    let lastAt = -1;
+    for (let i = 0; i < Math.floor((12 * FS) / 735); i++) {
+      loop.step();
+      const d = loop.latest()!.drop;
+      if (d && d.t !== lastAt) {
+        lastAt = d.t;
+        kinds.add(d.kind);
+        expect(d.strength).toBeGreaterThan(0);
+        expect(d.t).toBeLessThanOrEqual(loop.latest()!.features.t);
+      }
+    }
+
+    // A bare metronome is silence with 5 ms of noise in it, so what it
+    // reports is the hole rather than the slam — the clicks carry too little
+    // of the low end to pass for a drop. What matters here is that the events
+    // reach the snapshot and stay in it; which events a click track earns is
+    // settled against synthetic loudness in the detector's own tests.
+    expect([...kinds]).toEqual(['gap']);
+    expect(loop.latest()!.drop).not.toBeNull();
+  });
+
+  it('hears no drop in silence', () => {
+    const loop = new AnalysisLoop();
+    loop.start(fakeGraph(new Float32Array(8 * FS)));
+    for (let i = 0; i < Math.floor((8 * FS) / 735); i++) loop.step();
+    expect(loop.latest()!.drop).toBeNull();
+  });
+
   it('has nothing to say about a key it has not heard', () => {
     const loop = new AnalysisLoop();
     loop.start(fakeGraph(new Float32Array(4 * FS)));

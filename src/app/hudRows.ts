@@ -16,7 +16,15 @@ const BAND_BLOCKS = 8;
 /** What a field reads before there is anything to read. */
 const UNMEASURED = '—';
 
-export function hudRows(snap: AnalysisSnapshot): HudData {
+/** What the mood feed knows and the snapshot does not. */
+export interface MoodRows {
+  /** 0..1 against the payload last sent. */
+  novelty: number;
+  /** Estimated token cost of that payload serialized. */
+  tokens: number;
+}
+
+export function hudRows(snap: AnalysisSnapshot, feed: MoodRows | null = null): HudData {
   const { features: f, grid, key, rhythm, dynamics, timbre } = snap;
 
   const mood: Record<string, string | number> = {
@@ -37,6 +45,9 @@ export function hudRows(snap: AnalysisSnapshot): HudData {
     range: dynamics.range.toFixed(2),
     trend: dynamics.trend,
     crest: dynamics.crest.toFixed(2),
+    novelty: feed ? feed.novelty.toFixed(2) : UNMEASURED,
+    tokens: feed ? feed.tokens : UNMEASURED,
+    drop: snap.drop ? `${snap.drop.kind} ${snap.drop.strength.toFixed(2)}` : UNMEASURED,
   };
   for (let i = 0; i < f.bands.length; i++) {
     mood[`b${i}`] = '█'.repeat(Math.round((f.bands[i] ?? 0) * BAND_BLOCKS));

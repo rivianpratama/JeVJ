@@ -9,8 +9,10 @@
 
 import './ui/styles.css';
 
+import { Summarizer } from './analysis/summarizer';
 import { AnalysisLoop } from './app/analysisLoop';
 import { hudRows } from './app/hudRows';
+import { MoodFeed } from './app/moodFeed';
 import { createSourceSwitch } from './app/sources';
 import { loadTrim, saveTrim } from './source/latency';
 import { isTabCaptureSupported } from './source/tabCapture';
@@ -19,6 +21,7 @@ import { createYouTubePlayer } from './source/youtubePlayer';
 import { createCard } from './ui/card';
 import { createControls } from './ui/controls';
 import { createHud } from './ui/hud';
+import { estimateTokens } from './shared/tokens';
 import { showBanner } from './ui/banner';
 import { toast } from './ui/toast';
 
@@ -33,6 +36,7 @@ if (!root) throw new Error('JeVJ: #ui is missing from the document');
 const card = createCard(root);
 const player = createYouTubePlayer(card.playerMount);
 const loop = new AnalysisLoop();
+const feed = new MoodFeed();
 
 /** Offset applied when analyser time is converted to cue time (task 5b). */
 let latencyTrimMs = loadTrim();
@@ -74,7 +78,33 @@ const controls = createControls(root, {
 
 function renderHud(): void {
   const snap = loop.latest();
-  if (snap) hud.update(hudRows(snap));
+  if (!snap) return;
+
+  // The HUD tick is also the mood tick: the payload Task 7 will send is built
+  // here, against the same snapshot the overlay is describing.
+  const reading = feed.update(snap, positionSec(), durationSec());
+  // Nothing else tells the grid a section ended, and the phrase count it keeps
+  // is counted from there.
+  if (reading.sectionChanged) loop.markSectionChange(snap.features.t);
+
+  hud.update(
+    hudRows(snap, {
+      novelty: reading.novelty,
+      tokens: estimateTokens(Summarizer.serialize(reading.input)),
+    }),
+  );
+}
+
+/** Where the transport is, in seconds — whichever transport is playing. */
+function positionSec(): number {
+  const at = (mode === 'file' ? sources.fileEl()?.currentTime : player.currentTime()) ?? 0;
+  return Number.isFinite(at) ? at : 0;
+}
+
+/** How long the track is, or null for a stream of unknown length. */
+function durationSec(): number | null {
+  const d = (mode === 'file' ? sources.fileEl()?.duration : player.duration()) ?? 0;
+  return Number.isFinite(d) && d > 0 ? d : null;
 }
 
 // ---- sources -------------------------------------------------------------
