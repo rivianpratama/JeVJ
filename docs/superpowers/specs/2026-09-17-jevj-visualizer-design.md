@@ -1,5 +1,15 @@
 # JeVJ Visualizer Design Spec (2026-09-17)
 
+> **v1 design; superseded.** This is the design the app was first built to, and
+> it is kept for the reasoning behind the analysis, the mood taxonomy and the
+> look. Three of its load-bearing decisions no longer hold: it is a local app
+> rather than a Vercel one, playback is a downloaded file through one media
+> element rather than the YouTube IFrame API with `getDisplayMedia` tapping the
+> tab, and the whole analysis runs *before* a note plays rather than
+> periodically while one does. Where this document and
+> `docs/superpowers/plans/2026-09-17-jevj-v2-download-pipeline.md` disagree
+> about hosting, playback source or analysis timing, the v2 plan is right.
+
 Status: approved by user in planning session 2026-09-17. Supersedes nothing; greenfield.
 
 ## Context

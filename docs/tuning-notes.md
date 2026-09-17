@@ -1,7 +1,8 @@
 # Real-track tuning notes (v2.1, with the v2.2 calibration round)
 
 Six tracks through the finished app — paste, download, analyse, play — on
-`feat/jevj-v1`, Chrome, macOS, 1440×900 with the pixel ratio capped at 1.5.
+`feat/jevj-v1` (the v2 branch, in spite of the name), Chrome, macOS, 1440×900
+with the pixel ratio capped at 1.5.
 yt-dlp 2026.08.19 from a venv (`YT_DLP` in `.env`). Every run below is a cold
 analysis: `cache/*.analysis.json` was absent, so the elapsed time and the token
 count are what a *first* play costs. A second play of the same link is served

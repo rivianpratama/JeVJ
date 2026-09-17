@@ -13,15 +13,24 @@ It is a local app. It downloads video with `yt-dlp` and keeps gigabytes of it in
 
 ## Run it
 
-You need **Node 22+** and **[yt-dlp](https://github.com/yt-dlp/yt-dlp)** on your
-PATH. `ffmpeg` is optional — without it yt-dlp takes whatever single stream
-already has the audio in it, which is fine for everything here.
+You need **Node 22+** (`engines.node` says so) and
+**[yt-dlp](https://github.com/yt-dlp/yt-dlp)** on your PATH, at least
+**2026.08.19** — older builds fail on current YouTube signatures, measured.
+`ffmpeg` is optional for the app itself: without it yt-dlp takes whatever single
+stream already has the audio in it, which is fine for everything here. It is
+*required* for `scripts/calibrate/probe-features.ts`, which decodes real tracks
+off disk.
 
 ```sh
 cp .env.example .env    # put your TypeSafe key in TYPESAFE_API_KEY
 npm install
 npm run dev             # http://localhost:5173
 ```
+
+The dev server mounts the API routes through a Vite plugin whose
+`configureServer` runs **once**, when the server starts. Editing anything under
+`server/` therefore needs a restart — HMR reloads the client, not the middleware
+— and a change that seems to have had no effect is usually this.
 
 yt-dlp moves fast and YouTube moves faster; a build more than a few months old
 will fail on some links with nothing more helpful than a signature error. If the
@@ -34,9 +43,21 @@ echo 'YT_DLP=.ytvenv/bin/yt-dlp' >> .env     # or an absolute path
 ```
 
 `npm run build && npm start` serves the built app from the same Node process on
-the same port, with the same routes. `npm test` runs the unit suite (vitest,
-Node environment, no GPU); `npm run smoke` makes one real Jev call per question
-set and prints what each costs.
+the same port, with the same routes. It binds **loopback only**; set `HOST` in
+`.env` (to `0.0.0.0`, say) if you really want it on your network, remembering
+that it will download whatever video id anyone hands it. `PORT` moves the port.
+
+`npm test` runs the unit suite (vitest, Node environment, no GPU). The two smoke
+scripts talk to the real model and are **dry by default** — they build every
+request and print what it would have cost without opening a socket. Add `--live`
+to spend the calls:
+
+```sh
+npm run smoke                        # one mood call, measured, not sent
+npm run smoke -- --live              # actually send it
+npm run smoke:transition             # a whole track's two passes, dry
+npm run smoke:transition -- --live   # ~10 calls against the song fixture
+```
 
 The `TYPESAFE_API_KEY` is read by the server only — the dev middleware and the
 Node server both hold it, and the browser only ever calls `POST /api/mood` and
@@ -49,8 +70,12 @@ machine; nothing here uploads, redistributes or keeps anything but a local
 cache. What you point it at is your call and your responsibility.
 
 Keys: **space** play/pause, **H** the diagnostics overlay, **F** fullscreen.
-Changing track is a reload — there is one media element for the life of the
-page, and the whole analysis is about the track that is in it.
+
+**Dropping a file** works whenever nothing is in flight — from the opening
+screen, from `ready`, and from the end of a track — and starts the pipeline
+over. Only *pasting a link* needs a reload: the URL bar is gone once a track is
+loaded, because there is one media element for the life of the page and the
+whole analysis is about the track that is in it.
 
 ## How it works
 
