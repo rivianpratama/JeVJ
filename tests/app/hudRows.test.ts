@@ -3,6 +3,7 @@ import { AnalysisLoop } from '../../src/app/analysisLoop';
 import { hudRows, phaseBar } from '../../src/app/hudRows';
 import type { AudioGraph } from '../../src/source/audioGraph';
 import { clickTrack, windowsFrom } from '../helpers/synth';
+import { NEUTRAL_MOOD } from '../../src/shared/moodSchema';
 
 const FS = 44100;
 const FFT = 4096;
@@ -61,7 +62,7 @@ describe('hudRows', () => {
     // A dash until there is something to print. Nothing ever happens in
     // silence, so that is where "no drop yet" can be read honestly.
     expect(hudRows(snap).mood!['novelty']).toBe('—');
-    expect(hudRows(snap).mood!['tokens']).toBe('—');
+    expect(hudRows(snap).mood!['payload']).toBe('—');
     expect(hudRows(quiet).mood!['drop']).toBe('—');
 
     const now = snap.features.t;
@@ -70,8 +71,34 @@ describe('hudRows', () => {
       tokens: 142,
     }).mood!;
     expect(mood['novelty']).toBe('0.43');
-    expect(mood['tokens']).toBe(142);
+    expect(mood['payload']).toBe(142);
     expect(mood['drop']).toBe('impact 0.75');
+  });
+
+  it('prints jev\'s judgment and what it has cost, once there is one', () => {
+    const snap = after(clickTrack(120, 12, FS), 12);
+    const rows = hudRows(snap, {
+      novelty: 0.2,
+      tokens: 142,
+      mood: { ...NEUTRAL_MOOD, valence: 0.8125, genre: 'jazz', motion: 'swarm', dropImminent: 0.5 },
+      jev: { calls: 3, tokens: 5400, lastLatencyMs: 212, nextIn: 1.25 },
+    });
+
+    expect(rows.mood!['valence']).toBe('0.81');
+    expect(rows.mood!['genre']).toBe('jazz');
+    expect(rows.mood!['motion']).toBe('swarm');
+    expect(rows.mood!['dropImminent']).toBe('0.50');
+    expect(rows.mood!['next in']).toBe('1.3s');
+    expect(rows.calls).toBe(3);
+    expect(rows.tokensTotal).toBe(5400);
+    expect(rows.lastLatencyMs).toBe(212);
+  });
+
+  it('leaves the jev rows out entirely before the first answer', () => {
+    const rows = hudRows(after(clickTrack(120, 12, FS), 12), { novelty: 0.2, tokens: 142 });
+    expect(rows.mood!['valence']).toBeUndefined();
+    expect(rows.calls).toBeUndefined();
+    expect(rows.tokensTotal).toBeUndefined();
   });
 
   it('holds a drop for two seconds and then lets it go', () => {

@@ -13,6 +13,7 @@ import { Summarizer } from './analysis/summarizer';
 import { AnalysisLoop } from './app/analysisLoop';
 import { hudRows } from './app/hudRows';
 import { MoodFeed } from './app/moodFeed';
+import { MoodLink } from './app/moodLink';
 import { createSourceSwitch } from './app/sources';
 import { loadTrim, saveTrim } from './source/latency';
 import { isTabCaptureSupported } from './source/tabCapture';
@@ -40,6 +41,12 @@ const loop = new AnalysisLoop();
 // is counted from there. The feed is what hears boundaries, so it is what says
 // so — the HUD tick below only passes frames through.
 const feed = new MoodFeed({ onSectionChange: (now) => loop.markSectionChange(now) });
+// Everything Jev: when to ask, what the answer means, and how the mood moves
+// between answers. Driven from the HUD tick below, on the audio clock.
+const moodLink = new MoodLink({ feed });
+
+/** Whether audio is actually running — the mood layer stays quiet if not. */
+let playing = false;
 
 /** Offset applied when analyser time is converted to cue time (task 5b). */
 let latencyTrimMs = loadTrim();
@@ -57,7 +64,10 @@ const sources = createSourceSwitch({
     loop.start(graph);
     setInterval(renderHud, HUD_INTERVAL_MS);
   },
-  onTransport: (playing) => controls.setPlaying(playing),
+  onTransport: (running) => {
+    playing = running;
+    controls.setPlaying(running);
+  },
   onCaptureEnded: () => toast('tab sharing stopped', 'info'),
 });
 
@@ -83,14 +93,22 @@ function renderHud(): void {
   const snap = loop.latest();
   if (!snap) return;
 
-  // The HUD tick is also the mood tick: the payload Task 7 will send is built
-  // here, against the same snapshot the overlay is describing.
-  const reading = feed.update(snap, positionSec(), durationSec());
+  // The HUD tick is also the mood tick: the payload that goes to Jev is built
+  // here, against the same snapshot the overlay is describing. A hidden tab
+  // gets no calls — nobody is watching the visuals they would steer.
+  const tick = moodLink.update(snap, positionSec(), durationSec(), playing, !document.hidden);
 
   hud.update(
     hudRows(snap, {
-      novelty: reading.novelty,
-      tokens: estimateTokens(Summarizer.serialize(reading.input)),
+      novelty: tick.reading.novelty,
+      tokens: estimateTokens(Summarizer.serialize(tick.reading.input)),
+      mood: tick.mood,
+      jev: {
+        calls: tick.stats.calls,
+        tokens: tick.stats.tokens,
+        lastLatencyMs: tick.stats.lastLatencyMs,
+        nextIn: tick.nextIn,
+      },
     }),
   );
 }
@@ -169,7 +187,8 @@ async function openFile(f: File): Promise<void> {
 
 player.onState((state) => {
   if (mode !== 'video') return;
-  controls.setPlaying(state === 'playing');
+  playing = state === 'playing';
+  controls.setPlaying(playing);
   // The title only exists once the player has metadata, which is after load().
   const title = player.title();
   if (title !== '') card.setLabel(title);

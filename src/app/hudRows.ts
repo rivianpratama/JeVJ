@@ -8,6 +8,7 @@
 
 import type { AnalysisSnapshot } from './analysisLoop';
 import type { HudData } from '../ui/hud';
+import type { MoodVector } from '../shared/types';
 
 /** Width of the beat-position bar. */
 const PHASE_CELLS = 10;
@@ -22,12 +23,22 @@ const UNMEASURED = '—';
  */
 const DROP_HOLD_SEC = 2;
 
-/** What the mood feed knows and the snapshot does not. */
+/** What the mood layer knows and the snapshot does not. */
 export interface MoodRows {
   /** 0..1 against the payload last sent. */
   novelty: number;
   /** Estimated token cost of that payload serialized. */
   tokens: number;
+  /** Jev's current judgment, once there has been one. */
+  mood?: MoodVector | null;
+  /** What asking has cost so far, and when we will ask again. */
+  jev?: {
+    calls: number;
+    tokens: number;
+    lastLatencyMs: number;
+    /** Seconds until the next call may go out; negative means "due". */
+    nextIn: number;
+  } | null;
 }
 
 export function hudRows(snap: AnalysisSnapshot, feed: MoodRows | null = null): HudData {
@@ -52,7 +63,7 @@ export function hudRows(snap: AnalysisSnapshot, feed: MoodRows | null = null): H
     trend: dynamics.trend,
     crest: dynamics.crest.toFixed(2),
     novelty: feed ? feed.novelty.toFixed(2) : UNMEASURED,
-    tokens: feed ? feed.tokens : UNMEASURED,
+    payload: feed ? feed.tokens : UNMEASURED,
     drop:
       snap.drop && f.t - snap.drop.t <= DROP_HOLD_SEC
         ? `${snap.drop.kind} ${snap.drop.strength.toFixed(2)}`
@@ -61,6 +72,23 @@ export function hudRows(snap: AnalysisSnapshot, feed: MoodRows | null = null): H
   for (let i = 0; i < f.bands.length; i++) {
     mood[`b${i}`] = '█'.repeat(Math.round((f.bands[i] ?? 0) * BAND_BLOCKS));
   }
+
+  // What Jev said, under what the analysis measured: the point of the HUD is
+  // reading the two against each other.
+  const m = feed?.mood ?? null;
+  if (m) {
+    mood['valence'] = m.valence.toFixed(2);
+    mood['arousal'] = m.arousal.toFixed(2);
+    mood['tension'] = m.tension.toFixed(2);
+    mood['warmth'] = m.warmth.toFixed(2);
+    mood['synthetic'] = m.synthetic.toFixed(2);
+    mood['space'] = m.space.toFixed(2);
+    mood['genre'] = m.genre;
+    mood['section'] = m.section;
+    mood['motion'] = m.motion;
+    mood['dropImminent'] = m.dropImminent.toFixed(2);
+  }
+  if (feed?.jev) mood['next in'] = `${Math.max(0, feed.jev.nextIn).toFixed(1)}s`;
 
   // Before the first measurement the grid still holds its default 120 BPM at
   // zero confidence. Printed, that reads as a reading; a dash says the truth,
@@ -76,6 +104,13 @@ export function hudRows(snap: AnalysisSnapshot, feed: MoodRows | null = null): H
     loud: dynamics.loud,
     speech: snap.speech,
     mood,
+    ...(feed?.jev
+      ? {
+          calls: feed.jev.calls,
+          tokensTotal: feed.jev.tokens,
+          lastLatencyMs: feed.jev.lastLatencyMs,
+        }
+      : {}),
   };
 }
 
