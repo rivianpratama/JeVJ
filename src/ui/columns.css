@@ -1,0 +1,80 @@
+/*
+ * The two transcript columns. No surface of any kind: this is text over the
+ * smoke, and the only thing between it and the picture is its own opacity.
+ */
+
+.jsoncol {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  width: min(34vw, 520px);
+  overflow: hidden;
+  pointer-events: none;
+  font: 12.5px/1.5 var(--font-mono);
+  color: var(--ink);
+  opacity: 0;
+  transition: opacity 0.8s ease;
+  /* Behind the card, the caption and the button, in front of the canvas. */
+  z-index: 1;
+  /* The columns are the one thing on the page that moves every frame; a layer
+     of their own keeps the scroll off the main compositing path. */
+  will-change: opacity;
+}
+
+.jsoncol.is-on {
+  opacity: 1;
+}
+
+.jsoncol--left {
+  left: 16px;
+  text-align: left;
+}
+
+.jsoncol--right {
+  right: 16px;
+  text-align: right;
+}
+
+.jsoncol-scroll {
+  will-change: transform;
+}
+
+.jsoncol-entry {
+  margin-bottom: 18px;
+  /* The body of the transcript is texture until the eye chooses to read it;
+     the entry about the passage playing now is the one that is legible. */
+  opacity: 0.7;
+  transition: opacity 0.4s ease;
+}
+
+.jsoncol-entry.is-now {
+  opacity: 1;
+}
+
+.jsoncol-head {
+  color: var(--ink-dim);
+  letter-spacing: 0.06em;
+  margin-bottom: 2px;
+}
+
+.jsoncol-entry.is-now .jsoncol-head {
+  color: var(--ink);
+}
+
+.jsoncol-body {
+  margin: 0;
+  font: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* The key names, and only in the live entry: a full column of coloured keys
+   would read as a syntax-highlighted editor rather than as a transcript. */
+.jsoncol-entry.is-now .jsoncol-k {
+  color: #9fe7ff;
+}
+
+/* Fullscreen puts the picture first; the transcript is the first thing to go. */
+body.is-immersive .jsoncol.is-on {
+  opacity: 0;
+}

@@ -19,9 +19,11 @@
  */
 
 import './ui/styles.css';
+import './ui/columns.css';
 
 import { ONSET_REPORT_LAG_SEC } from './analysis/onset';
 import { AnalysisLoop } from './app/analysisLoop';
+import { createColumnsLink } from './app/columnsLink';
 import { createCueReader } from './app/cueReader';
 import { HUD_INTERVAL_MS, createHudTick } from './app/hudTick';
 import { MoodFeed } from './app/moodFeed';
@@ -74,6 +76,16 @@ const hud = createHud(root, (ms) => {
 });
 hud.update({ latencyTrimMs });
 
+/**
+ * The transcript on the walls. It is built before the transport so that the
+ * transport can hand it the analysis the moment there is one, and it reads the
+ * element's own clock rather than the audio context's: the columns are paced to
+ * the *track*, so a seek is a jump and a pause is a hold, which is exactly what
+ * `el.currentTime` already does.
+ */
+let position = (): number => 0;
+const columns = createColumnsLink({ root, position: () => position() });
+columns.start();
 /** What this track's two passes cost, for the HUD's Jev row. */
 let usage: TokenUsage | null = null;
 
@@ -85,8 +97,10 @@ const transport = createTransport({
   onGraph: (g) => loop.start(g),
   onAnalysis: (a) => {
     usage = a.usage ?? null;
+    columns.setAnalysis(a);
   },
 });
+position = () => transport.positionSec();
 
 // Nothing else tells the grid a section ended, and the phrase count it keeps
 // is counted from there. The feed is what hears boundaries, so it is what says
