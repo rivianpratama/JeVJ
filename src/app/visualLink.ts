@@ -69,16 +69,19 @@ export interface VisualLink {
   mood(): MoodVector;
   /** Which layer that mood came from. */
   moodSource(): MoodSource;
+  /** How many points the particle cloud is running, as the HUD prints it. */
+  particleTier(): string;
 }
 
 export function createVisualLink(o: VisualLinkOptions): VisualLink {
   const visuals: Visuals = createVisuals(o.canvas);
   const ink = new InkFeedback();
+  const particles = new ParticleField();
   // Slot order does not matter to the renderer — it matches scenes to weights
   // by name — but the ink is added first because it is the bed the others are
   // mixed over.
   visuals.addScene(ink);
-  visuals.addScene(new ParticleField());
+  visuals.addScene(particles);
   visuals.addScene(new Strands());
 
   const reduceQuery =
@@ -147,7 +150,13 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
       ink.setMeter(snap.grid.barLength);
     }
 
-    params = direct(director, mood, fast, tick.step, params, reduceQuery?.matches === true);
+    const reduced = reduceQuery?.matches === true;
+    // What the *last* frame cost decides how much work this one is given. The
+    // cloud only earns a promotion while there is audio: an idle page draws
+    // almost nothing and would promote every machine within three seconds.
+    particles.tune(visuals.frameMs(), tick.step, snap !== null, reduced);
+
+    params = direct(director, mood, fast, tick.step, params, reduced);
     visuals.frame(tick.step, params, fast, tick.time);
   }
 
@@ -183,6 +192,7 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
     },
     mood: () => mood,
     moodSource: () => moodSrc,
+    particleTier: () => particles.tierName(),
   };
 }
 

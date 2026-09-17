@@ -15,6 +15,8 @@ export interface HudData {
    * second is not a fact about the music.
    */
   fps?: number;
+  /** How many points the particle cloud is running: `262k` or `590k`. */
+  particles?: string;
   key?: string;
   mode?: string;
   tempo?: string;
@@ -88,6 +90,7 @@ export function createHud(root: HTMLElement, onTrim: (ms: number) => void): Hud 
     push('bpm', num(data.bpm, 1));
     push('beat', num(data.beatConf, 2));
     push('fps', num(data.fps, 0));
+    push('particles', data.particles);
     push('key', data.key);
     push('mode', data.mode);
     push('tempo', data.tempo);

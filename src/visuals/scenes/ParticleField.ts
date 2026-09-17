@@ -22,6 +22,13 @@
 import * as THREE from 'three';
 import { GPUComputationRenderer, type Variable } from 'three/addons/misc/GPUComputationRenderer.js';
 import { withNoise3 } from '../shaders/glsl';
+import {
+  TIER_SMALL,
+  createTierState,
+  stepTier,
+  tierLabel,
+  type TierState,
+} from '../particleTier';
 import particlePosFrag from '../shaders/particle_pos.frag.glsl?raw';
 import particleVelFrag from '../shaders/particle_vel.frag.glsl?raw';
 import particleRenderFrag from '../shaders/particle_render.frag.glsl?raw';
@@ -38,13 +45,8 @@ export const ATTRACTOR_INDEX: Record<RenderParams['attractor'], number> = {
   swarm: 4,
 };
 
-/** The simulation grid. 512² is 262 144 points; 768² is 589 824. */
-const SIZE_BASE = 512;
-const SIZE_LARGE = 768;
-/** A GPU that can hold an 8192² texture can afford the larger cloud. */
-const LARGE_TEXTURE_SIZE = 8192;
-/** Above this pixel ratio the fill cost of the larger cloud is not worth it. */
-const LARGE_MAX_DPR = 1.5;
+/** The tier the gain is normalised against; see `particleTier.ts` for the rest. */
+const SIZE_BASE = TIER_SMALL;
 
 /**
  * How hard the curl field pushes the dust around, against how hard the
@@ -65,6 +67,8 @@ const EXPLODE_DECAY = 2;
 const SNAP_DECAY = 0.5;
 /** Where the dust starts: a soft ball, not a shell. */
 const START_RADIUS = 1.6;
+/** Where a rebuilt cloud starts: on the shell the director mostly asks for. */
+const SHELL_RADIUS = 1.2;
 /** One grain's share of the light, at the base tier. See `uGain`. */
 const GRAIN_GAIN = 0.11;
 /** The camera's resting distance, and how far a build pulls it in. */
@@ -89,6 +93,10 @@ export class ParticleField implements Scene {
   private size = SIZE_BASE;
   private width = 1;
   private height = 1;
+  private maxTextureSize = 0;
+  private readonly tier: TierState = createTierState();
+  /** The last value `tune` was handed; the camera reads it. */
+  private reducedMotion = false;
   /** Set when the compute renderer could not start; the scene then draws black. */
   private disabled = false;
 
@@ -124,9 +132,66 @@ export class ParticleField implements Scene {
 
   init(r: THREE.WebGLRenderer, w: number, h: number): void {
     this.renderer = r;
-    const big =
-      r.capabilities.maxTextureSize >= LARGE_TEXTURE_SIZE && r.getPixelRatio() <= LARGE_MAX_DPR;
-    this.size = big ? SIZE_LARGE : SIZE_BASE;
+    this.maxTextureSize = r.capabilities.maxTextureSize;
+    // Always the small cloud to begin with. Nothing has been measured yet, and
+    // the old guard — pixel ratio ≤ 1.5 — could never fail, because the
+    // renderer caps the ratio at 1.5 before this ever reads it.
+    this.build(TIER_SMALL, false);
+    this.allocate(w, h);
+  }
+
+  /**
+   * Hand the scene what the frame is costing. It decides the tier from that and
+   * rebuilds when the answer changes; see `particleTier.ts` for the rules.
+   */
+  tune(frameMs: number, dt: number, playing: boolean, reducedMotion: boolean): void {
+    this.reducedMotion = reducedMotion;
+    if (this.disabled || this.renderer === null) return;
+    const want = stepTier(this.tier, {
+      dt,
+      frameMs,
+      maxTextureSize: this.maxTextureSize,
+      playing,
+      reducedMotion,
+    });
+    if (want !== this.size) this.build(want, true);
+  }
+
+  /** What the HUD prints: how many points are in the cloud right now. */
+  tierName(): string {
+    return tierLabel(this.size);
+  }
+
+  /** The smoothed frame time the tier decision is being taken on, in ms. */
+  smoothedFrameMs(): number {
+    return this.tier.frameMs;
+  }
+
+  /**
+   * Build (or rebuild) the simulation at `size`.
+   *
+   * A rebuild throws the cloud away — there is no sensible way to resample a
+   * quarter of a million particles onto half a million texels — so the dust is
+   * reseeded onto the shell rather than into a ball, which is where most of the
+   * attractors want it anyway. One frame of discontinuity, seconds apart at
+   * worst, against a cloud sized to the machine.
+   */
+  private build(size: number, rebuild: boolean): void {
+    const r = this.renderer;
+    if (r === null) return;
+
+    if (rebuild) {
+      if (this.points !== null) this.scene.remove(this.points);
+      this.points = null;
+      this.gpu?.dispose();
+      this.gpu = null;
+      this.posVar = null;
+      this.velVar = null;
+      this.geometry?.dispose();
+      this.geometry = null;
+    }
+
+    this.size = size;
     // Twice the grains must not mean twice the light.
     this.material.uniforms['uGain']!.value =
       (GRAIN_GAIN * SIZE_BASE * SIZE_BASE) / (this.size * this.size);
@@ -140,7 +205,7 @@ export class ParticleField implements Scene {
 
     const pos0 = gpu.createTexture();
     const vel0 = gpu.createTexture();
-    seed(pos0.image.data as Float32Array, vel0.image.data as Float32Array);
+    seed(pos0.image.data as Float32Array, vel0.image.data as Float32Array, rebuild);
 
     // Only the velocity shader needs the noise header; the position shader is
     // an integration and a wrap.
@@ -171,15 +236,17 @@ export class ParticleField implements Scene {
     const error = gpu.init();
     if (error !== null) {
       // A machine without vertex texture fetch cannot run this scene at all.
-      // The rest of the app is unaffected: the layer just stays black.
+      // The rest of the app is unaffected: the layer just stays black — and
+      // there is no point allocating a quarter of a million points to draw it.
       console.warn(`ParticleField: ${error}`);
       gpu.dispose();
       this.disabled = true;
-    } else {
-      this.gpu = gpu;
-      this.posVar = posVar;
-      this.velVar = velVar;
+      return;
     }
+
+    this.gpu = gpu;
+    this.posVar = posVar;
+    this.velVar = velVar;
 
     this.geometry = pointGeometry(this.size);
     const points = new THREE.Points(this.geometry, this.material);
@@ -188,8 +255,6 @@ export class ParticleField implements Scene {
     points.frustumCulled = false;
     this.points = points;
     this.scene.add(points);
-
-    this.allocate(w, h);
   }
 
   resize(w: number, h: number): void {
@@ -241,26 +306,33 @@ export class ParticleField implements Scene {
 
     // The camera: a slow orbit that never repeats on a round number, pulled in
     // by a build and knocked out by a hit.
+    // Reduced motion halves the orbit rate and stills the vertical bob — the
+    // dolly is already switched off by the director, through `dollySnap`.
+    const orbitRate = this.reducedMotion ? 0.5 : 1;
     this.snap = Math.max(this.snap - dt / SNAP_DECAY, p.dollySnap * fast.impact);
-    const theta = time * 0.05 + 0.3 * Math.sin(time * 0.02);
+    const theta = orbitRate * (time * 0.05 + 0.3 * Math.sin(time * 0.02));
     const radius = CAMERA_Z - BUILD_DOLLY * fast.build + this.snap;
     this.camera.position.set(
       Math.sin(theta) * radius,
-      0.35 * Math.sin(time * 0.03),
+      this.reducedMotion ? 0 : 0.35 * Math.sin(time * 0.03),
       Math.cos(theta) * radius,
     );
     this.camera.lookAt(0, 0, 0);
-  }
 
-  render(r: THREE.WebGLRenderer): THREE.Texture {
-    const target = this.target;
-    if (!target) throw new Error('ParticleField: render before init');
-
+    // The simulation steps here rather than in `render`, because the renderer
+    // skips `render` for a layer that is out of the mix. A cloud that stopped
+    // moving while the music was quiet would fade back in holding whatever it
+    // was doing when it left.
     if (this.gpu !== null && this.posVar !== null && this.velVar !== null) {
       this.gpu.compute();
       this.material.uniforms['uPos']!.value = this.gpu.getCurrentRenderTarget(this.posVar).texture;
       this.material.uniforms['uVel']!.value = this.gpu.getCurrentRenderTarget(this.velVar).texture;
     }
+  }
+
+  render(r: THREE.WebGLRenderer): THREE.Texture {
+    const target = this.target;
+    if (!target) throw new Error('ParticleField: render before init');
 
     const autoClear = r.autoClear;
     r.setRenderTarget(target);
@@ -315,14 +387,21 @@ export class ParticleField implements Scene {
  * The radius is cubed-rooted so the ball is of even density rather than packed
  * toward the middle, and `w` is a uniform random per particle — the seed the
  * accent tint and nothing else is chosen by.
+ *
+ * `onShell` is for a rebuild rather than a first start: the cloud that is being
+ * replaced has long since gathered, and dropping a fresh ball into the middle
+ * of a track is a visible collapse where landing on the shell is barely a
+ * flicker.
  */
-function seed(pos: Float32Array, vel: Float32Array): void {
+function seed(pos: Float32Array, vel: Float32Array, onShell: boolean): void {
   for (let i = 0; i < pos.length; i += 4) {
     // A direction picked off a uniform sphere, not off a cube.
     const u = Math.random() * 2 - 1;
     const phi = Math.random() * Math.PI * 2;
     const s = Math.sqrt(1 - u * u);
-    const r = START_RADIUS * Math.cbrt(Math.random());
+    const r = onShell
+      ? SHELL_RADIUS + (Math.random() - 0.5) * 0.2
+      : START_RADIUS * Math.cbrt(Math.random());
     pos[i] = s * Math.cos(phi) * r;
     pos[i + 1] = u * r;
     pos[i + 2] = s * Math.sin(phi) * r;

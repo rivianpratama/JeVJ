@@ -93,6 +93,8 @@ export function createHudTick(o: HudTickOptions): () => void {
       // or two a second, and every reading below is then taken off a twentieth
       // of the music.
       fps: o.loop.stepsPerSec(),
+      // Which particle tier the renderer settled on for this machine.
+      particles: o.visuals.particleTier(),
     });
   };
 }
