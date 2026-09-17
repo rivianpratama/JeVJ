@@ -7,7 +7,7 @@ import {
   type RenderParams,
 } from '../../src/visuals/director';
 import { NEUTRAL_MOOD } from '../../src/shared/moodSchema';
-import { MOTIONS } from '../../src/shared/types';
+import { GENRES, MOTIONS, SECTIONS } from '../../src/shared/types';
 import type { MoodVector } from '../../src/shared/types';
 
 const FRAME = 1 / 60;
@@ -59,8 +59,36 @@ describe('direct', () => {
       const sum = Object.values(p.weights).reduce((a, b) => a + b, 0);
       expect(sum).toBeCloseTo(1, 6);
       expect(p.weights.ink).toBeGreaterThan(0);
-      expect(p.weights.relief).toBe(0);
-      expect(p.weights.breath).toBe(0);
+      for (const w of Object.values(p.weights)) expect(w).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it('mixes to one for every combination the mood layer can produce', () => {
+    // The five-layer normalisation has two ways to go wrong that four layers
+    // did not: a genre bonus that survives `spoken`, and a speech frame where
+    // every other layer is zero. Both are covered by sweeping the corners.
+    for (const genre of GENRES) {
+      for (const section of SECTIONS) {
+        for (const spoken of [0, 0.49, 0.5, 0.75, 1]) {
+          for (const extreme of [0, 1]) {
+            const p = once(
+              mood({
+                genre,
+                section,
+                spoken,
+                arousal: extreme,
+                tension: extreme,
+                melancholy: extreme,
+                aggression: extreme,
+              }),
+              fast({ impact: extreme, rms: extreme, sub: extreme }),
+            );
+            const sum = Object.values(p.weights).reduce((a, b) => a + b, 0);
+            expect(sum).toBeCloseTo(1, 6);
+            for (const w of Object.values(p.weights)) expect(w).toBeGreaterThanOrEqual(0);
+          }
+        }
+      }
     }
   });
 
@@ -76,15 +104,138 @@ describe('direct', () => {
     expect(p.weights.strands).toBeGreaterThan(0.3);
   });
 
-  it('clears the frame for the voice: speech leaves only the ink', () => {
-    // Dust and silk both read as *decoration* over a talking voice; the ink is
-    // the one layer that can carry a podcast without competing with it.
+  it('clears the frame for the voice: speech leaves only the breath', () => {
+    // Dust, silk and terrain all read as *decoration* over a talking voice.
+    // Task 10 left the ink carrying a podcast; Task 11 has a layer built for it.
     for (const motion of MOTIONS) {
-      const p = once(mood({ spoken: 1, arousal: 1, tension: 1, motion }), fast());
-      expect(p.weights.particles).toBeCloseTo(0, 6);
-      expect(p.weights.strands).toBeCloseTo(0, 6);
-      expect(p.weights.ink).toBeCloseTo(1, 6);
+      for (const genre of GENRES) {
+        const p = once(mood({ spoken: 1, arousal: 1, tension: 1, motion, genre }), fast());
+        expect(p.weights.particles).toBeCloseTo(0, 6);
+        expect(p.weights.strands).toBeCloseTo(0, 6);
+        expect(p.weights.relief).toBeCloseTo(0, 6);
+        expect(p.weights.ink).toBeCloseTo(0, 6);
+        expect(p.weights.breath).toBeGreaterThanOrEqual(0.95);
+      }
     }
+  });
+
+  it('is safe under the breath: no mirror, no chroma, no posterize, no flash', () => {
+    // The speech scene must never flash, so everything that can flash it is
+    // switched off at the source rather than trusted to be quiet.
+    const loud = fast({ impact: 1, sub: 1, downbeatPulse: 1 });
+    const p = once(
+      mood({ spoken: 1, arousal: 1, tension: 1, synthetic: 1, hypnotic: 1 }),
+      loud,
+    );
+    expect(p.weights.breath).toBeGreaterThan(0.5);
+    expect(p.mirrorFolds).toBe(0);
+    expect(p.chroma).toBe(0);
+    expect(p.posterize).toBe(0);
+    expect(p.bloomStrength).toBeLessThanOrEqual(0.4);
+    expect(p.exposure).toBeCloseTo(1, 6);
+
+    // And it holds frame after frame, not only on the first one.
+    const frames = run(120, mood({ spoken: 1, arousal: 1, synthetic: 1, hypnotic: 1 }), (i) =>
+      fast({ impact: i % 2 === 0 ? 1 : 0, downbeatPulse: 1 }),
+    );
+    for (const f of frames) {
+      expect(f.mirrorFolds).toBe(0);
+      expect(f.chroma).toBe(0);
+      expect(f.posterize).toBe(0);
+      expect(f.bloomStrength).toBeLessThanOrEqual(0.4);
+      expect(f.exposure).toBeCloseTo(1, 6);
+    }
+  });
+
+  it('raises the relief for melancholy and for aggression, and not for a voice', () => {
+    const sad = once(mood({ melancholy: 1, aggression: 0, spoken: 0 }), fast());
+    expect(sad.weights.relief).toBeGreaterThan(0.3);
+    const angry = once(mood({ melancholy: 0, aggression: 1, spoken: 0 }), fast());
+    expect(angry.weights.relief).toBeGreaterThan(0.3);
+    // `max`, not a sum: both at once is not twice as much terrain.
+    const both = once(mood({ melancholy: 1, aggression: 1, spoken: 0 }), fast());
+    expect(both.weights.relief).toBeCloseTo(angry.weights.relief, 6);
+    // Flat mood, no terrain worth drawing.
+    const flat = once(mood({ melancholy: 0, aggression: 0, spoken: 0, genre: 'pop' }), fast());
+    expect(flat.weights.relief).toBeCloseTo(0, 6);
+  });
+
+  it('gives metal and drone more terrain than pop at the same mood', () => {
+    const m = { melancholy: 0.5, aggression: 0.5, spoken: 0 };
+    const pop = once(mood({ ...m, genre: 'pop' }), fast());
+    for (const genre of ['rock_metal', 'ambient_drone'] as const) {
+      const p = once(mood({ ...m, genre }), fast());
+      expect(p.weights.relief).toBeGreaterThan(pop.weights.relief);
+    }
+    expect(once(mood({ ...m, genre: 'jazz' }), fast()).weights.relief).toBeCloseTo(
+      pop.weights.relief,
+      6,
+    );
+  });
+
+  it('folds the mirror for dominant relief even when nothing is hypnotic', () => {
+    // Terrain wants a mirror line; the reference is a mirrored ridge.
+    const m = mood({
+      melancholy: 1,
+      aggression: 1,
+      hypnotic: 0,
+      arousal: 0,
+      tension: 0,
+      spoken: 0,
+      genre: 'rock_metal',
+      motion: 'flow',
+    });
+    const p = once(m, fast());
+    expect(p.weights.relief).toBeGreaterThan(0.5);
+    expect(p.mirrorFolds).toBeGreaterThanOrEqual(2);
+    // Reduced motion still wins.
+    expect(once(m, fast(), true).mirrorFolds).toBe(0);
+  });
+
+  it('reads the relief height off the mood and the contrast off the tension', () => {
+    expect(once(mood({ aggression: 0, melancholy: 0 }), fast()).reliefHeight).toBeCloseTo(0.3, 6);
+    expect(once(mood({ aggression: 1, melancholy: 1 }), fast()).reliefHeight).toBeCloseTo(1.2, 6);
+    expect(once(mood({ aggression: 1, melancholy: 0 }), fast()).reliefHeight).toBeCloseTo(0.75, 6);
+    expect(once(mood({ tension: 0 }), fast()).reliefContrast).toBeCloseTo(1, 6);
+    expect(once(mood({ tension: 1 }), fast()).reliefContrast).toBeCloseTo(3, 6);
+  });
+
+  it('holds the ink longer and injects harder through a build', () => {
+    const steady = once(mood({ section: 'verse_steady' }), fast());
+    const building = once(mood({ section: 'build' }), fast());
+    expect(building.decay).toBeCloseTo(steady.decay + 0.02, 6);
+    expect(building.injectGain).toBeCloseTo(steady.injectGain * 1.3, 6);
+    expect(building.particleDolly).toBeGreaterThan(0);
+    expect(steady.particleDolly).toBe(0);
+  });
+
+  it('dissolves the ink and slows the dust through a breakdown', () => {
+    const steady = once(mood({ section: 'verse_steady' }), fast());
+    const down = once(mood({ section: 'breakdown' }), fast());
+    expect(down.decay).toBeCloseTo(steady.decay - 0.03, 6);
+    expect(down.particleSpeed).toBeCloseTo(steady.particleSpeed * 0.5, 6);
+  });
+
+  it('flares the bloom for a second after an impact in the climax', () => {
+    const state = createDirector();
+    const m = mood({ section: 'drop_climax' });
+    let prev = direct(state, m, fast(), FRAME, null, false);
+    const quiet = prev.bloomStrength;
+    prev = direct(state, m, fast({ impact: 1 }), FRAME, prev, false);
+    expect(prev.bloomStrength).toBeGreaterThan(quiet * 1.25);
+    // Still lifted half a second later...
+    for (let i = 0; i < 30; i++) prev = direct(state, m, fast(), FRAME, prev, false);
+    expect(prev.bloomStrength).toBeGreaterThan(quiet * 1.25);
+    // ...and back down after the second is up.
+    for (let i = 0; i < 40; i++) prev = direct(state, m, fast(), FRAME, prev, false);
+    expect(prev.bloomStrength).toBeCloseTo(quiet, 3);
+
+    // Only in the climax: the same hit in a verse does nothing to the bloom.
+    const verse = createDirector();
+    let vp = direct(verse, mood({ section: 'verse_steady' }), fast(), FRAME, null, false);
+    const before = vp.bloomStrength;
+    vp = direct(verse, mood({ section: 'verse_steady' }), fast({ impact: 1 }), FRAME, vp, false);
+    expect(vp.bloomStrength).toBeCloseTo(before, 3);
   });
 
   it('reads the attractor off the motion label', () => {
@@ -106,16 +257,31 @@ describe('direct', () => {
     // The exact sizes, pinned: a swarm is a takeover, a drift is a lean. At
     // arousal 1 the base strand weight is zero, so what is left of the drifting
     // silk is the bonus alone, against ink 0.55 and particles 1·1·(0.6+0.4·0.5).
-    const onlyBonus = once(mood({ arousal: 1, spoken: 0, motion: 'drift' }), fast());
+    const onlyBonus = once(
+      mood({ arousal: 1, spoken: 0, motion: 'drift', melancholy: 0, aggression: 0, genre: 'pop' }),
+      fast(),
+    );
     expect(onlyBonus.weights.strands).toBeCloseTo(0.1 / (0.55 + 0.8 + 0.1), 6);
   });
 
-  it('keeps the ink ahead of the silk on a page that has heard nothing', () => {
-    // IDLE_MOOD drifts, and the drift bonus used to put the strands over the
+  it('opens on a mix, not on a takeover, for a page that has heard nothing', () => {
+    // IDLE_MOOD drifts, and the drift bonus once put the strands *far* over the
     // ink before a note had been played — a curtain with no music behind it.
+    //
+    // Task 11 adds `(1 − spoken)` to the ink bed, which at IDLE_MOOD's spoken
+    // 0.1 costs the ink the 10% every other layer was already paying, so the
+    // silk now draws level with it. That is the brief's formula and it is left
+    // alone: what stopped the curtain was never this ordering but the
+    // visibility window in the strand shader, which at a 0.32 weight lights
+    // about forty ribbons where the old one lit a hundred and sixty. The
+    // invariant that still means something is that no layer runs away with an
+    // idle frame.
     const p = once(IDLE_MOOD, fast());
-    expect(p.weights.ink).toBeGreaterThan(p.weights.strands);
     expect(p.weights.ink).toBeGreaterThan(p.weights.particles);
+    expect(p.weights.ink).toBeGreaterThan(p.weights.relief);
+    expect(p.weights.strands).toBeLessThan(0.35);
+    expect(Math.abs(p.weights.strands - p.weights.ink)).toBeLessThan(0.02);
+    expect(p.weights.breath).toBe(0);
   });
 
   it('blooms into a soft explosion on the downbeat and settles back', () => {
@@ -153,8 +319,9 @@ describe('direct', () => {
     expect(once(mood({ arousal: 0 }), fast()).particleSpeed).toBeCloseTo(0.2, 6);
     expect(once(mood({ tension: 1 }), fast()).strandBend).toBeCloseTo(1.4, 6);
     expect(once(mood({ tension: 0 }), fast()).strandBend).toBeCloseTo(0.2, 6);
-    expect(once(mood({}), fast({ sub: 1 })).strandThickness).toBeCloseTo(0.02, 6);
-    expect(once(mood({}), fast({ sub: 0 })).strandThickness).toBeCloseTo(0.004, 6);
+    // Ribbons, not hairlines: the creative note's thickness range.
+    expect(once(mood({}), fast({ sub: 1 })).strandThickness).toBeCloseTo(0.035, 6);
+    expect(once(mood({}), fast({ sub: 0 })).strandThickness).toBeCloseTo(0.012, 6);
   });
 
   it('halves the particle motion and drops the dolly snap under reduced motion', () => {

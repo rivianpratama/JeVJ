@@ -29,6 +29,16 @@ attribute float aHash;
 uniform float uTime;
 uniform float uBend;
 uniform float uThickness;
+/**
+ * 1 for the ribbon itself, 3 for the halo pass drawn around it.
+ *
+ * The halo is what a bright thread over black actually looks like — the core
+ * is not the whole of it, there is a soft bloom of light around every strand —
+ * and it is drawn as a second, three-times-wider pass at a seventh of the alpha
+ * rather than by widening the core profile, which would only make the ribbons
+ * fatter.
+ */
+uniform float uWidthScale;
 
 varying float vT;
 varying float vId;
@@ -72,6 +82,6 @@ void main() {
   vec3 right = cross(tangent, vec3(0.0, 0.0, 1.0));
   right = length(right) > 1.0e-5 ? normalize(right) : vec3(1.0, 0.0, 0.0);
 
-  p += right * aSide * uThickness;
+  p += right * aSide * uThickness * uWidthScale;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
 }

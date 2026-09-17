@@ -36,6 +36,9 @@ const SPREAD_X = 2.2;
 const SPREAD_Z = 1.4;
 /** The camera sits still: the strands move, the view does not. */
 const CAMERA_Z = 3;
+/** How much wider the halo pass is than the ribbon, and how much dimmer. */
+const HALO_WIDTH = 3;
+const HALO_ALPHA = 0.15;
 
 export class Strands implements Scene {
   readonly name = 'strands' as const;
@@ -43,8 +46,12 @@ export class Strands implements Scene {
   private readonly camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
   private readonly scene = new THREE.Scene();
   private readonly geometry: THREE.InstancedBufferGeometry;
+  /** The ribbon itself, and the wide soft pass around it. */
   private readonly material: THREE.ShaderMaterial;
+  private readonly halo: THREE.ShaderMaterial;
+  private readonly materials: THREE.ShaderMaterial[];
   private readonly mesh: THREE.Mesh;
+  private readonly haloMesh: THREE.Mesh;
 
   private target: THREE.WebGLRenderTarget | null = null;
   private width = 1;
@@ -52,33 +59,20 @@ export class Strands implements Scene {
 
   constructor() {
     this.geometry = ribbonGeometry(STRANDS, SEGMENTS);
-    this.material = new THREE.ShaderMaterial({
-      vertexShader: withNoise3(strandsVert),
-      fragmentShader: strandsFrag,
-      // Additive and depth-free, like the dust: ribbons that cross brighten
-      // rather than hide each other, which is what makes a curtain of them
-      // read as translucent silk instead of as painted strips.
-      blending: THREE.AdditiveBlending,
-      depthTest: false,
-      depthWrite: false,
-      transparent: true,
-      side: THREE.DoubleSide,
-      uniforms: {
-        uTime: { value: 0 },
-        uBend: { value: 0.6 },
-        uThickness: { value: 0.01 },
-        uStops: { value: [0, 1, 2, 3, 4].map(() => new THREE.Vector3()) },
-        uAccent: { value: new THREE.Vector3(1, 1, 1) },
-        uDownbeat: { value: 0 },
-        uExposure: { value: 1 },
-        uWeight: { value: 0 },
-      },
-    });
+    this.material = ribbonMaterial(1, 1);
+    // Three times the width at a seventh of the alpha: bright cores sitting in
+    // a halo, which is what silk over black looks like and what a single flat
+    // ribbon never does. Additive, so the two passes need no ordering.
+    this.halo = ribbonMaterial(HALO_WIDTH, HALO_ALPHA);
+    this.materials = [this.material, this.halo];
 
     this.mesh = new THREE.Mesh(this.geometry, this.material);
+    this.haloMesh = new THREE.Mesh(this.geometry, this.halo);
     // The strands are displaced entirely in the vertex shader, so the bounds
     // three computes from the undisplaced strip would cull them once they lean.
     this.mesh.frustumCulled = false;
+    this.haloMesh.frustumCulled = false;
+    this.scene.add(this.haloMesh);
     this.scene.add(this.mesh);
     this.camera.position.set(0, 0, CAMERA_Z);
   }
@@ -92,28 +86,32 @@ export class Strands implements Scene {
   }
 
   update(_dt: number, p: RenderParams, fast: FastFrame, time: number): void {
-    const u = this.material.uniforms;
-    u['uTime']!.value = time;
-    u['uBend']!.value = p.strandBend;
-    u['uThickness']!.value = p.strandThickness;
-    u['uDownbeat']!.value = fast.downbeatPulse;
-    u['uExposure']!.value = p.exposure;
-    // The layer's own weight, which is how many ribbons it draws. The Composer
-    // scales the finished texture by the same number; this is the *other* half
-    // of the fade, and it is what keeps a quiet mix from being a full curtain
-    // rendered dim.
-    u['uWeight']!.value = p.weights.strands;
+    // Both passes see the same strand — same shape, same colour, same
+    // visibility — and differ only in the two constants set at construction.
+    for (const m of this.materials) {
+      const u = m.uniforms;
+      u['uTime']!.value = time;
+      u['uBend']!.value = p.strandBend;
+      u['uThickness']!.value = p.strandThickness;
+      u['uDownbeat']!.value = fast.downbeatPulse;
+      u['uExposure']!.value = p.exposure;
+      // The layer's own weight, which is how many ribbons it draws. The
+      // Composer scales the finished texture by the same number; this is the
+      // *other* half of the fade, and it is what keeps a quiet mix from being a
+      // full curtain rendered dim.
+      u['uWeight']!.value = p.weights.strands;
 
-    const stops = u['uStops']!.value as THREE.Vector3[];
-    for (let s = 0; s < stops.length; s++) {
-      const rgb = p.palette.stops[s] ?? p.palette.stops[p.palette.stops.length - 1]!;
-      stops[s]!.set(rgb[0], rgb[1], rgb[2]);
+      const stops = u['uStops']!.value as THREE.Vector3[];
+      for (let s = 0; s < stops.length; s++) {
+        const rgb = p.palette.stops[s] ?? p.palette.stops[p.palette.stops.length - 1]!;
+        stops[s]!.set(rgb[0], rgb[1], rgb[2]);
+      }
+      (u['uAccent']!.value as THREE.Vector3).set(
+        p.palette.accent[0],
+        p.palette.accent[1],
+        p.palette.accent[2],
+      );
     }
-    (u['uAccent']!.value as THREE.Vector3).set(
-      p.palette.accent[0],
-      p.palette.accent[1],
-      p.palette.accent[2],
-    );
   }
 
   render(r: THREE.WebGLRenderer): THREE.Texture {
@@ -131,8 +129,10 @@ export class Strands implements Scene {
 
   dispose(): void {
     this.scene.remove(this.mesh);
+    this.scene.remove(this.haloMesh);
     this.geometry.dispose();
     this.material.dispose();
+    this.halo.dispose();
     this.target?.dispose();
     this.target = null;
   }
@@ -156,6 +156,40 @@ export class Strands implements Scene {
       stencilBuffer: false,
     });
   }
+}
+
+/**
+ * One ribbon pass: the core at width 1 and alpha 1, or the halo at 3 and 0.15.
+ *
+ * Two materials rather than two draws of one, because a uniform belongs to a
+ * material: setting it between draws would mean two `setValue` calls and a
+ * program re-upload per frame for numbers that never change.
+ */
+function ribbonMaterial(widthScale: number, alphaScale: number): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    vertexShader: withNoise3(strandsVert),
+    fragmentShader: strandsFrag,
+    // Additive and depth-free, like the dust: ribbons that cross brighten
+    // rather than hide each other, which is what makes a curtain of them read
+    // as translucent silk instead of as painted strips.
+    blending: THREE.AdditiveBlending,
+    depthTest: false,
+    depthWrite: false,
+    transparent: true,
+    side: THREE.DoubleSide,
+    uniforms: {
+      uTime: { value: 0 },
+      uBend: { value: 0.6 },
+      uThickness: { value: 0.01 },
+      uStops: { value: [0, 1, 2, 3, 4].map(() => new THREE.Vector3()) },
+      uAccent: { value: new THREE.Vector3(1, 1, 1) },
+      uDownbeat: { value: 0 },
+      uExposure: { value: 1 },
+      uWeight: { value: 0 },
+      uWidthScale: { value: widthScale },
+      uAlphaScale: { value: alphaScale },
+    },
+  });
 }
 
 /**

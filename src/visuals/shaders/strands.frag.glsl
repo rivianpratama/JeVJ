@@ -25,6 +25,8 @@ uniform vec3 uAccent;
 uniform float uDownbeat;
 uniform float uExposure;
 uniform float uWeight;
+/** 1 for the ribbon itself, 0.15 for the wide halo drawn around it. */
+uniform float uAlphaScale;
 
 /** How much of each end is fade. */
 const float FADE = 0.14;
@@ -32,8 +34,17 @@ const float FADE = 0.14;
 const float DOWNBEAT_LIFT = 0.3;
 /** The silk's standing exposure, matching the ink's. */
 const float BASE_EXPOSURE = 1.25;
-/** How wide the visibility window is around the layer's weight. */
-const float VIS_SOFT = 0.15;
+/**
+ * How wide the visibility ramp is *below* the layer's weight.
+ *
+ * A strand is visible when its hash is under the weight, so the count on screen
+ * is the weight times four hundred — and it arrives gradually over the last
+ * 0.3 of the ramp rather than popping. At the idle weight of about 0.32 that is
+ * roughly forty ribbons at full strength with a soft tail behind them, where the
+ * previous window — centred *on* the weight rather than ending at it — lit half
+ * as many again at half brightness and read as rain.
+ */
+const float VIS_RAMP = 0.3;
 /** How hard the light is pulled into the ribbon's centreline. */
 const float CORE_POWER = 2.2;
 /**
@@ -47,17 +58,23 @@ const float CORE_POWER = 2.2;
  * under 0.08. The first two are met with a wide margin at any sane value; the
  * third is what actually sets this number, because the bloom spreads a
  * strand's light well past the ribbon and lifts the floor faster than it
- * lifts the mean. Measured at 0.55: layer mean 0.005, p95 0.033, cores to
- * 0.16, 21% of the frame lit; idle composite mean 0.252, p20 0.076.
+ * lifts the mean.
+ *
+ * Task 11 halved it again, and it was forced: a ribbon is now three times
+ * thicker (`lerp(0.012, 0.035, sub)` rather than `lerp(0.004, 0.02, sub)`) and
+ * carries a three-times-wider halo pass at 0.15 alpha on top, so the same
+ * number gave each visible strand about four times the light it had before.
+ * Measured over a 54 s idle run: at 0.28 the composite reads mean 0.155 with
+ * its darkest fifth at 0.047; at 0.55 the floor goes to 0.063 and the target
+ * is 0.06.
  */
-const float EMISSION = 0.55;
+const float EMISSION = 0.28;
 
 void main() {
   // Visible when the strand's hash falls under the layer's weight, so the
-  // number of ribbons on screen is the weight times four hundred.
-  // Written as 1 − smoothstep rather than with the edges swapped: GLSL leaves
-  // smoothstep undefined when edge0 ≥ edge1, and drivers differ.
-  float vis = 1.0 - smoothstep(uWeight - VIS_SOFT, uWeight + VIS_SOFT, vHash);
+  // number of ribbons on screen is the weight times four hundred, and fully lit
+  // only once the weight has risen a further 0.3 past it.
+  float vis = smoothstep(0.0, VIS_RAMP, uWeight - vHash);
   if (vis <= 0.0) discard;
 
   float fade = smoothstep(0.0, FADE, vT) * smoothstep(1.0, 1.0 - FADE, vT);
@@ -71,5 +88,5 @@ void main() {
 
   col *= 1.0 + DOWNBEAT_LIFT * uDownbeat;
 
-  gl_FragColor = vec4(col * uExposure * BASE_EXPOSURE * EMISSION, fade * vis * core);
+  gl_FragColor = vec4(col * uExposure * BASE_EXPOSURE * EMISSION, fade * vis * core * uAlphaScale);
 }

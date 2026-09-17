@@ -142,6 +142,56 @@ function same(a: PaletteKey, b: PaletteKey): boolean {
   );
 }
 
+/** Rec.709 luminance of a linear-light colour. */
+function lin709(c: readonly [number, number, number]): number {
+  return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+}
+
+/**
+ * One colour pulled `1 − k` of the way to its own grey.
+ *
+ * Toward its *own luminance*, not toward a fixed grey, so the ramp keeps every
+ * step of its lightness and loses only its hue — which is what "near-
+ * monochrome" means and what a plain `mix(c, vec3(0.5), …)` would not give.
+ * The clamp at zero is not decorative: a saturated blue's luminance sits well
+ * below its own blue channel, and a k outside 0..1 would send a channel
+ * negative, which a half-float target will happily carry into the bloom.
+ */
+function greyToward(c: readonly [number, number, number], k: number): [number, number, number] {
+  const y = lin709(c);
+  return [
+    Math.max(0, y + (c[0] - y) * k),
+    Math.max(0, y + (c[1] - y) * k),
+    Math.max(0, y + (c[2] - y) * k),
+  ];
+}
+
+let greyedFrom: Palette | null = null;
+let greyedK = Number.NaN;
+let greyed: Palette | null = null;
+
+/**
+ * `palette` with its chroma scaled by `k`, lightness untouched.
+ *
+ * The Breath scene is near-monochrome (k = 0.2) and asks for this every frame,
+ * so the result is memoised on the *identity* of the palette it came from —
+ * `paletteFor` already hands back the same object while nothing it reads has
+ * moved, so in the steady state this allocates nothing at all.
+ *
+ * Pure: same inputs, same colours, no three.js, no DOM.
+ */
+export function desaturate(palette: Palette, k: number): Palette {
+  if (greyed !== null && greyedFrom === palette && greyedK === k) return greyed;
+  greyedFrom = palette;
+  greyedK = k;
+  greyed = {
+    stops: palette.stops.map((s) => greyToward(s, k)),
+    bg: greyToward(palette.bg, k),
+    accent: greyToward(palette.accent, k),
+  };
+  return greyed;
+}
+
 function build(m: PaletteKey): Palette {
   const nudge = GENRE_NUDGE[m.genre] ?? {};
 

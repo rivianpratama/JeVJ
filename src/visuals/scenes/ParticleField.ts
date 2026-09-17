@@ -74,6 +74,13 @@ const GRAIN_GAIN = 0.11;
 /** The camera's resting distance, and how far a build pulls it in. */
 const CAMERA_Z = 4.2;
 const BUILD_DOLLY = 0.6;
+/**
+ * How far a `build` section pulls the camera in, on top of the analysis's own
+ * rising-energy reading. The two are different claims — one is "the spectrum is
+ * filling up", the other is "we are in the run-up to a drop" — and they do not
+ * always arrive together.
+ */
+const SECTION_DOLLY = 0.5;
 
 export class ParticleField implements Scene {
   readonly name = 'particles' as const;
@@ -334,7 +341,8 @@ export class ParticleField implements Scene {
     this.theta += orbitRate * dt;
     this.snap = Math.max(this.snap - dt / SNAP_DECAY, p.dollySnap * fast.impact);
     const theta = this.theta;
-    const radius = CAMERA_Z - BUILD_DOLLY * fast.build + this.snap;
+    const radius =
+      CAMERA_Z - BUILD_DOLLY * fast.build - SECTION_DOLLY * p.particleDolly + this.snap;
     this.camera.position.set(
       Math.sin(theta) * radius,
       this.reducedMotion ? 0 : 0.35 * Math.sin(time * 0.03),

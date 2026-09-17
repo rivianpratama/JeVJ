@@ -18,6 +18,25 @@
 // taken on the clamped parts and whatever was above one is added back on top,
 // which agrees with the plain formula everywhere inside the unit range and
 // keeps the headroom outside it.
+//
+// The last two layers are the exceptions to "everything is light":
+//
+//  - **relief** is a *surface*. It occludes, so it composites alpha-over by its
+//    weight rather than adding. Added, a ridge would brighten the ink behind it
+//    and read as a fog bank rather than as rock;
+//  - **breath** *replaces*. It runs over a talking voice and the whole point of
+//    it is that nothing else is on screen; mixed in, the dust and silk it is
+//    meant to clear away would show through it. It crossfades in over the first
+//    half of its weight and is the entire frame from 0.5 up, which is where the
+//    director puts it whenever `spoken` is over the gate.
+//
+// Then one global contrast term, in linear light and before the bloom: the
+// composite of five layers is brighter in its shadows than any one of them, and
+// an idle frame that should read as a dark field had drifted to a pale
+// lavender mid-tone. A smoothstep curve deepens the darks and holds the
+// highlights where they are. It too is taken on the clamped part only — `x²(3 −
+// 2x)` turns *negative* above 1.5, which on an HDR buffer would punch black
+// holes through exactly the highlights the bloom is there to catch.
 
 varying vec2 vUv;
 
@@ -29,6 +48,11 @@ uniform sampler2D uTex3;
 uniform sampler2D uTex4;
 uniform float uW[5];
 
+/** How much of the smoothstep curve is mixed in. */
+const float CONTRAST = 0.35;
+/** The breath weight at which the frame is entirely the breath. */
+const float BREATH_FULL = 0.5;
+
 vec3 screen(vec3 a, vec3 b) {
   vec3 lo = 1.0 - (1.0 - min(a, 1.0)) * (1.0 - min(b, 1.0));
   return lo + max(a - 1.0, 0.0) + max(b - 1.0, 0.0);
@@ -38,9 +62,19 @@ void main() {
   vec3 ink = texture2D(uTex0, vUv).rgb * uW[0];
   vec3 particles = texture2D(uTex1, vUv).rgb * uW[1];
 
-  vec3 col = screen(ink, particles)
-           + texture2D(uTex2, vUv).rgb * uW[2]
-           + texture2D(uTex3, vUv).rgb * uW[3]
-           + texture2D(uTex4, vUv).rgb * uW[4];
+  vec3 col = screen(ink, particles) + texture2D(uTex2, vUv).rgb * uW[2];
+
+  // Relief: alpha-over, by its own coverage times its weight.
+  vec4 relief = texture2D(uTex3, vUv);
+  col = mix(col, relief.rgb, relief.a * uW[3]);
+
+  // Breath: a replace that fades in, rather than a mix that never finishes.
+  vec3 breath = texture2D(uTex4, vUv).rgb;
+  col = mix(col, breath, clamp(uW[4] / BREATH_FULL, 0.0, 1.0));
+
+  vec3 lo = min(col, 1.0);
+  vec3 hi = max(col - 1.0, 0.0);
+  col = mix(lo, lo * lo * (3.0 - 2.0 * lo), CONTRAST) + hi;
+
   gl_FragColor = vec4(col, 1.0);
 }

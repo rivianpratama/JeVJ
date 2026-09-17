@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { paletteFor } from '../../src/visuals/palette';
+import { desaturate, paletteFor } from '../../src/visuals/palette';
 import { NEUTRAL_MOOD } from '../../src/shared/moodSchema';
 import type { Genre, MoodVector } from '../../src/shared/types';
 
@@ -154,5 +154,59 @@ describe('paletteFor memoization', () => {
   it('rebuilds when the genre changes', () => {
     const a = paletteFor(mood({ genre: 'pop' }));
     expect(paletteFor(mood({ genre: 'rock_metal' }))).not.toBe(a);
+  });
+});
+
+describe('desaturate', () => {
+  const lin = (rgb: [number, number, number]): number =>
+    0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+
+  it('pulls every colour toward its own luminance by 1 − k', () => {
+    const p = paletteFor(mood({ valence: 1, warmth: 1 }));
+    const grey = desaturate(p, 0.2);
+    for (let i = 0; i < p.stops.length; i++) {
+      expect(sat(grey.stops[i]!)).toBeCloseTo(sat(p.stops[i]!) * 0.2, 6);
+    }
+    expect(sat(grey.accent)).toBeCloseTo(sat(p.accent) * 0.2, 6);
+    expect(sat(grey.bg)).toBeCloseTo(sat(p.bg) * 0.2, 6);
+  });
+
+  it('keeps the luminance of every colour exactly where it was', () => {
+    const p = paletteFor(mood({ valence: 1, warmth: 0 }));
+    const grey = desaturate(p, 0.2);
+    for (let i = 0; i < p.stops.length; i++) {
+      expect(lin(grey.stops[i]!)).toBeCloseTo(lin(p.stops[i]!), 6);
+    }
+    expect(lin(grey.accent)).toBeCloseTo(lin(p.accent), 6);
+  });
+
+  it('is the identity at k = 1 and fully grey at k = 0', () => {
+    const p = paletteFor(mood({ valence: 1 }));
+    for (let i = 0; i < p.stops.length; i++) {
+      for (let c = 0; c < 3; c++) {
+        expect(desaturate(p, 1).stops[i]![c]).toBeCloseTo(p.stops[i]![c]!, 12);
+      }
+      expect(sat(desaturate(p, 0).stops[i]!)).toBeCloseTo(0, 12);
+    }
+  });
+
+  it('never returns a negative channel', () => {
+    // A stop whose luminance sits below one of its own channels would go
+    // negative if the mix were taken naively past the grey point.
+    for (const g of ['rock_metal', 'electronic_dance', 'classical'] as const) {
+      for (const k of [0, 0.2, 0.5, 1]) {
+        const grey = desaturate(paletteFor(mood({ genre: g, valence: 1 })), k);
+        for (const c of [...grey.stops, grey.bg, grey.accent]) {
+          for (const ch of c) expect(ch).toBeGreaterThanOrEqual(0);
+        }
+      }
+    }
+  });
+
+  it('hands back the same object for the same palette and k', () => {
+    // The Breath scene calls it every frame; the render loop must not allocate.
+    const p = paletteFor(mood({ valence: 0.31 }));
+    expect(desaturate(p, 0.2)).toBe(desaturate(p, 0.2));
+    expect(desaturate(p, 0.5)).not.toBe(desaturate(p, 0.2));
   });
 });

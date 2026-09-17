@@ -27,8 +27,10 @@ import {
   type FastFrame,
   type RenderParams,
 } from '../visuals/director';
+import { Breath } from '../visuals/scenes/Breath';
 import { InkFeedback } from '../visuals/scenes/InkFeedback';
 import { ParticleField } from '../visuals/scenes/ParticleField';
+import { Relief } from '../visuals/scenes/Relief';
 import { Strands } from '../visuals/scenes/Strands';
 import { createFrameClock } from './frameClock';
 import { PROBE_WINDOW_SEC, createVisuals, drawsAtWeight, type Visuals } from '../visuals/renderer';
@@ -89,6 +91,8 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
   visuals.addScene(ink);
   visuals.addScene(particles);
   visuals.addScene(new Strands());
+  visuals.addScene(new Relief());
+  visuals.addScene(new Breath());
 
   const reduceQuery =
     typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;

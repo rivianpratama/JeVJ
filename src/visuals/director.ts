@@ -75,8 +75,19 @@ export interface RenderParams {
   strandThickness: number;
 
   // relief (Task 11)
+  /** How far the terrain is displaced, in world units. */
   reliefHeight: number;
+  /** The exponent on the lambert term; high is charcoal, low is chalk. */
   reliefContrast: number;
+  /**
+   * How angry the music is, which is what decides whether the high ground
+   * glows. It cannot be read back off `reliefHeight` — that is the average of
+   * aggression and melancholy, and a desolate landscape is as tall as a
+   * furious one and must not have embers in it.
+   */
+  reliefAggression: number;
+  /** How far a section pulls the particle camera in, 0..1. */
+  particleDolly: number;
 
   // post
   bloomStrength: number;
@@ -175,6 +186,39 @@ const BLOOM_GATE = 0.5;
 /** How far an impact snaps the particle camera out. */
 const DOLLY_SNAP = 0.8;
 
+/** What melancholy and aggression bid for the terrain, at most. */
+const RELIEF_BID = 0.8;
+/** The extra the two genres built out of texture rather than notes get. */
+const RELIEF_GENRE_BONUS = 0.3;
+/** Genres whose whole character is surface rather than melody. */
+const RELIEF_GENRES: ReadonlySet<Genre> = new Set<Genre>(['rock_metal', 'ambient_drone']);
+/** Below this `spoken` the voice layer is not asked for at all. */
+const BREATH_GATE = 0.5;
+/**
+ * Above this share of the frame the Breath layer is the picture, and the
+ * safety clamps come down: nothing that can flash a screen survives over a
+ * talking voice.
+ */
+const BREATH_SAFE_OVER = 0.5;
+/** The most bloom a speech frame may carry. */
+const BREATH_MAX_BLOOM = 0.4;
+/** Above this share of the frame the terrain wants a mirror line. */
+const RELIEF_MIRROR_OVER = 0.5;
+
+/** What a section does to the ink, the dust and the bloom. */
+const BUILD_DECAY = 0.02;
+const BUILD_INJECT = 1.3;
+const BREAKDOWN_DECAY = 0.03;
+const BREAKDOWN_SPEED = 0.5;
+/** How hard a climax flares the bloom, and for how long after the hit. */
+const CLIMAX_BLOOM = 1.3;
+const CLIMAX_BLOOM_SEC = 1;
+/** How big a hit starts that second. */
+const CLIMAX_IMPACT_GATE = 0.5;
+/** The decay is a multiplier per frame; outside this it is not a fade. */
+const MIN_DECAY = 0.8;
+const MAX_DECAY = 0.999;
+
 /**
  * Everything `direct` has to remember between frames and cannot read back off
  * the previous `RenderParams`.
@@ -190,10 +234,22 @@ export interface DirectorState {
    * again from the previous frame's total.
    */
   heldChromaBase: number;
+  /**
+   * The slewed *base* of the bloom, kept aside for the same reason: the
+   * climax flare is a multiplier on top of it and cannot be told apart again
+   * from the previous frame's total.
+   */
+  heldBloomBase: number;
   /** The fold count actually in use, and the one waiting to replace it. */
   folds: number;
   pendingFolds: number;
   pendingFoldsSince: number;
+  /**
+   * When the last climax impact landed, on the same clock. The bloom flare is
+   * a one-second window after a hit and cannot be read back off the previous
+   * frame's `bloomStrength`, which is the flared number rather than the base.
+   */
+  lastClimaxAt: number;
 }
 
 /** A director that has never run. One per renderer. */
@@ -203,9 +259,11 @@ export function createDirector(): DirectorState {
     lastFlipAt: Number.NEGATIVE_INFINITY,
     lastDir: 0,
     heldChromaBase: 0,
+    heldBloomBase: 0,
     folds: 0,
     pendingFolds: 0,
     pendingFoldsSince: Number.NEGATIVE_INFINITY,
+    lastClimaxAt: Number.NEGATIVE_INFINITY,
   };
 }
 
@@ -268,6 +326,7 @@ export function direct(
     state.clock = 0;
     state.lastFlipAt = Number.NEGATIVE_INFINITY;
     state.lastDir = 0;
+    state.lastClimaxAt = Number.NEGATIVE_INFINITY;
   }
   state.clock += step;
 
@@ -284,19 +343,28 @@ export function direct(
   const space = clamp01(mood.space);
   const impact = clamp01(fast.impact);
   const build = clamp01(fast.build);
+  const melancholy = clamp01(mood.melancholy);
+  const aggression = clamp01(mood.aggression);
+  const spoken = clamp01(mood.spoken);
+  const section = mood.section;
 
   // The brief's `grain = lerp(0.02, 0.12, noise)` wants the *noisiness* of the
   // sound, which the mood vector does not carry as such: it is a fact about
   // the spectrum, not a judgment. The nearest judgment is "gritty and not
   // machine-made" — aggression, and the absence of synthetic — so that is what
   // stands in for it, and it lands in the same 0..1 range.
-  const noise = clamp01(0.5 * clamp01(mood.aggression) + 0.5 * (1 - synthetic));
+  const noise = clamp01(0.5 * aggression + 0.5 * (1 - synthetic));
 
-  // Ink.
+  // Ink, with the section's hand on it: a build holds the picture together for
+  // longer and pushes more ink in, a breakdown lets it dissolve.
   let flowAmtTarget = lerp(0.15, 0.9, arousal);
-  const decayTarget = lerp(0.93, 0.985, clamp01(build * 0.6 + hypnotic * 0.4));
+  let decayTarget = lerp(0.93, 0.985, clamp01(build * 0.6 + hypnotic * 0.4));
+  if (section === 'build') decayTarget += BUILD_DECAY;
+  if (section === 'breakdown') decayTarget -= BREAKDOWN_DECAY;
+  decayTarget = Math.min(MAX_DECAY, Math.max(MIN_DECAY, decayTarget));
   const turbulenceTarget = lerp(0.1, 1.0, tension);
-  const injectGainTarget = lerp(0.6, 1.6, arousal);
+  let injectGainTarget = lerp(0.6, 1.6, arousal);
+  if (section === 'build') injectGainTarget *= BUILD_INJECT;
   // Impact-driven: a kick that has been slewed is not a kick.
   let pushKick = clamp01(fast.sub) * 0.02 + impact * 0.08;
 
@@ -315,37 +383,67 @@ export function direct(
 
   // The acid look is reserved for hard electronic peaks; everywhere else it
   // would read as a bug.
-  const posterize = synthetic > 0.7 && arousal > 0.7 ? 6 : 0;
-  // Hypnotic only, and two to six folds. Eight folds read as sharp static
-  // spokes rather than as a figure, and repetitive dance music that is not
-  // hypnotic is not asking to be kaleidoscoped at all.
-  const foldTarget = hypnotic >= 0.6 ? Math.round(lerp(MIN_FOLDS, MAX_FOLDS, tension)) : 0;
-  let mirrorFolds = holdFolds(state, foldTarget, prev === null);
+  let posterize = synthetic > 0.7 && arousal > 0.7 ? 6 : 0;
 
   // The mix.
   //
-  // The ink is a constant bed and the other two layers are bid on top of it,
-  // then the lot is normalised — so the *ratio* is what the formulas decide and
-  // the total is always exactly one frame's worth of light. Particles want
-  // energy and machines; strands want stillness and tension; both get out of
-  // the way of a voice, because dust and silk over speech read as decoration
-  // over a person talking.
-  const spoken = clamp01(mood.spoken);
+  // The ink is a bed and the other four layers are bid on top of it, then the
+  // lot is normalised — so the *ratio* is what the formulas decide and the
+  // total is always exactly one frame's worth of light. Particles want energy
+  // and machines; strands want stillness and tension; relief wants grief or
+  // anger, and more of both from the two genres that are made of texture
+  // rather than of notes. All four get out of the way of a voice — dust, silk
+  // and terrain over speech all read as decoration over a person talking — and
+  // so does the *ink*, which up to now carried a podcast on its own. Breath is
+  // the layer built for that, and it takes the whole frame.
   const motion = mood.motion;
-  let wParticles = arousal * (1 - spoken) * (0.6 + 0.4 * synthetic);
-  let wStrands = (1 - arousal) * (0.5 + 0.5 * tension) * (1 - spoken);
+  const voiced = 1 - spoken;
+  const wInk = INK_BED * voiced;
+  let wParticles = arousal * voiced * (0.6 + 0.4 * synthetic);
+  let wStrands = (1 - arousal) * (0.5 + 0.5 * tension) * voiced;
+  let wRelief = Math.max(melancholy, aggression) * RELIEF_BID * voiced;
+  // The genre bonus fades with speech for the same reason the motion bonuses
+  // below do: added flat, a drone podcast would keep a full terrain under the
+  // voice layer that is supposed to have the frame to itself.
+  if (RELIEF_GENRES.has(mood.genre)) wRelief += RELIEF_GENRE_BONUS * voiced;
+  const wBreath = spoken >= BREATH_GATE ? spoken : 0;
   // The motion bonuses fade with speech too. Added flat they would put a
   // swarm's dust back over a talking voice at full strength, which is the one
   // thing the `(1 − spoken)` factors above exist to prevent.
-  if (motion === 'swarm') wParticles += 0.3 * (1 - spoken);
+  if (motion === 'swarm') wParticles += 0.3 * voiced;
   // A drift leans the mix toward silk; it does not hand it over. At 0.2 the
   // bonus put the strands ahead of the ink at IDLE_MOOD — which drifts — so a
   // page that had heard nothing opened on a curtain instead of on the ink.
-  if (motion === 'drift') wStrands += 0.1 * (1 - spoken);
-  const total = INK_BED + wParticles + wStrands;
+  if (motion === 'drift') wStrands += 0.1 * voiced;
+  // Never zero in practice — `spoken` 1 makes the breath 1 and anything less
+  // leaves the ink bed — but a mix that could divide by zero is a black frame
+  // waiting for the one mood nobody tried.
+  const bid = wInk + wParticles + wStrands + wRelief + wBreath;
+  const total = bid > 1e-6 ? bid : 1;
+  const weights = {
+    ink: bid > 1e-6 ? wInk / total : 1,
+    particles: wParticles / total,
+    strands: wStrands / total,
+    relief: wRelief / total,
+    breath: wBreath / total,
+  };
+
+  // Hypnotic, or terrain that has taken the frame. Two to six folds: eight read
+  // as sharp static spokes rather than as a figure, and repetitive dance music
+  // that is not hypnotic is not asking to be kaleidoscoped at all. The terrain
+  // is the other way round — a mirrored ridge is the reference image, so a
+  // dominant relief gets a mirror line whatever the music is doing.
+  let foldTarget = hypnotic >= 0.6 ? Math.round(lerp(MIN_FOLDS, MAX_FOLDS, tension)) : 0;
+  if (weights.relief > RELIEF_MIRROR_OVER) foldTarget = Math.max(foldTarget, MIN_FOLDS);
+  let mirrorFolds = holdFolds(state, foldTarget, prev === null);
 
   // Particles.
   let particleSpeed = lerp(0.2, 2.2, arousal);
+  if (section === 'breakdown') particleSpeed *= BREAKDOWN_SPEED;
+  // A build pulls the camera in. It is a separate number from `fast.build`,
+  // which is the analysis's own rising-energy reading: the section label is a
+  // judgment about where we are in the track, and the two do not always agree.
+  const particleDollyTarget = section === 'build' ? 1 : 0;
   let particleImpulse = 1;
   let dollySnap = DOLLY_SNAP;
   // A bloom is a soft burst *on the downbeat* and a vortex the rest of the
@@ -363,6 +461,13 @@ export function direct(
 
   // Strands: how far the current bends the silk, and how fat each ribbon is.
   const strandBendTarget = lerp(0.2, 1.4, tension);
+
+  // Relief: how far the terrain is displaced, and how hard the light falls off
+  // across it. Grief and anger both raise the ridges — one reads as a slow
+  // swell and the other as a jagged one, which is the noise's business, not
+  // the height's — and tension is what turns a lit surface into charcoal.
+  const reliefHeightTarget = lerp(0.3, 1.2, clamp01(aggression * 0.5 + melancholy * 0.5));
+  const reliefContrastTarget = lerp(1.0, 3.0, tension);
 
   if (reducedMotion) {
     flowAmtTarget *= 0.5;
@@ -382,15 +487,29 @@ export function direct(
   if (reducedMotion) exposure = Math.min(exposure, REDUCED_MAX_EXPOSURE);
   exposure = prev === null ? exposure : limitStrobe(state, exposure, prev.exposure);
 
+  // The bloom's slewed base is held aside for the same reason chroma's is: the
+  // climax flare is a multiplier on top, and a flared `prev.bloomStrength` fed
+  // back into the slew would ratchet the bloom up and never come down.
+  if (prev === null) state.heldBloomBase = bloomStrengthTarget;
+  else state.heldBloomBase += (bloomStrengthTarget - state.heldBloomBase) * k;
+  if (section === 'drop_climax' && impact >= CLIMAX_IMPACT_GATE) state.lastClimaxAt = state.clock;
+  const flaring = section === 'drop_climax' && state.clock - state.lastClimaxAt < CLIMAX_BLOOM_SEC;
+  let bloomStrength = state.heldBloomBase * (flaring ? CLIMAX_BLOOM : 1);
+
+  // Safety. Over a talking voice nothing that can flash a screen survives:
+  // no kaleidoscope, no fringing, no banding, a bloom that cannot bloom, and
+  // an exposure pinned flat — an impact-driven lift over speech is precisely
+  // the flash the Breath scene exists to avoid.
+  if (weights.breath > BREATH_SAFE_OVER) {
+    mirrorFolds = 0;
+    chroma = 0;
+    posterize = 0;
+    bloomStrength = Math.min(bloomStrength, BREATH_MAX_BLOOM);
+    exposure = 1;
+  }
+
   return {
-    weights: {
-      ink: INK_BED / total,
-      particles: wParticles / total,
-      strands: wStrands / total,
-      // Task 11.
-      relief: 0,
-      breath: 0,
-    },
+    weights,
     palette: paletteFor(mood),
 
     flowAmt: slew(flowAmtTarget, prev?.flowAmt ?? flowAmtTarget),
@@ -409,13 +528,17 @@ export function direct(
 
     strandBend: slew(strandBendTarget, prev?.strandBend ?? strandBendTarget),
     // Not slewed: the thickness *is* the bass, and silk that swells a second
-    // after the note is silk that is not listening.
-    strandThickness: lerp(0.004, 0.02, clamp01(fast.sub)),
+    // after the note is silk that is not listening. Ribbons, not hairlines —
+    // at 0.004 a strand was a hairline scratch and four hundred of them read
+    // as rain rather than as silk.
+    strandThickness: lerp(0.012, 0.035, clamp01(fast.sub)),
 
-    reliefHeight: slew(lerp(0.2, 1, clamp01(fast.rms)), prev?.reliefHeight ?? 0.2),
-    reliefContrast: slew(lerp(0.3, 1, tension), prev?.reliefContrast ?? 0.3),
+    reliefHeight: slew(reliefHeightTarget, prev?.reliefHeight ?? reliefHeightTarget),
+    reliefContrast: slew(reliefContrastTarget, prev?.reliefContrast ?? reliefContrastTarget),
+    reliefAggression: slew(aggression, prev?.reliefAggression ?? aggression),
+    particleDolly: slew(particleDollyTarget, prev?.particleDolly ?? particleDollyTarget),
 
-    bloomStrength: slew(bloomStrengthTarget, prev?.bloomStrength ?? bloomStrengthTarget),
+    bloomStrength,
     bloomThreshold: slew(bloomThresholdTarget, prev?.bloomThreshold ?? bloomThresholdTarget),
     chroma,
     posterize,
