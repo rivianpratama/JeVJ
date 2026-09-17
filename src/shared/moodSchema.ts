@@ -72,6 +72,7 @@ const INPUT_UNIT_FIELDS = [
   'noise',
   'sub',
   'speech',
+  'pause',
   'vocal',
   'harsh',
 ] as const;
@@ -198,6 +199,7 @@ export function validateMoodInput(x: unknown): Valid<MoodInput> | Invalid {
       sub: v.sub,
       bands: [...v.bands],
       speech: v.speech,
+      pause: v.pause,
       vocal: v.vocal,
       harsh: v.harsh,
       onsetsPerSec: v.onsetsPerSec,
@@ -284,6 +286,8 @@ export function validateTransitionInput(x: unknown): Valid<TransitionInput> | In
   if (typeof x['keyChanged'] !== 'boolean') return bad('keyChanged', 'a boolean');
   if (!num(x['vocalDelta'], -1, 1)) return bad('vocalDelta', 'a finite number in -1..1');
   if (!num(x['harshDelta'], -1, 1)) return bad('harshDelta', 'a finite number in -1..1');
+  if (typeof x['burst'] !== 'boolean') return bad('burst', 'a boolean');
+  if (typeof x['beatless'] !== 'boolean') return bad('beatless', 'a boolean');
 
   const v = x as unknown as TransitionInput;
   return {
@@ -299,6 +303,8 @@ export function validateTransitionInput(x: unknown): Valid<TransitionInput> | In
       keyChanged: v.keyChanged,
       vocalDelta: v.vocalDelta,
       harshDelta: v.harshDelta,
+      burst: v.burst,
+      beatless: v.beatless,
     },
   };
 }

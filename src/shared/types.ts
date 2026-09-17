@@ -84,7 +84,8 @@ export interface MoodInput {
   attack: Attack;
   sub: number;
   bands: number[]; // 8 ints 0..9
-  speech: number;
+  speech: number; // 0..1 this is talking rather than music
+  pause: number; // 0..1 share of the last 4 s that is holes between phrases
   vocal: number; // 0..1 a sung voice is present
   harsh: number; // 0..1 abrasive, distorted or screamed
   onsetsPerSec: number;
@@ -166,6 +167,25 @@ export interface TransitionInput {
   vocalDelta: number;
   /** How much more (or less) abrasive it is after it, -1..1. */
   harshDelta: number;
+  /**
+   * Whether what follows the moment is a *noise burst* rather than music:
+   * broadband, unpitched, loud, with no beat under it.
+   *
+   * Applause is the case this exists for. A room clapping after a sentence is
+   * loud, sudden, broadband and arrives out of a hole, which is a drop's
+   * description word for word — and a TED talk accordingly came back with nine
+   * of them. Local DSP can say "that is a room, not a record"; only the model
+   * can say what to do about it, so it is told.
+   */
+  burst: boolean;
+  /**
+   * Whether the music after the moment has no beat the grid believes in.
+   *
+   * A drop is a *rhythmic* event. An orchestral or ambient swell rises into
+   * something with no pulse at all, and both the Gymnopédie and the Eno had
+   * their swells named as drops for want of this flag.
+   */
+  beatless: boolean;
 }
 
 /** What Jev says one candidate moment is, and how hard it lands. */

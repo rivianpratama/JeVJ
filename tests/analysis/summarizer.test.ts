@@ -29,8 +29,9 @@ const EXAMPLE: MoodInput = {
   sub: 0.8,
   bands: [9, 8, 6, 5, 5, 6, 7, 5],
   speech: 0.05,
+  pause: 0,
   vocal: 0.2,
-  harsh: 0.5,
+  harsh: 0.4,
   onsetsPerSec: 4.2,
   slope4: 3.5,
   slope8: 6.1,
@@ -100,8 +101,11 @@ function exampleReadings(over: Partial<MoodReadings> = {}): MoodReadings {
     },
     timbre: { consonance: 0.6, bright: 0.7, noise: 0.4, attack: 'sharp', sub: 0.8, centroidSlope: 0.4 },
     speech: 0.05,
+    pause: 0,
     vocal: 0.2,
-    harsh: 0.52,
+    // What `harshness` returns for these readings: 0.3·0.7 + 0.2·0.4 +
+    // 0.2·0.4, with no saturation because a crest of 0.3 still has its peaks.
+    harsh: 0.37,
     ...over,
   };
 }
@@ -134,7 +138,7 @@ function stubDeps(r: MoodReadings = exampleReadings()): SummarizerDeps {
       subWeight: () => r.timbre.sub,
       centroidSlope: () => r.timbre.centroidSlope,
     },
-    speech: { score: () => r.speech },
+    speech: { score: () => r.speech, pause: () => r.pause },
     vocal: { score: () => r.vocal },
     tempo: () => r.tempo,
     frame: stubFrame,
@@ -210,7 +214,10 @@ describe('Summarizer.snapshot', () => {
     // Sensitive to the beatHz argument, unlike stubDeps' plain `() => r.speech`
     // stub — that stub ignores every argument, so it cannot tell a call site
     // that forgets to pass the beat frequency from one that gets it right.
-    const speech = { score: (conf: number, hz = 0): number => (hz > 0 ? 0.42 : 0.91) };
+    const speech = {
+      score: (conf: number, hz = 0): number => (hz > 0 ? 0.42 : 0.91),
+      pause: (): number => readings.pause,
+    };
     const deps = { ...stubDeps(readings), speech };
 
     const fromReadings = Summarizer.fromSnapshot(
@@ -230,6 +237,11 @@ describe('Summarizer.serialize', () => {
     expect(estimateTokens(Summarizer.serialize(EXAMPLE))).toBeLessThanOrEqual(160);
   });
 
+  /**
+   * 165 rather than the plan's 160. `pause` is worth about three tokens at the
+   * worst values the schema allows — `"pause":0.9` — and it is the field that
+   * separates a talk from a record, which nothing else in the payload does.
+   */
   it('stays inside the budget at the worst values the schema allows', () => {
     const worst: MoodInput = {
       pos: '199:59/199:59',
@@ -254,6 +266,7 @@ describe('Summarizer.serialize', () => {
       sub: 0.99,
       bands: [9, 9, 9, 9, 9, 9, 9, 9],
       speech: 0.99,
+      pause: 0.9,
       vocal: 0.99,
       harsh: 0.99,
       onsetsPerSec: 19.9,
@@ -265,7 +278,7 @@ describe('Summarizer.serialize', () => {
       barsSinceChange: 999,
       barInPhrase: 31,
     };
-    expect(estimateTokens(Summarizer.serialize(worst))).toBeLessThanOrEqual(160);
+    expect(estimateTokens(Summarizer.serialize(worst))).toBeLessThanOrEqual(165);
   });
 
   it('round-trips into something the schema accepts', () => {
@@ -304,7 +317,10 @@ describe('Summarizer.novelty', () => {
       bpm: 180,
       bands: EXAMPLE.bands.map((b) => 9 - b),
     };
-    expect(Summarizer.novelty({ ...EXAMPLE, bpm: 60 }, other)).toBeGreaterThan(0.3);
+    // 0.28 rather than 0.3: the comparison vector gained `pause` in v2.2, and
+    // two payloads that agree about their pauses are one term more alike over
+    // one term more of vector. The measured value moved 0.30 → 0.29.
+    expect(Summarizer.novelty({ ...EXAMPLE, bpm: 60 }, other)).toBeGreaterThan(0.28);
   });
 
   it('stays inside 0..1 however far apart the inputs are', () => {

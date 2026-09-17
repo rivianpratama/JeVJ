@@ -96,6 +96,8 @@ export interface MoodReadings {
     centroidSlope: number;
   };
   speech: number;
+  /** 0..1 how much of the last four seconds is holes between phrases. */
+  pause: number;
   /** 0..1 how much of a singing voice is present. */
   vocal: number;
   /** 0..1 how abrasive the sound is. */
@@ -117,7 +119,7 @@ export interface SummarizerDeps {
   rhythm: Pick<RhythmTracker, 'syncopation' | 'regularity' | 'meter' | 'onsetsPerSec' | 'onsetRatio'>;
   dyn: Pick<DynamicsTracker, 'loudClass' | 'range' | 'trend' | 'crest' | 'slopeDb' | 'gap' | 'position'>;
   timbre: Pick<TimbreTracker, 'brightness' | 'noisiness' | 'attack' | 'subWeight' | 'centroidSlope'>;
-  speech: Pick<SpeechDetector, 'score'>;
+  speech: Pick<SpeechDetector, 'score' | 'pause'>;
   vocal: Pick<VocalDetector, 'score'>;
   tempo: () => TempoEstimate | null;
   frame: () => FrameFeatures;
@@ -133,6 +135,11 @@ export class Summarizer {
     const barSec = state.period * state.barLength;
     const frame = this.d.frame();
     const attack = timbre.attack();
+    // Read once and shared, for the same reason as in `AnalysisPipeline.step`:
+    // `speech` is told how regular the rhythm is and `harsh` is told the
+    // crest, and both have to describe the instant the rest of the page does.
+    const regular = rhythm.regularity();
+    const crest = dyn.crest();
 
     return Summarizer.fromSnapshot(
       {
@@ -142,7 +149,7 @@ export class Summarizer {
         key: key.estimate(),
         rhythm: {
           sync: rhythm.syncopation(),
-          regular: rhythm.regularity(),
+          regular,
           meter: rhythm.meter(),
           onsetsPerSec: rhythm.onsetsPerSec(now),
           onsetRatio: rhythm.onsetRatio(now, barSec),
@@ -151,7 +158,7 @@ export class Summarizer {
           loud: dyn.loudClass(),
           range: dyn.range(),
           trend: dyn.trend(),
-          crest: dyn.crest(),
+          crest,
           slope4: dyn.slopeDb(4, barSec, now),
           slope8: dyn.slopeDb(8, barSec, now),
           gap: dyn.gap(now, state.period),
@@ -164,16 +171,20 @@ export class Summarizer {
           sub: timbre.subWeight(),
           centroidSlope: timbre.centroidSlope(),
         },
-        // The beat as well as how sure of it we are: a pulse train's harmonics
-        // sit in the syllabic band, and the detector can only take them out of
-        // the measurement if it is told where they are. Same call as
-        // `AnalysisPipeline.step` — see `pipeline.ts`.
-        speech: speech.score(state.confidence, state.period > 0 ? 1 / state.period : 0),
+        // The beat, how sure of it we are, and how regularly anything lands on
+        // it. Same call as `AnalysisPipeline.step` — see `pipeline.ts`.
+        speech: speech.score(
+          state.confidence,
+          state.period > 0 ? 1 / state.period : 0,
+          regular,
+        ),
+        pause: speech.pause(),
         vocal: vocal.score(),
         harsh: harshness({
           bright: timbre.brightness(),
           flatness: timbre.noisiness(),
           loudRel: dyn.position(),
+          crest,
           attack,
         }),
       },
@@ -208,6 +219,7 @@ export class Summarizer {
       sub: r.timbre.sub,
       bands: bandDigits(r.features.bands),
       speech: r.speech,
+      pause: r.pause,
       vocal: r.vocal,
       harsh: r.harsh,
       onsetsPerSec: r.rhythm.onsetsPerSec,
@@ -333,6 +345,10 @@ function normalize(m: MoodInput): MoodInput {
     sub: unit(m.sub),
     bands: bandInts(m.bands),
     speech: unit(m.speech),
+    // Tenths, like `vocal` and `harsh` below and for the same reason: the
+    // rubric that reads it crosses at 0.15, and nothing downstream acts on the
+    // second decimal of a share of holes.
+    pause: tenths(m.pause, 0, 1),
     // Tenths, not hundredths, and the only two fields rounded that coarsely.
     // The payload is two characters over its 160-token ceiling with them at
     // two decimals, and the second decimal of a detector score that is only
@@ -393,6 +409,9 @@ function vector(m: MoodInput): number[] {
     m.noise,
     m.sub,
     m.speech,
+    // A passage acquiring or losing its pauses is a talk starting or stopping,
+    // which is as big a change as this payload can describe.
+    m.pause,
     // A voice arriving and a passage turning abrasive are both changes a
     // listener would name, so both are worth a segment boundary.
     m.vocal,

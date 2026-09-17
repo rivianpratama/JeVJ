@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { harshness, VocalDetector } from '../../src/analysis/vocal';
+import { harshness, saturation, VocalDetector } from '../../src/analysis/vocal';
 import { TimbreTracker } from '../../src/analysis/timbre';
 import { DynamicsTracker } from '../../src/analysis/dynamics';
 import { OnsetDetector } from '../../src/analysis/onset';
@@ -51,6 +51,7 @@ function harshOf(signal: Float32Array): number {
           bright: timbre.brightness(),
           flatness: timbre.noisiness(),
           loudRel: dynamics.position(),
+          crest: dynamics.crest(),
           attack: timbre.attack(),
         }),
       );
@@ -130,24 +131,69 @@ describe('harshness', () => {
     expect(harshOf(noiseBurstTrain(8, SECONDS, SR))).toBeGreaterThanOrEqual(0.7);
   });
 
+  /**
+   * 0.25 rather than 0.2, and the number is the fixture rather than the
+   * feature. A chord held at one level for four seconds *is* the loudest thing
+   * the dynamics tracker has heard, so `loudRel` reads 1 and contributes the
+   * whole 0.2 of its weight on its own; a pad inside real music sits some way
+   * down its track's range and reads lower. What the feature has to get right
+   * is the distance to a burst train, which is a factor of three.
+   */
   it('reads a soft pad as not harsh', () => {
-    expect(harshOf(chord([110, 130.81, 164.81], SECONDS, SR))).toBeLessThanOrEqual(0.2);
+    const pad = harshOf(chord([110, 130.81, 164.81], SECONDS, SR));
+
+    expect(pad).toBeLessThanOrEqual(0.25);
+    expect(pad).toBeLessThan(harshOf(noiseBurstTrain(8, SECONDS, SR)) / 3);
   });
 
-  it('discounts everything that does not strike sharply', () => {
-    const o = { bright: 1, flatness: 1, loudRel: 1, attack: 'sharp' as Attack };
+  it('discounts music that is not striking at all, and only that', () => {
+    const o = { bright: 1, flatness: 1, loudRel: 1, crest: 0, attack: 'sharp' as Attack };
     expect(harshness(o)).toBeCloseTo(1, 6);
-    expect(harshness({ ...o, attack: 'soft' })).toBeCloseTo(0.6, 6);
-    expect(harshness({ ...o, attack: 'mixed' })).toBeCloseTo(0.6, 6);
+    // `mixed` is the normal reading for anything dense — a wall of distorted
+    // guitar has no onset that stands out against its own flux — so it keeps
+    // full marks. Only `soft` is discounted, and only by a tenth.
+    expect(harshness({ ...o, attack: 'mixed' })).toBeCloseTo(1, 6);
+    expect(harshness({ ...o, attack: 'soft' })).toBeCloseTo(0.9, 6);
   });
 
-  it('weights brightness, flatness and loudness as the plan specifies', () => {
-    const at = (bright: number, flatness: number, loudRel: number): number =>
-      harshness({ bright, flatness, loudRel, attack: 'sharp' });
-    expect(at(1, 0, 0)).toBeCloseTo(0.4, 6);
-    expect(at(0, 1, 0)).toBeCloseTo(0.3, 6);
-    expect(at(0, 0, 1)).toBeCloseTo(0.3, 6);
+  it('weights brightness, flatness, loudness and saturation', () => {
+    const at = (bright: number, flatness: number, loudRel: number, crest = 1): number =>
+      harshness({ bright, flatness, loudRel, crest, attack: 'sharp' });
+    expect(at(1, 0, 0)).toBeCloseTo(0.3, 6);
+    expect(at(0, 1, 0)).toBeCloseTo(0.2, 6); // noisy, but its peaks are intact
+    expect(at(0, 0, 1)).toBeCloseTo(0.2, 6);
+    expect(at(0, 1, 0, 0)).toBeCloseTo(0.2 + 0.3, 6); // noisy and squashed: distortion
+    expect(at(0, 0, 0, 0)).toBe(0); // squashed but tonal: a held note, not distortion
     expect(at(0, 0, 0)).toBe(0);
+  });
+});
+
+describe('saturation', () => {
+  /** Noisy enough for the gate to be fully open; the crest is the variable. */
+  const NOISY = 0.2;
+
+  it('reads a squashed noisy wall as saturated and a struck note as not', () => {
+    // A crest factor at or below 0.08 is a signal whose peaks have been taken
+    // off; at or above 0.28 the transients are still standing.
+    expect(saturation(0.04, NOISY)).toBe(1);
+    expect(saturation(0.08, NOISY)).toBe(1);
+    expect(saturation(0.35, NOISY)).toBe(0);
+    expect(saturation(0.28, NOISY)).toBe(0);
+    expect(saturation(0.18, NOISY)).toBeCloseTo(0.5, 6);
+  });
+
+  it('reads a held tonal pad as not saturated, however flat its peaks', () => {
+    // The case the crest factor alone gets wrong: a sustained sawtooth chord
+    // has a peak about 3 dB over its rms and no noise between its partials.
+    expect(saturation(0.15, 0)).toBe(0);
+    expect(saturation(0, 0)).toBe(0);
+    expect(saturation(0, 0.04)).toBeCloseTo(0.5, 6);
+  });
+
+  it('clamps rather than extrapolating outside 0..1', () => {
+    expect(saturation(-1, NOISY)).toBe(1);
+    expect(saturation(2, NOISY)).toBe(0);
+    expect(saturation(0, 5)).toBe(1);
   });
 });
 

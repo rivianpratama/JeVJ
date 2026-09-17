@@ -104,7 +104,7 @@ describe('findCandidates rules', () => {
     pos: '0:00/1:00', bpm: 120, tempo: 'allegro', beatConf: 0.9, meter: 'duple', sync: 0.2,
     regular: 0.9, key: 'C', mode: 'minor', modeConf: 0.7, modal: 'aeolian', consonance: 0.6,
     loud: 'mf', range: 0.3, trend: 'steady', crest: 0.3, bright: 0.5, noise: 0.3, attack: 'sharp',
-    sub: 0.5, bands: [5, 5, 5, 5, 5, 5, 5, 5], speech: 0.1, vocal: 0.1, harsh: 0.2,
+    sub: 0.5, bands: [5, 5, 5, 5, 5, 5, 5, 5], speech: 0.1, pause: 0, vocal: 0.1, harsh: 0.2,
     onsetsPerSec: 4, slope4: 0, slope8: 0, onsetRatio: 1, centroidSlope: 0, gap: false,
     barsSinceChange: 4, barInPhrase: 4,
   };

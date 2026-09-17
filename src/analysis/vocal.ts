@@ -20,11 +20,15 @@
  *   thing that is *present*, not a thing that happens on one frame — and
  *   halved when the fundamental under it never moves, because that is a
  *   synthesizer holding a note rather than a person singing one.
- * - **harsh** is loudness, brightness and noisiness read together, and then
- *   halved unless the music is actually striking. The discount is what stops a
- *   loud bright pad — a supersaw, a cymbal wash, an orchestral swell — from
- *   reading as aggression: harshness is an attack, and something that arrives
- *   smoothly is not one, however much high end it has.
+ * - **harsh** is loudness, brightness, noisiness and *saturation* read
+ *   together. The first three describe a cymbal wash as well as they describe
+ *   a scream; the fourth is what tells them apart, and it is the only reading
+ *   in the set that is absolute rather than relative to the track. Distortion
+ *   is a reduction in crest factor — clipping takes the peaks off — and it
+ *   fills the spectrum between the partials, so saturation is read as "the
+ *   peaks are gone *and* there is noise where a chord would have none". Either
+ *   half alone is wrong: a held sawtooth pad has no transients either, and a
+ *   cymbal wash is all noise and all transient.
  *
  * Pure: frames and readings in, numbers out. No clock of its own.
  */
@@ -85,12 +89,70 @@ const MIN_STABILITY_SAMPLES = 8;
 /** Frames in the window at any plausible rate, with room to spare. */
 const F0_HISTORY = 128;
 
-/** How `harsh` weights its three readings, as the plan specifies. */
-const W_BRIGHT = 0.4;
-const W_FLATNESS = 0.3;
-const W_LOUD = 0.3;
-/** What is left of harshness when the music is not striking sharply. */
-const SOFT_ATTACK_DISCOUNT = 0.6;
+/**
+ * How `harsh` weights its four readings.
+ *
+ * The first three are the plan's, re-weighted; the fourth is new and is the
+ * one that made the feature work on real audio. Measured over the first two
+ * minutes of *Duality*, the first minute of *Levels* and the first minute of a
+ * Gymnopédie, the old three-term sum reported 0.28-0.33 for continuous
+ * screaming, 0.32-0.37 for solo piano and 0.32-0.35 for house — a feature with
+ * no discriminating power at all, and the reason `scream_peak` never fired on
+ * a track that is nothing but screams.
+ *
+ * Two things were wrong. `loudRel` is a *session-relative* position, so
+ * everything sits near the top of its own range and the term is nearly a
+ * constant. And the `attack === 'sharp'` gate, which was supposed to separate
+ * a scream from a cymbal wash, is really a sparseness measure: `attack` is how
+ * far an onset's flux rises above the last two seconds' mean flux, so a piano
+ * note against near-silence reads `sharp` and a wall of distorted guitar, whose
+ * mean flux is already enormous, reads `mixed`. The gate was firing exactly
+ * backwards — full marks to the Gymnopédie, a 40% cut to Slipknot.
+ */
+const W_BRIGHT = 0.3;
+const W_FLATNESS = 0.2;
+const W_LOUD = 0.2;
+const W_SATURATION = 0.3;
+
+/**
+ * The crest factors between which saturation is read as going from none to
+ * total.
+ *
+ * Distortion is, definitionally, a reduction in crest factor: clipping and
+ * saturation take the peaks off, and a screamed vocal through a guitar wall
+ * has almost no peak-to-rms left. Measured: *Duality* runs 0.04-0.13 across
+ * its screamed sections, *Levels* 0.13-0.25, a TED talk 0.12-0.30 and a
+ * Gymnopédie 0.33-0.39. It is the one reading in the set that is absolute
+ * rather than relative to the track, which is why it can separate two tracks
+ * that have each normalised themselves.
+ */
+const SATURATION_CREST_NONE = 0.28;
+const SATURATION_CREST_FULL = 0.08;
+
+/**
+ * The spectral flatness at which a low crest factor is believed to be
+ * distortion.
+ *
+ * A crest factor on its own cannot tell saturation from *steadiness*. A held
+ * sawtooth chord has no transients either — its peak sits about 3 dB over its
+ * rms, which reads 0.15 and would be two thirds of the way to "fully
+ * saturated" — and a pad is the one thing this feature must never call harsh.
+ * What a pad does not have is noise: clipping and overdrive fill the spectrum
+ * in between the partials, and a chord leaves those bins empty. Measured, a
+ * synthesized chord reads a flatness of 0.00 and *Duality* 0.08-0.17 across
+ * its screamed sections, so the gate opens over the first tenth.
+ */
+const SATURATION_NOISE_FULL = 0.08;
+
+/**
+ * What is left of harshness when the music is not striking at all.
+ *
+ * A tenth rather than the old 40%, and only for `soft` — an attack the tracker
+ * calls `mixed` is the normal reading for anything dense, which is most of the
+ * music this feature exists for. The discount now says "nothing here is
+ * striking" rather than "this is not a staccato piano".
+ */
+const SOFT_ATTACK_DISCOUNT = 0.9;
 
 /**
  * The raw, unsmoothed vocal reading of one frame: both factors scaled to their
@@ -174,25 +236,52 @@ export interface HarshReadings {
   flatness: number;
   /** Where the present sits in the session's own loudness range, 0..1. */
   loudRel: number;
+  /** Peak over rms across the last two seconds, 0..1 — 0 is a squashed wall. */
+  crest: number;
   /** How sharply the music is striking. */
   attack: Attack;
 }
 
 /**
+ * 0..1: how *saturated* the sound is — squashed peaks, and noise in between
+ * the partials to say the squashing was distortion rather than stillness.
+ *
+ * Pure and exported so the one absolute reading in `harshness` can be held
+ * against a fixture on its own: a distorted wall should read 1, a struck piano
+ * note 0 for want of squashing, and a held pad 0 for want of noise.
+ */
+export function saturation(crest: number, flatness: number): number {
+  const c = clamp(crest, 0, 1);
+  const squashed = clamp(
+    (SATURATION_CREST_NONE - c) / (SATURATION_CREST_NONE - SATURATION_CREST_FULL),
+    0,
+    1,
+  );
+  return squashed * clamp(clamp(flatness, 0, 1) / SATURATION_NOISE_FULL, 0, 1);
+}
+
+/**
  * 0..1: how abrasive this is.
  *
- * The three readings are weighted as the plan specifies, and the whole thing
- * is cut to 60% when the attack is anything but `sharp`. That discount is the
- * only non-linear part and it is doing all the work: brightness, noisiness and
- * loudness describe a cymbal wash as well as they describe a scream, and the
- * attack is what tells them apart.
+ * Brightness, noisiness and loudness describe a cymbal wash as well as they
+ * describe a scream; saturation is what tells them apart, because a wash has
+ * its peaks and a scream through a distorted mix has had them taken off. The
+ * attack discount survives as a small correction for music that is not
+ * striking at all, rather than as the gate that used to decide the answer.
+ *
+ * Measured over the first minute of each, the three terms together now read
+ * 0.58 on *Duality* (0.60-0.66 across its screamed sections), 0.50 on
+ * *Levels*, 0.49 on *SICKO MODE*, 0.39 on an Eno pad and 0.23 on a Gymnopédie
+ * — against 0.31, 0.33, 0.31, 0.25 and 0.30 before, which is to say against
+ * no ordering at all.
  */
 export function harshness(o: HarshReadings): number {
   const raw =
     W_BRIGHT * clamp(o.bright, 0, 1) +
     W_FLATNESS * clamp(o.flatness, 0, 1) +
-    W_LOUD * clamp(o.loudRel, 0, 1);
-  return clamp(o.attack === 'sharp' ? raw : raw * SOFT_ATTACK_DISCOUNT, 0, 1);
+    W_LOUD * clamp(o.loudRel, 0, 1) +
+    W_SATURATION * saturation(o.crest, o.flatness);
+  return clamp(o.attack === 'soft' ? raw * SOFT_ATTACK_DISCOUNT : raw, 0, 1);
 }
 
 function clamp(v: number, lo: number, hi: number): number {

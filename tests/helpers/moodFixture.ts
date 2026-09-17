@@ -29,6 +29,7 @@ export const EXAMPLE_INPUT: MoodInput = {
   sub: 0.8,
   bands: [9, 8, 6, 5, 5, 6, 7, 5],
   speech: 0.05,
+  pause: 0,
   vocal: 0.2,
   harsh: 0.45,
   onsetsPerSec: 4.2,
@@ -58,6 +59,8 @@ export function exampleTransition(at = '2:04', over: Partial<TransitionInput> = 
     keyChanged: false,
     vocalDelta: -0.1,
     harshDelta: 0.3,
+    burst: false,
+    beatless: false,
     ...over,
   };
 }

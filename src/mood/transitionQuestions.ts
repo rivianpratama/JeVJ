@@ -49,22 +49,33 @@ export const TRANSITION_PREAMBLE: Record<string, string> = {
   keyChanged: 'the harmony moved to a different tonic',
   vocalDelta: '-1..1 change in how much of a sung voice there is',
   harshDelta: '-1..1 change in how abrasive it is',
+  burst: 'what follows is a broadband unpitched noise burst with no beat — applause, laughter, a crowd, a room',
+  beatless: 'the music after it has no beat the tracker believes in',
 };
 
 /**
  * The choice rubric, in the order `TRANSITION_KINDS` declares.
  *
- * Two labels carry more than a sentence, and they are the two the first real
- * track confused: a screamed climax is loud, sudden and lands after a build,
- * which is `drop`'s description word for word, so `drop` now says what it is
- * *not* for and `scream_peak` lists the measurements that pick it out. The
- * extra keys are part of the prompt — the model reads the whole criterion
- * object — so this is a wording change, not a comment.
+ * `drop` carries most of the weight, because everything loud is a drop until
+ * something says otherwise, and the six real tracks proved it: a screamed
+ * climax is loud, sudden and lands after a build; so is a room applauding a
+ * sentence; so, at a stretch, is an orchestral swell arriving at its top. Pass
+ * 2 named nine drops in a TED talk and one at 3:46 of a Gymnopédie. So `drop`
+ * now says what it is *not* for, three times over, and every exclusion names
+ * a field of the candidate the model can check — `burst`, `beatless`, `harsh`
+ * — rather than asking it to imagine the sound. The extra keys are part of the
+ * prompt: the model reads the whole criterion object, so this is a wording
+ * change, not a comment.
  */
 const KIND_CRITERIA: Record<TransitionKind, Entry> = {
   drop: {
-    what: 'the payoff: full energy slams in after a build or gap',
-    not_for: 'a harsh, screamed or distorted climax; that is scream_peak',
+    what: 'the payoff: full energy slams in after a build or gap, and a beat comes with it',
+    not_for: [
+      'a harsh, screamed or distorted climax; that is scream_peak',
+      'applause, laughter, crowd noise or a noise burst without a beat (burst is true); that is break_silence or none',
+      'a gradual orchestral or ambient swell without a beat (beatless is true); that is none',
+    ],
+    requires: 'beatConf in the after window is at least 0.3',
   },
   build_start: { what: 'energy begins rising toward something' },
   breakdown: { what: 'energy is pulled away after a peak, stripped down' },
@@ -72,7 +83,8 @@ const KIND_CRITERIA: Record<TransitionKind, Entry> = {
   vocal_entry: { what: 'a voice enters or becomes the focus' },
   scream_peak: {
     what: 'harsh, screamed or distorted climax',
-    signals: ['harsh well above 0.6', 'noise high', 'very bright', 'loud'],
+    signals: ['harsh at or above 0.6', 'harshDelta positive', 'noise high', 'very bright', 'loud'],
+    note: 'a track that screams continuously still has peaks: name the moments the harshness steps up, not only the one loudest instant',
   },
   quiet_fall: { what: 'gentle fall into a quiet passage' },
   tempo_change: { what: 'the pulse speeds up or slows down' },

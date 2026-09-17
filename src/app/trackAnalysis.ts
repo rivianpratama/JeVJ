@@ -30,6 +30,7 @@
  * still reaches 100%.
  */
 
+import { beatTrust } from '../analysis/speech';
 import { analyzeOffline, type OfflineSample, type TransitionCandidate } from '../timeline/offlineAnalyzer';
 import { CueTimeline } from '../timeline/timeline';
 import { writeTransitionCues } from '../timeline/transitionWriter';
@@ -62,6 +63,42 @@ const MAX_GAP_SEC = 8;
 const FALLBACK_BAR_SEC = 2;
 /** How long a failed batch waits before its one retry. */
 const RETRY_DELAY_MS = 2000;
+
+/* ----------------------------------------- what a moment is *not* a drop for */
+
+/**
+ * How much of a beat there has to be after a moment for it to be drop-eligible,
+ * and how sparse a passage has to be as well before it is called beatless.
+ *
+ * `beatConf` on its own cannot answer "is there a beat": a TED talk, a
+ * Gymnopédie and an Eno pad all read 1.00 within a minute, because syllables,
+ * rubato left hands and slow pads all give an autocorrelation *something*
+ * periodic to find. What they do not give it is a rhythm anything lands on, so
+ * the number used here is `beatTrust` — the confidence tempered by the
+ * regularity — and even that is paired with a density floor, because a metal
+ * band playing sixteenths reads low regularity too and a drop into a chorus is
+ * still a drop. Beatless therefore means *both* "nothing trustworthy to count"
+ * and "almost nothing happening", which is what a swell is and what a chorus
+ * is not.
+ */
+const BEATLESS_TRUST = 0.3;
+const BEATLESS_ONSETS_PER_SEC = 3;
+
+/**
+ * What a noise burst is: broadband, no beat worth the name, and abrasive, with
+ * the broadband part having *arrived* at the moment rather than having been
+ * there all along.
+ *
+ * Applause is the case. It reads as a sudden jump in spectral flatness against
+ * a passage that had none — a room clapping is close to white noise and a
+ * speaking voice is not — with no trustworthy beat under it. The rise matters
+ * as much as the level: a cymbal-heavy mix is flat all the way through and is
+ * not a burst at any one instant.
+ */
+const BURST_WINDOW_SEC = 1;
+const BURST_FLATNESS = 0.12;
+const BURST_FLATNESS_RISE = 0.04;
+const BURST_TRUST = 0.3;
 
 export interface TrackAnalysisDeps {
   /** One passage. Pass 1 calls this once per segment. */
@@ -268,7 +305,59 @@ export function buildTransitionInput(
       before !== null && after !== null && before.tonic !== after.tonic && after.fit > 0.5,
     vocalDelta: round(meanAround(o.frames, o.vocal, t, half, 1) - meanAround(o.frames, o.vocal, t, half, -1), 2),
     harshDelta: round(meanAround(o.frames, o.harsh, t, half, 1) - meanAround(o.frames, o.harsh, t, half, -1), 2),
+    burst: isBurst(o.frames, t, after?.input ?? null),
+    beatless: isBeatless(after?.input ?? null),
   };
+}
+
+/**
+ * Whether the music after `page` has no beat worth calling one.
+ *
+ * Both halves are needed; see `BEATLESS_TRUST`. A page that does not exist —
+ * a moment past the end of the samples — is not evidence of anything and reads
+ * false, because the flag's only job is to *remove* a candidate from
+ * consideration as a drop and doing that on missing data would be a guess.
+ */
+function isBeatless(page: MoodInput | null): boolean {
+  if (page === null) return false;
+  return (
+    beatTrust(page.beatConf, page.regular) < BEATLESS_TRUST &&
+    page.onsetsPerSec < BEATLESS_ONSETS_PER_SEC
+  );
+}
+
+/**
+ * Whether what follows the moment is a noise burst rather than music.
+ *
+ * The flatness is read off the frames rather than off the page, because a
+ * burst is two seconds long and a page is four bars: by the time the `after`
+ * payload was taken the clapping may already have stopped.
+ */
+function isBurst(
+  frames: readonly FrameFeatures[],
+  t: number,
+  page: MoodInput | null,
+): boolean {
+  if (page === null) return false;
+  if (beatTrust(page.beatConf, page.regular) >= BURST_TRUST) return false;
+
+  const after = meanFlatness(frames, t, t + BURST_WINDOW_SEC);
+  const before = meanFlatness(frames, t - BURST_WINDOW_SEC, t);
+  return after >= BURST_FLATNESS && after - before >= BURST_FLATNESS_RISE;
+}
+
+/** Mean spectral flatness over `[from, to)`, or 0 when no frame falls in it. */
+function meanFlatness(frames: readonly FrameFeatures[], from: number, to: number): number {
+  let sum = 0;
+  let n = 0;
+  for (let i = Math.max(0, indexAtOrBefore(frames, from)); i < frames.length; i++) {
+    const f = frames[i]!;
+    if (f.t < from) continue;
+    if (f.t >= to) break;
+    sum += f.flatness;
+    n += 1;
+  }
+  return n === 0 ? 0 : sum / n;
 }
 
 /**
@@ -430,6 +519,7 @@ function emptyInput(t: number, durationSec: number): MoodInput {
     sub: 0,
     bands: [0, 0, 0, 0, 0, 0, 0, 0],
     speech: 0,
+    pause: 0,
     vocal: 0,
     harsh: 0,
     onsetsPerSec: 0,

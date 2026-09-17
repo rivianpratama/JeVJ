@@ -95,6 +95,14 @@ export interface AnalysisSnapshot {
   timbre: TimbreReading;
   /** 0..1: how much this sounds like talking rather than music. */
   speech: number;
+  /**
+   * 0..1: how much of the last four seconds is holes, scaled so that a normal
+   * speaking rate reads 1. The single cue that separates a talk from a record,
+   * published separately because the model is shown it by name.
+   */
+  pause: number;
+  /** 0..1: how far the fundamental wandered over the last second. */
+  pitchVar: number;
   /** 0..1: how much of a singing voice is present. */
   vocal: number;
   /** 0..1: how abrasive the sound is right now. */
@@ -216,6 +224,13 @@ export class AnalysisPipeline {
     const grid = this.grid.state();
     const barSec = grid.period * grid.barLength;
     const attack = this.timbre.attack();
+    // Read once and shared: `speech` is told how regular the rhythm is so it
+    // can tell a grid that locked onto a groove from one that locked onto
+    // syllables, and `harsh` is told the crest so it can tell a saturated wall
+    // from a loud bright pad. Both have to describe the same instant as the
+    // readings they sit beside in this snapshot.
+    const regular = this.rhythm.regularity();
+    const crest = this.dynamics.crest();
     this.snapshot = {
       features,
       onset,
@@ -226,7 +241,7 @@ export class AnalysisPipeline {
       key: this.key.estimate(),
       rhythm: {
         sync: this.rhythm.syncopation(),
-        regular: this.rhythm.regularity(),
+        regular,
         meter,
         onsetsPerSec: this.rhythm.onsetsPerSec(features.t),
         onsetRatio: this.rhythm.onsetRatio(features.t, barSec),
@@ -235,7 +250,7 @@ export class AnalysisPipeline {
         loud: this.dynamics.loudClass(),
         range: this.dynamics.range(),
         trend: this.dynamics.trend(),
-        crest: this.dynamics.crest(),
+        crest,
         slope4: this.dynamics.slopeDb(4, barSec, features.t),
         slope8: this.dynamics.slopeDb(8, barSec, features.t),
         gap: this.dynamics.gap(features.t, grid.period),
@@ -248,10 +263,18 @@ export class AnalysisPipeline {
         sub: this.timbre.subWeight(),
         centroidSlope: this.timbre.centroidSlope(),
       },
-      // The beat as well as how sure of it we are: a pulse train's harmonics
-      // sit in the syllabic band, and the detector can only take them out of
-      // the measurement if it is told where they are.
-      speech: this.speech.score(grid.confidence, grid.period > 0 ? 1 / grid.period : 0),
+      // The beat, how sure of it we are, and how regularly anything lands on
+      // it. A pulse train's harmonics sit in the syllabic band, so the
+      // detector can only take them out of the measurement if it is told where
+      // they are — and a grid that is certain about a period nothing plays on
+      // is a grid that has locked onto speech, which is what `regular` says.
+      speech: this.speech.score(
+        grid.confidence,
+        grid.period > 0 ? 1 / grid.period : 0,
+        regular,
+      ),
+      pause: this.speech.pause(),
+      pitchVar: this.speech.pitchVar(),
       vocal: this.vocal.score(),
       // Read off the trackers already in this snapshot, so `harsh` describes
       // the same instant as the brightness and the loudness it is made of.
@@ -259,6 +282,7 @@ export class AnalysisPipeline {
         bright: this.timbre.brightness(),
         flatness: this.timbre.noisiness(),
         loudRel: this.dynamics.position(),
+        crest,
         attack,
       }),
       drop: this.drop,

@@ -43,6 +43,8 @@ function snapshot(t: number, over: Partial<AnalysisSnapshot> = {}): AnalysisSnap
     dynamics: { loud: 'f', range: 0.2, trend: 'building', crest: 0.3, slope4: 1, slope8: 2, gap: false },
     timbre: { consonance: 0.6, bright: 0.7, noise: 0.4, attack: 'sharp', sub: 0.8, centroidSlope: 0.4 },
     speech: 0.05,
+    pause: 0,
+    pitchVar: 0,
     vocal: 0.2,
     harsh: 0.45,
     drop: null,

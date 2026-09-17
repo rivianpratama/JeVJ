@@ -71,11 +71,21 @@ describe('MOOD_QUESTIONS', () => {
     }
   });
 
+  /**
+   * A criterion may be a sentence or an object; what it may not be is missing.
+   * `spoken` carries an object because the real-track pass found that the one
+   * sentence it used to have was not enough — a talk needs the measurements
+   * named, and the note about a beat grid locking onto syllables is the whole
+   * finding — and the API takes either.
+   */
   it('describes both outcomes of every noul', () => {
+    const describes = (entry: unknown): boolean =>
+      typeof entry === 'string' ? entry.length > 0 : typeof entry === 'object' && entry !== null;
+
     for (const [name, q] of Object.entries(MOOD_QUESTIONS)) {
       if (q.type !== 'noul') continue;
-      expect(typeof q.criteria?.true, name).toBe('string');
-      expect(typeof q.criteria?.false, name).toBe('string');
+      expect(describes(q.criteria?.true), name).toBe(true);
+      expect(describes(q.criteria?.false), name).toBe(true);
     }
   });
 
@@ -100,8 +110,10 @@ describe('buildState', () => {
     // ~150: the brief's 320 is not reachable with the legend it also mandates.
     // 420 rather than v1's 400 because v2 added two features to the payload —
     // `vocal` and `harsh` — and a feature the legend does not explain is a
-    // field the model has to guess the units of.
-    expect(estimateTokens(JSON.stringify(buildState(EXAMPLE_INPUT)))).toBeLessThanOrEqual(420);
+    // field the model has to guess the units of. 440 for the same reason
+    // again: v2.2 added `pause`, which is the field that actually separates a
+    // talk from a record, and it is worth its twelve tokens twice over.
+    expect(estimateTokens(JSON.stringify(buildState(EXAMPLE_INPUT)))).toBeLessThanOrEqual(440);
   });
 });
 

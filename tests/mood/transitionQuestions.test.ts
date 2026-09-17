@@ -40,12 +40,18 @@ describe('transitionQuestions', () => {
     if (kind?.type !== 'choice') throw new Error('kind must be a choice');
     expect(Object.keys(kind.criteria)).toEqual([...TRANSITION_KINDS]);
     expect(kind.criteria['drop']).toEqual({
-      what: 'the payoff: full energy slams in after a build or gap',
-      not_for: 'a harsh, screamed or distorted climax; that is scream_peak',
+      what: 'the payoff: full energy slams in after a build or gap, and a beat comes with it',
+      not_for: [
+        'a harsh, screamed or distorted climax; that is scream_peak',
+        'applause, laughter, crowd noise or a noise burst without a beat (burst is true); that is break_silence or none',
+        'a gradual orchestral or ambient swell without a beat (beatless is true); that is none',
+      ],
+      requires: 'beatConf in the after window is at least 0.3',
     });
     expect(kind.criteria['scream_peak']).toEqual({
       what: 'harsh, screamed or distorted climax',
-      signals: ['harsh well above 0.6', 'noise high', 'very bright', 'loud'],
+      signals: ['harsh at or above 0.6', 'harshDelta positive', 'noise high', 'very bright', 'loud'],
+      note: 'a track that screams continuously still has peaks: name the moments the harshness steps up, not only the one loudest instant',
     });
     expect(kind.criteria['none']).toEqual({ what: 'no meaningful change here' });
   });

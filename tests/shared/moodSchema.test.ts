@@ -34,6 +34,7 @@ function validInput(): MoodInput {
     sub: 0.25,
     bands: [3, 5, 7, 6, 4, 4, 2, 1],
     speech: 0.05,
+    pause: 0,
     vocal: 0.2,
     harsh: 0.45,
     onsetsPerSec: 4.2,
@@ -71,10 +72,12 @@ describe('validateMoodInput', () => {
   });
 
   // The reference payload from docs/superpowers/plans/2026-09-17-jevj-visualizer.md;
-  // Task 2's summarizer must produce snapshots that validate.
+  // Task 2's summarizer must produce snapshots that validate. `pause` is not
+  // in the plan's own copy — v2.2 added it — so it is added here, because a
+  // payload without it is one the schema is right to reject.
   it('accepts the reference payload from the plan', () => {
     const reference = JSON.parse(
-      '{"pos":"1:32/4:05","bpm":128,"tempo":"allegro","beatConf":0.9,"meter":"duple","sync":0.3,"regular":0.9,"key":"F#","mode":"minor","modeConf":0.7,"modal":"aeolian","consonance":0.6,"loud":"f","range":0.2,"trend":"building","crest":0.3,"bright":0.7,"noise":0.4,"attack":"sharp","sub":0.8,"bands":[9,8,6,5,5,6,7,5],"speech":0.05,"vocal":0.2,"harsh":0.45,"onsetsPerSec":4.2,"slope4":3.5,"slope8":6.1,"onsetRatio":2.1,"centroidSlope":0.4,"gap":false,"barsSinceChange":14,"barInPhrase":14}',
+      '{"pos":"1:32/4:05","bpm":128,"tempo":"allegro","beatConf":0.9,"meter":"duple","sync":0.3,"regular":0.9,"key":"F#","mode":"minor","modeConf":0.7,"modal":"aeolian","consonance":0.6,"loud":"f","range":0.2,"trend":"building","crest":0.3,"bright":0.7,"noise":0.4,"attack":"sharp","sub":0.8,"bands":[9,8,6,5,5,6,7,5],"speech":0.05,"pause":0.2,"vocal":0.2,"harsh":0.45,"onsetsPerSec":4.2,"slope4":3.5,"slope8":6.1,"onsetRatio":2.1,"centroidSlope":0.4,"gap":false,"barsSinceChange":14,"barInPhrase":14}',
     ) as unknown;
     const r = validateMoodInput(reference);
     expect(r.ok).toBe(true);

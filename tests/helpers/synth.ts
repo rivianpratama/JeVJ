@@ -363,6 +363,44 @@ export function amNoise(rateHz: number, seconds: number, sr = 44100, centerHz = 
   return normalisePeak(out, TONE_PEAK);
 }
 
+/** A phrase of `speechLike`, the breath after it, and how far down the breath is. */
+const PHRASE_SEC = 1.6;
+const BREATH_SEC = 0.45;
+const BREATH_GAIN = 0.02;
+
+/**
+ * `amNoise` cut into phrases with a breath between them — what a person
+ * talking actually looks like to an envelope follower.
+ *
+ * `amNoise` alone is a *sustained* syllabic modulation, and that turns out to
+ * be the wrong fixture for a speech detector: its envelope never stops, and a
+ * talking human's does. Measured on four minutes of a real TED talk, roughly a
+ * fifth of every four seconds sits more than 15 dB below the median — the
+ * breaths between phrases — and on a minute each of house, metal, trap and an
+ * ambient pad that share is exactly zero. A detector calibrated against
+ * `amNoise` cannot use the one cue that separates them, which is why the first
+ * one built here reported 0.35 on a talk and 0.29 on Slipknot.
+ *
+ * So: `PHRASE_SEC` of syllables, `BREATH_SEC` at `BREATH_GAIN` (-34 dB, a room
+ * rather than a digital silence), repeated. Everything else is `amNoise`.
+ */
+export function speechLike(
+  rateHz: number,
+  seconds: number,
+  sr = 44100,
+  centerHz = 2000,
+): Float32Array {
+  const out = amNoise(rateHz, seconds, sr, centerHz);
+  const phrase = Math.round(PHRASE_SEC * sr);
+  const breath = Math.round(BREATH_SEC * sr);
+  const cycle = phrase + breath;
+
+  for (let i = 0; i < out.length; i++) {
+    if (i % cycle >= phrase) out[i] = out[i]! * BREATH_GAIN;
+  }
+  return out;
+}
+
 /** How many harmonics a sung vowel carries, as the brief specifies. */
 const VOWEL_PARTIALS = 12;
 /** The two formants a mid vowel sits on, and how wide each resonance is. */

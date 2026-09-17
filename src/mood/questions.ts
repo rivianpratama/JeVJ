@@ -64,7 +64,8 @@ export const MOOD_PREAMBLE: Record<string, string> = {
   noise: '0 tonal..1 noisy',
   sub: '0-1 sub-bass weight',
   bands: '8 log bands 20Hz-16kHz, 0-9',
-  speech: '0-1 speech-likeness',
+  speech: '0-1 talking rather than music',
+  pause: '0-1 holes between phrases; music has none',
   vocal: '0-1 a sung voice is present',
   harsh: '0-1 abrasive, distorted or screamed',
   'slope4/slope8': 'loudness change in dB over last 4/8 bars',
@@ -170,8 +171,15 @@ export const MOOD_QUESTIONS: Record<string, Question> = {
     type: 'noul',
     instructions: 'Is this primarily spoken word (podcast, speech, narration) rather than music?',
     criteria: {
-      true: 'speech-like rhythm, no steady beat, mid-frequency voice, pauses',
-      false: 'music, singing over instruments, or instrumental',
+      true: {
+        what: 'a talk, podcast, narration or interview',
+        signals: ['speech >= 0.5', 'pause >= 0.15', 'no steady beat', 'vocal high with irregular pitch'],
+        note: 'high beatConf with regular near 0 is the tracker locking onto syllables, not a beat; applause between passages is still spoken word',
+      },
+      false: {
+        what: 'music, singing over instruments, or instrumental',
+        signals: ['pause near 0', 'regular well above 0', 'sung notes that are held'],
+      },
     },
   },
   genre: {
@@ -180,13 +188,22 @@ export const MOOD_QUESTIONS: Record<string, Question> = {
     criteria: {
       classical: { what: 'orchestral, chamber, piano, wide dynamics, rubato' },
       jazz: { what: 'swing, complex harmony, improvisation, brass/piano/upright bass' },
-      electronic_dance: { what: 'four-on-the-floor or breakbeat, synthetic, 120-180 bpm, builds and drops' },
+      electronic_dance: {
+        what: 'four-on-the-floor or breakbeat, synthetic, 120-180 bpm, builds and drops',
+        not_for: 'distorted guitars and screamed vocals, or anything with no beat at all',
+      },
       hiphop_trap: { what: '70-100 bpm half-time feel, heavy sub 808s, sparse hats, rap vocals' },
-      rock_metal: { what: 'distorted guitars, live drums, dense midrange, aggressive' },
+      rock_metal: {
+        what: 'distorted guitars, live drums, dense midrange, aggressive',
+        signals: ['distorted guitars', 'live drums', 'harsh >= 0.5', 'dense midrange'],
+      },
       ambient_drone: { what: 'beatless or nearly beatless, sustained textures, slow evolution' },
       pop: { what: 'compressed, vocal-led, verse-chorus, moderate tempo' },
       folk_acoustic: { what: 'acoustic guitar, voice, small ensemble, intimate' },
-      spoken: { what: 'speech, podcast, narration' },
+      spoken: {
+        what: 'speech, podcast, narration',
+        signals: ['speech >= 0.5', 'pause ratio >= 0.15', 'no steady beat', 'vocal high with irregular pitch'],
+      },
     },
   },
   section: {
