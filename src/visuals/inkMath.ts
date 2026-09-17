@@ -52,3 +52,47 @@ export function inkLevel(density: number, knee: number): number {
   const d = density > 0 ? density : 0;
   return 1 - Math.exp(-knee * d);
 }
+
+/**
+ * The density the ambient wash is *meant* to stand at, before the vein gate,
+ * the band split and the director's `injectGain`.
+ *
+ * It is the level the shipped look was tuned to and measured at — the idle
+ * field's mean sits a quarter of the way up the ramp with two fifths of the
+ * frame dark — and it is now a *target* rather than a by-product. Until this
+ * task the wash was a fixed rate, and a fixed rate is only a level once you
+ * also fix the decay: the equilibrium is `rate·dt / (1 − decay^(dt·60))`, so the
+ * same rate that settles here at the idle decay of 0.99 settles six times lower
+ * at the 0.94 a loud section asks for. The picture went dark exactly when the
+ * music got big, and darker still when the page was hidden and `dt` grew.
+ *
+ * The value is what the old constants produced at idle — `AMBIENT_RATE` 0.5 ×
+ * `INJECT_RATE` 2.4 × (1/60) ÷ (1 − 0.99) — so the idle field is unchanged to
+ * the last decimal and every other decay now matches it instead of falling
+ * away from it.
+ */
+export const AMBIENT_LEVEL = 2;
+
+/**
+ * The decay `ink_feedback.frag` substitutes for the director's under the
+ * `drift` motion, which is the one flow style that overrides it. The ambient
+ * compensation has to use the decay the loop will actually run at, so the two
+ * are pinned together by a test that reads the shader's own constant.
+ */
+export const DRIFT_DECAY = 0.99;
+
+/**
+ * How much ambient ink to add this frame so that the field stands at `level`
+ * whatever the decay and whatever the frame took.
+ *
+ * Inverting `inkEquilibriumDensity`: the loop settles where what is added
+ * equals what is lost, and what is lost in a frame is `D·(1 − decay^(dt·60))`.
+ * Adding exactly that much makes `level` the fixed point — for any `dt`, so a
+ * throttled page draws the same field as a 120 Hz one, and for any decay, so a
+ * climax is no darker than an idle page.
+ */
+export function ambientInjectPerFrame(level: number, decay: number, dt: number): number {
+  if (!(level > 0) || !(decay > 0) || !(dt > 0)) return 0;
+  const lost = 1 - decay ** (dt * DECAY_REFERENCE_FPS);
+  return lost > 0 ? level * lost : 0;
+}

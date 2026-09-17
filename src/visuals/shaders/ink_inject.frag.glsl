@@ -30,40 +30,39 @@ uniform float uImpact;
 uniform int uLobes;
 uniform float uAspect;
 uniform float uDt;
-
-const float RING_RADIUS = 0.3;
-const float RING_WIDTH = 0.01;
-
 /**
- * The ambient wash: ink a second at the fbm's midpoint, before the vein gate,
- * INJECT_RATE and the gain.
+ * The ambient wash is a *level*, not a rate.
  *
- * Derived, not chosen. What reaches the screen is not this number but the
- * equilibrium of the feedback loop,
+ * What reaches the screen is never the injection but the equilibrium of the
+ * feedback loop,
  *
  *     D = rate * dt / (1 - decay^(dt*60))
  *
  * — `inkEquilibriumDensity` in ../inkMath.ts — which the color stage then maps
- * through the soft knee `1 - e^(-KNEE*D)`. At the idle decay of 0.99 a frame
- * that is a hundred frames' worth of accumulation, so the rate and the level
- * on screen differ by two orders of magnitude, and tuning the rate by eye is
- * tuning the wrong number entirely.
+ * through the soft knee `1 - e^(-KNEE*D)`. A fixed rate therefore does not
+ * describe a picture: the same rate that settles at a dark field with luminous
+ * marbling at the idle decay of 0.99 settles six times lower at the 0.94 a
+ * loud section asks for, and lower again on a page whose frames have got long.
+ * The shipped constant was solved at the idle decay, so the frame went dark
+ * exactly when the music got big — measured at a mean relative luminance of
+ * 0.05 through a climax against 0.18 on an idle page.
  *
- * The target is a dark field with luminous marbling: mean level 0.22-0.32 over
- * the frame, the darkest fifth of it below 0.08, the brightest twentieth above
- * 0.7. Solving that equilibrium against the fbm's own distribution lands here
- * — mean 0.27, 20th percentile 0.00, 95th 0.81, with two fifths of the frame
- * at no ambient ink at all. The rate and the vein gate move together: a harder
- * gate needs a higher rate to hold the same mean, and buys contrast with it,
- * so the pair is solved jointly rather than each being picked.
+ * So the amount added each frame is handed in as `uAmbientAdd`: the CPU works
+ * out what a frame at this decay and this dt actually loses, and adds back
+ * precisely that, which makes the target density the loop's fixed point at
+ * every decay and every frame rate. See `ambientInjectPerFrame`.
  *
- * Two nearby settings are both wrong, and in opposite directions. The brief's
- * 0.012 settles at mean 0.04: a field indistinguishable from the background.
- * A rate this size *without* the vein gate below settles near mean 0.8 with a
- * spread of a few hundredths and no darks at all, which on screen is a plane
- * of pale lavender. tests/visuals/inkMath.test.ts holds all of it.
+ * The level itself (`AMBIENT_LEVEL`, 2.0) is what the old constants produced at
+ * idle, so the field that was right stays exactly where the tuning pass left
+ * it: mean 0.27 over the frame, 20th percentile 0.00, 95th 0.81, with two
+ * fifths of the frame at no ambient ink at all. tests/visuals/inkMath.test.ts
+ * holds all of it.
  */
-const float AMBIENT_RATE = 0.5;
+uniform float uAmbientAdd;
+
+const float RING_RADIUS = 0.3;
+const float RING_WIDTH = 0.01;
+
 /**
  * The wash pools into veins rather than lying flat: the same fbm that
  * modulates it is also gated through a smoothstep, so below VEIN_LO no ambient
@@ -104,14 +103,16 @@ void main() {
   // already marbled before a single beat lands: ink A carries it, B half as
   // much, C a third — which is the same weighting the color stage reads them
   // back with, so the wash sits low on the palette ramp rather than gray.
+  //
+  // Kept apart from `ink` below because it is the only term that is a standing
+  // level rather than an event: it is scaled by `uAmbientAdd` at the end, where
+  // everything else is scaled by `uDt * INJECT_RATE`.
   float vein = fbm(vUv * 3.0 + vec2(uTime * 0.02, -uTime * 0.013));
-  float amb = AMBIENT_RATE
-    * (0.5 + 0.5 * vein)
-    * smoothstep(VEIN_LO, VEIN_HI, vein)
-    * uInjectGain;
-  ink.r += amb * (0.6 + 0.4 * uBands[2]);
-  ink.g += amb * 0.5 * (0.3 + uBands[4]);
-  ink.b += amb * 0.3 * (0.3 + uBands[6]);
+  float amb = (0.5 + 0.5 * vein) * smoothstep(VEIN_LO, VEIN_HI, vein) * uInjectGain;
+  vec3 ambient = vec3(
+    amb * (0.6 + 0.4 * uBands[2]),
+    amb * 0.5 * (0.3 + uBands[4]),
+    amb * 0.3 * (0.3 + uBands[6]));
 
   float lobes = float(uLobes);
   for (int k = 0; k < 4; k++) {
@@ -162,5 +163,7 @@ void main() {
   // The impact splash: everywhere at once, brightest in the middle.
   ink += vec3(uImpact * (1.0 - smoothstep(0.0, 0.6, dist)) * 1.5);
 
-  gl_FragColor = vec4(max(ink, vec3(0.0)) * uDt * INJECT_RATE, 1.0);
+  gl_FragColor = vec4(
+    max(ink, vec3(0.0)) * uDt * INJECT_RATE + max(ambient, vec3(0.0)) * uAmbientAdd,
+    1.0);
 }

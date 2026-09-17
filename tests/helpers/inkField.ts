@@ -19,7 +19,12 @@
 
 import inkColorFrag from '../../src/visuals/shaders/ink_color.frag.glsl?raw';
 import inkInjectFrag from '../../src/visuals/shaders/ink_inject.frag.glsl?raw';
-import { inkEquilibriumDensity, inkLevel } from '../../src/visuals/inkMath';
+import {
+  AMBIENT_LEVEL,
+  ambientInjectPerFrame,
+  inkEquilibriumDensity,
+  inkLevel,
+} from '../../src/visuals/inkMath';
 
 /** A `const float NAME = value;` out of a shader source. */
 export function shaderConst(source: string, name: string): number {
@@ -28,7 +33,6 @@ export function shaderConst(source: string, name: string): number {
   return Number(m[1]);
 }
 
-export const AMBIENT_RATE = shaderConst(inkInjectFrag, 'AMBIENT_RATE');
 export const INJECT_RATE = shaderConst(inkInjectFrag, 'INJECT_RATE');
 export const VEIN_LO = shaderConst(inkInjectFrag, 'VEIN_LO');
 export const VEIN_HI = shaderConst(inkInjectFrag, 'VEIN_HI');
@@ -116,6 +120,8 @@ export interface IdleField {
   bands: [number, number, number];
   /** The per-frame decay the flow style is using. */
   decay: number;
+  /** How long a frame took, in seconds. Defaults to a 60 Hz one. */
+  dt?: number;
 }
 
 /**
@@ -139,12 +145,17 @@ export function idleAmbientLevels(
       const v = oy + ((iy + 0.5) / n) * 3;
       const q = fbm(u, v);
       const gate = vein ? smoothstep(VEIN_LO, VEIN_HI, q) : 1;
-      const amb = AMBIENT_RATE * (0.5 + 0.5 * q) * gate * f.gain;
+      const amb = (0.5 + 0.5 * q) * gate * f.gain;
 
-      const rate = (share: number): number => amb * share * INJECT_RATE;
-      const r = inkEquilibriumDensity(rate(0.6 + 0.4 * f.bands[0]), f.decay);
-      const g = inkEquilibriumDensity(rate(0.5 * (0.3 + f.bands[1])), f.decay);
-      const b = inkEquilibriumDensity(rate(0.3 * (0.3 + f.bands[2])), f.decay);
+      // Exactly what the pair does on a frame: the CPU works out how much a
+      // frame loses at this decay and this dt, the shader adds that much, and
+      // the loop settles wherever those two agree.
+      const dt = f.dt ?? 1 / 60;
+      const add = ambientInjectPerFrame(AMBIENT_LEVEL, f.decay, dt);
+      const rate = (share: number): number => (amb * share * add) / dt;
+      const r = inkEquilibriumDensity(rate(0.6 + 0.4 * f.bands[0]), f.decay, dt);
+      const g = inkEquilibriumDensity(rate(0.5 * (0.3 + f.bands[1])), f.decay, dt);
+      const b = inkEquilibriumDensity(rate(0.3 * (0.3 + f.bands[2])), f.decay, dt);
 
       out.push(inkLevel(0.6 * r + 0.3 * g + 0.1 * b, KNEE));
     }

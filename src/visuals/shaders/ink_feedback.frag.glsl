@@ -47,6 +47,15 @@ const float WARP_RANGE = 2.5;
  * that has no other way back.
  */
 const float MAX_DENSITY = 8.0;
+/**
+ * What `drift` slows the decay to.
+ *
+ * Named rather than written inline because the ambient wash is now compensated
+ * for the decay on the CPU, and the CPU has to compensate for the decay the
+ * loop will actually run at — see `DRIFT_DECAY` in ../inkMath.ts, which a test
+ * reads out of this line.
+ */
+const float DRIFT_DECAY = 0.99;
 
 void main() {
   vec2 uv = vUv;
@@ -81,7 +90,7 @@ void main() {
     }
   } else if (uFlowStyle == 3) {
     flow *= 0.4;                                   // drift: slow, and it lingers
-    decay = 0.99;
+    decay = DRIFT_DECAY;
   } else if (uFlowStyle == 4) {
     // swarm: the curl plus two slow orbiting vortices.
     vec2 c1 = 0.5 + 0.22 * vec2(cos(uTime * 0.11), sin(uTime * 0.11));
