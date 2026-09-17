@@ -32,7 +32,11 @@
  *   what makes an unconfirmed prediction fade instead of firing a fake drop.
  * - **build** is a ramp, so it is interpolated between the two cues either
  *   side of `now` and falls back to nothing once the ramp is over. Every
- *   writer that opens a ramp closes it; see `buildAt`.
+ *   writer that opens a ramp closes it. Crucially the channel is read *per
+ *   source* and then maxed: Jev's two-bar anticipation and the hole the
+ *   detector just punched through the middle of it are two ramps, not one
+ *   sequence of cues, and one writer's release must not notch another
+ *   writer's climb. See `buildAt`.
  *
  * Pure: no DOM, no Web Audio, no wall clock.
  */
@@ -94,6 +98,16 @@ export class CueTimeline {
   readonly step = STEP;
 
   private list: Cue[] = [];
+  /**
+   * Where the mood and section cues are, so a read does not have to walk back
+   * to the top of the track to find them. Both are read as "the latest one at
+   * or before now" and neither has a window to bound the search — in file mode
+   * the whole track is on the timeline and there may be no section cue at all,
+   * which is an O(n) walk sixty times a second. Built on demand, thrown away
+   * by every mutation: writers touch the list a few times a tick and the
+   * renderer reads it every frame, so rebuilding is the cheap side.
+   */
+  private idx: { mood: number[]; section: number[] } | null = null;
 
   /**
    * Put a cue on the timeline, keeping it sorted.
@@ -109,9 +123,18 @@ export class CueTimeline {
    */
   add(c: Cue): void {
     const cue: Cue = { ...c };
+    this.idx = null;
+
     const i = this.mergeTarget(cue);
     if (i >= 0) {
-      this.list[i] = merge(this.list[i]!, cue);
+      const merged = merge(this.list[i]!, cue);
+      this.list[i] = merged;
+      // A merge can move the cue by up to 5 ms — onto the hit, when one of the
+      // two is one — and 5 ms is enough to cross a neighbour from another
+      // source.
+      const behind = (this.list[i - 1]?.t ?? -Infinity) > merged.t;
+      const ahead = (this.list[i + 1]?.t ?? Infinity) < merged.t;
+      if (behind || ahead) this.list.sort((a, b) => a.t - b.t);
       return;
     }
     this.list.splice(this.insertionPoint(cue.t), 0, cue);
@@ -137,6 +160,7 @@ export class CueTimeline {
   prune(before: number): void {
     const cut = this.insertionPoint(before);
     if (cut <= 0) return;
+    this.idx = null;
 
     let mood: Cue | null = null;
     let build: Cue | null = null;
@@ -158,38 +182,23 @@ export class CueTimeline {
 
   /** Drop whatever a writer no longer believes. */
   remove(predicate: (c: Cue) => boolean): void {
+    this.idx = null;
     this.list = this.list.filter((c) => !predicate(c));
   }
 
   /** What the visuals should be doing at `t`. */
   at(t: number): CueReading {
     const last = this.lastAtOrBefore(t);
+    const index = this.index();
 
-    let section: Section | undefined;
-    let prevMood: Cue | null = null;
-    let prevBuild: Cue | null = null;
-
-    for (let i = last; i >= 0; i--) {
-      const c = this.list[i]!;
-      if (prevBuild === null && c.build !== undefined) prevBuild = c;
-      if (section === undefined && c.section !== undefined) section = c.section;
-      if (prevMood === null && carriesMood(c)) prevMood = c;
-      if (prevBuild !== null && section !== undefined && prevMood !== null) break;
-    }
-
-    let nextMood: Cue | null = null;
-    let nextBuild: Cue | null = null;
-    for (let i = last + 1; i < this.list.length; i++) {
-      const c = this.list[i]!;
-      if (nextMood === null && carriesMood(c)) nextMood = c;
-      if (nextBuild === null && c.build !== undefined) nextBuild = c;
-      if (nextMood !== null && nextBuild !== null) break;
-    }
+    const prevMood = this.list[indexBefore(index.mood, last)] ?? null;
+    const nextMood = this.list[indexAfter(index.mood, last)] ?? null;
+    const section = this.list[indexBefore(index.section, last)]?.section;
 
     return {
       mood: blend(prevMood, nextMood, t),
       impact: this.impactAt(t, last),
-      build: buildAt(prevBuild, nextBuild, t),
+      build: this.buildAt(t, last),
       ...(section === undefined ? {} : { section }),
     };
   }
@@ -240,7 +249,46 @@ export class CueTimeline {
     }
     // A shifted suffix can cross the cues that did not move, so order is only
     // guaranteed again once the list is re-sorted.
-    if (moved) this.list.sort((a, b) => a.t - b.t);
+    if (moved) {
+      this.idx = null;
+      this.list.sort((a, b) => a.t - b.t);
+    }
+  }
+
+  /**
+   * The build at `t`: every source's own ramp, and the loudest of them wins.
+   *
+   * The build channel is shared but the ramps on it are not. Jev draws a two-
+   * bar anticipation while the detector punches a hole in the middle of it and
+   * releases a beat later; read as one sequence of cues, that release would
+   * notch Jev's ramp down to nothing and the hole's own `build: 1` would be
+   * lost whenever it landed on a ramp sample. So each source is interpolated
+   * against its own cues — a release ends its own ramp and nobody else's — and
+   * the reading is the maximum. Tension from two writers at once is still
+   * tension.
+   *
+   * Both scans are bounded: a cue further than `BUILD_SPAN_MAX` from `t`
+   * cannot contribute, because it is too far to interpolate with and too old
+   * to hold.
+   */
+  private buildAt(t: number, last: number): number {
+    const prev = new Map<CueSource, Cue>();
+    const next = new Map<CueSource, Cue>();
+
+    for (let i = last; i >= 0; i--) {
+      const c = this.list[i]!;
+      if (t - c.t > BUILD_SPAN_MAX) break;
+      if (c.build !== undefined && !prev.has(c.source)) prev.set(c.source, c);
+    }
+    for (let i = last + 1; i < this.list.length; i++) {
+      const c = this.list[i]!;
+      if (c.t - t > BUILD_SPAN_MAX) break;
+      if (c.build !== undefined && !next.has(c.source)) next.set(c.source, c);
+    }
+
+    let out = 0;
+    for (const [source, a] of prev) out = Math.max(out, rampAt(a, next.get(source) ?? null, t));
+    return out;
   }
 
   /** The strongest impact still ringing at `t`, decayed from its own instant. */
@@ -254,6 +302,21 @@ export class CueTimeline {
       out = Math.max(out, c.impact * Math.exp(-Math.max(0, age) / IMPACT_TAU));
     }
     return out;
+  }
+
+  /** The mood and section positions, built if a mutation has thrown them away. */
+  private index(): { mood: number[]; section: number[] } {
+    if (this.idx !== null) return this.idx;
+
+    const mood: number[] = [];
+    const section: number[] = [];
+    for (let i = 0; i < this.list.length; i++) {
+      const c = this.list[i]!;
+      if (carriesMood(c)) mood.push(i);
+      if (c.section !== undefined) section.push(i);
+    }
+    this.idx = { mood, section };
+    return this.idx;
   }
 
   /** Index of the last cue at or before `t`, or -1 when there is none. */
@@ -301,7 +364,13 @@ export class CueTimeline {
  * model called hard should not talk it down.
  */
 function merge(a: Cue, b: Cue): Cue {
-  const out: Cue = { ...a, ...b, t: a.t, source: a.source };
+  // The hit's own instant wins. A ramp's last sample can land three
+  // milliseconds before the target it was drawn for, and folding the hit into
+  // it would fire the drop three milliseconds early — small, but it is exactly
+  // the error this whole file exists to avoid. Everything else is a judgment
+  // about "around here" and can take the earlier stamp.
+  const t = a.impact === undefined && b.impact !== undefined ? b.t : a.t;
+  const out: Cue = { ...a, ...b, t, source: a.source };
   if (a.mood !== undefined || b.mood !== undefined) out.mood = { ...a.mood, ...b.mood };
   if (a.impact !== undefined || b.impact !== undefined) {
     out.impact = Math.max(a.impact ?? 0, b.impact ?? 0);
@@ -310,7 +379,37 @@ function merge(a: Cue, b: Cue): Cue {
 }
 
 /**
- * The build at `t`: a ramp, read between the cues either side of it.
+ * The last entry of `positions` that is at or before `i`, or -1.
+ *
+ * `positions` is sorted, so this is a binary search: the point of the index is
+ * that neither the length of the track nor the distance back to the last mood
+ * cue costs a read anything.
+ */
+function indexBefore(positions: number[], i: number): number {
+  let lo = 0;
+  let hi = positions.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (positions[mid]! <= i) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo - 1 >= 0 ? positions[lo - 1]! : -1;
+}
+
+/** The first entry of `positions` after `i`, or -1. */
+function indexAfter(positions: number[], i: number): number {
+  let lo = 0;
+  let hi = positions.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (positions[mid]! <= i) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo < positions.length ? positions[lo]! : -1;
+}
+
+/**
+ * One source's build at `t`: a ramp, read between its cues either side of it.
  *
  * A writer samples a ramp every 0.2 s, but the renderer draws at 60 fps, so
  * holding the last sample would step the anticipation up in visible stairs.
@@ -323,7 +422,7 @@ function merge(a: Cue, b: Cue): Cue {
  * and it is why each writer closes its own: a `build: 0` after the hit, a
  * release a beat after a hole.
  */
-function buildAt(a: Cue | null, b: Cue | null, t: number): number {
+function rampAt(a: Cue | null, b: Cue | null, t: number): number {
   if (a === null || a.build === undefined) return 0;
   if (b?.build !== undefined && b.t - a.t <= BUILD_SPAN_MAX) {
     const span = b.t - a.t;

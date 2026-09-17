@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { BeatGrid } from '../../src/analysis/grid';
+import { NEUTRAL_MOOD } from '../../src/shared/moodSchema';
 import { CueTimeline } from '../../src/timeline/timeline';
 import { applyDetectorEvent } from '../../src/timeline/detectorWriter';
+import { writeJevCues } from '../../src/timeline/jevWriter';
 import type { DropEvent } from '../../src/analysis/drop';
 
 /**
@@ -91,6 +94,42 @@ describe('applyDetectorEvent', () => {
 
     expect(tl.at(10).build).toBeGreaterThan(0);
     expect(tl.at(10.3).build).toBe(0);
+  });
+
+  it('does not notch the ramp it lands in the middle of', () => {
+    const tl = new CueTimeline();
+    // A 120 BPM grid, and a drop Jev has put at 14 with a ramp from 10.
+    const grid = new BeatGrid();
+    grid.onOnset(1.5, 1, 1);
+    grid.setTempo({ bpm: 120, period: 0.5, confidence: 0.9, marking: 'allegro' }, 1.5);
+    grid.tick(10);
+    writeJevCues(
+      tl,
+      { ...NEUTRAL_MOOD, dropImminent: 0.9, beatsToChange: '8', impact: 0.8 },
+      grid,
+      10,
+    );
+
+    // Two bars in, the floor drops out for a moment: the visuals go to full
+    // tension, and when the hole releases they fall back onto the ramp they
+    // were already climbing — not through it.
+    applyDetectorEvent(tl, { t: 12.03, strength: 0.6, kind: 'gap' }, 12.05, { beatSec: 0.5 });
+
+    expect(tl.at(12.03).build).toBe(1);
+    // Never below the ramp Jev drew: the hole's release ends the detector's
+    // own ramp and nothing else. (It is not monotonic across the hole itself —
+    // the spike to 1 falls back *onto* the ramp, which is the point.)
+    for (let t = 12; t <= 14.0001; t += 0.01) {
+      expect(tl.at(t).build).toBeGreaterThanOrEqual((t - 10) / 4 - 1e-9);
+    }
+    // And once the hole has let go, the climb continues undisturbed.
+    let previous = -1;
+    for (let t = 12.6; t <= 14.0001; t += 0.01) {
+      const build = tl.at(t).build;
+      expect(build).toBeGreaterThanOrEqual(previous - 1e-9);
+      previous = build;
+    }
+    expect(tl.at(14).build).toBeCloseTo(1, 6);
   });
 
   it('ignores an event from before the window the timeline keeps', () => {

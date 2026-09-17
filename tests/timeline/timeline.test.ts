@@ -81,6 +81,24 @@ describe('CueTimeline', () => {
     expect(tl.at(50).build).toBe(0);
   });
 
+  it('keeps each source on its own build channel and reads the loudest', () => {
+    const tl = new CueTimeline();
+    // A Jev ramp from 4 to 6…
+    for (let t = 4; t < 6; t += 0.2) tl.add({ t, source: 'jev', build: (t - 4) / 2 });
+    tl.add({ t: 6, source: 'jev', build: 1 });
+    // …and a hole the detector found in the middle of it, with its release.
+    tl.add({ t: 5, source: 'detector', build: 1 });
+    tl.add({ t: 5.5, source: 'detector', build: 0 });
+
+    // The hole is at full tension, and the release that follows it ends the
+    // detector's own ramp — not Jev's, which keeps climbing under it.
+    expect(tl.at(5).build).toBe(1);
+    // Halfway between the detector's release and Jev's next sample: on Jev's
+    // ramp, not dragged down toward the release that was never about it.
+    expect(tl.at(5.55).build).toBeCloseTo(0.775, 6);
+    expect(tl.at(6).build).toBe(1);
+  });
+
   it('does not ramp across two build cues that are not one ramp', () => {
     const tl = new CueTimeline();
     tl.add({ t: 1, source: 'jev', build: 0 });
@@ -110,6 +128,18 @@ describe('CueTimeline', () => {
     expect(tl.cues()).toHaveLength(1);
     expect(tl.cues()[0]!.impact).toBe(0.9);
     expect(tl.cues()[0]!.section).toBe('drop_climax');
+  });
+
+  it('keeps the hit where the hit is when a merge moves a cue', () => {
+    const tl = new CueTimeline();
+    // The last sample of a ramp, three milliseconds before the target…
+    tl.add({ t: 13.997, source: 'jev', build: 0.999 });
+    // …and the hit itself. One cue comes out, and it is at the hit.
+    tl.add({ t: 14, source: 'jev', impact: 0.8, build: 1 });
+
+    expect(tl.cues()).toHaveLength(1);
+    expect(tl.cues()[0]!.t).toBe(14);
+    expect(tl.at(14).impact).toBeCloseTo(0.8, 6);
   });
 
   it('keeps cues from different sources apart, however close', () => {
@@ -207,6 +237,36 @@ describe('CueTimeline', () => {
     tl.remove((c) => c.source === 'jev');
     expect(tl.cues()).toHaveLength(1);
     expect(tl.cues()[0]!.source).toBe('grid');
+  });
+
+  it('reads the middle of a long track as fast as the middle of a short one', () => {
+    /** A file-mode timeline: every beat of the track, a mood cue per segment. */
+    const track = (seconds: number): CueTimeline => {
+      const tl = new CueTimeline();
+      for (let t = 0; t < seconds; t += 0.5) {
+        tl.add({ t, source: 'offline', beat: true, downbeat: t % 2 === 0 });
+      }
+      for (let t = 0; t < seconds; t += 20) tl.add(jevMood(t, 0.5));
+      return tl;
+    };
+
+    /** Milliseconds for a thousand reads around `at`, warmed up first. */
+    const thousandReads = (tl: CueTimeline, at: number): number => {
+      for (let i = 0; i < 1000; i++) tl.at(at + i * 0.001);
+      const started = performance.now();
+      for (let i = 0; i < 1000; i++) tl.at(at + i * 0.001);
+      return performance.now() - started;
+    };
+
+    const short = thousandReads(track(50), 25);
+    const long = thousandReads(track(1000), 500);
+
+    // A read is a binary search and a two-second window, not a walk back to
+    // the top of the track: twenty times the cues must not cost twenty times
+    // the reads. (The generous ratio is for a loaded CI box, not for slack —
+    // scanning the whole list would be 20× on the nose.)
+    expect(long).toBeLessThan(Math.max(short, 0.5) * 4);
+    expect(long).toBeLessThan(20);
   });
 
   it('steps at 0.2 s', () => {
