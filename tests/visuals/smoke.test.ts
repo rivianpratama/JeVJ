@@ -257,6 +257,7 @@ describe('Smoke filaments', () => {
       build: 0,
       beatConf: 0,
       regular: 0,
+      barSec: 2,
       ...over,
     };
   }

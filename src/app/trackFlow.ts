@@ -22,9 +22,19 @@
  *
  * And the **clock**. Everything the analysis says is in *track* seconds, and
  * everything the visuals read is on the audio clock, and the offset between
- * them only exists once the element is playing — and moves every time it
- * seeks. That mapping is v1's, unchanged, because it was the one part of the
- * file path that was already right.
+ * them only exists once the element is playing — and moves every time it seeks.
+ *
+ * v1 took that offset once, on `play`, as `ctx.currentTime − el.currentTime`.
+ * Two things are wrong with a single reading. `el.currentTime` is quantised to
+ * whatever the element feels like reporting and is *stale* by an unpredictable
+ * amount at the instant it is read, so one sample carries tens of milliseconds
+ * of jitter — straight into every cue in the track. And the two clocks drift:
+ * a media element's playback rate is its own, and over four minutes it does not
+ * stay where it started. So the offset is now a running **median of the last
+ * eight readings**, re-seeded on every seek, and the timeline is only re-placed
+ * when the median has actually moved — see `OFFSET_EPSILON_SEC`. A median and
+ * not a mean, because the error is one-sided: a stale `currentTime` is always
+ * *behind*, never ahead, and one bad sample must not move the picture.
  */
 
 import { analyzeTrack, httpDeps, type TrackAnalysisDeps } from './trackAnalysis';
@@ -36,6 +46,30 @@ import type { CueTimeline } from '../timeline/timeline';
 
 /** Where the download's share of the bar ends and the analysis's begins. */
 export const DOWNLOAD_END = 40;
+
+/**
+ * How many offset readings the median is taken over, and how far it has to move
+ * before the whole track is re-placed on the audio clock.
+ *
+ * Eight readings is about two seconds of `timeupdate` (the element fires it
+ * roughly four times a second) or an eighth of a second of
+ * `requestVideoFrameCallback`, which is long enough to reject a stale sample
+ * and short enough to follow a real drift.
+ *
+ * 5 ms is under the threshold at which a listener can hear a visual and a
+ * transient come apart, and re-placing costs a rewrite of every cue in the
+ * track — so anything smaller would be paying a rewrite several times a second
+ * for a correction nobody can see.
+ */
+export const OFFSET_WINDOW = 8;
+export const OFFSET_EPSILON_SEC = 0.005;
+
+/** The middle of `xs`, which must not be empty. Does not mutate it. */
+export function median(xs: readonly number[]): number {
+  const sorted = [...xs].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+}
 
 /** The download's 0-100 as the first `DOWNLOAD_END`% of the caption's bar. */
 export function downloadPercent(jobPercent: number): number {
@@ -105,6 +139,11 @@ export function createTrackFlow(o: TrackFlowOptions): TrackFlow {
   /** The object URL of a dropped file, so the last one can be let go. */
   let objectUrl: string | null = null;
 
+  /** The last `OFFSET_WINDOW` readings of the gap between the two clocks. */
+  let offsets: number[] = [];
+  /** The offset the timeline is currently placed at, or NaN before any. */
+  let placedAt = Number.NaN;
+
   /**
    * The offline timeline, moved onto the audio clock the renderer reads.
    *
@@ -113,21 +152,75 @@ export function createTrackFlow(o: TrackFlowOptions): TrackFlow {
    * `createMediaElementSource` can only be called on an element once — so the
    * listeners outlive every track that plays through it.
    */
-  function place(): void {
+  function place(offset: number): void {
+    // Nothing to place yet is not a placement: recording the offset here would
+    // let the first reading taken before the analysis finished satisfy the
+    // epsilon and leave the finished track un-placed until the clocks drifted.
     if (cues.length === 0) return;
-    const offset = o.ctx().currentTime - o.el.currentTime;
+    placedAt = offset;
     o.timeline.replaceSource(
       'offline',
       0,
       cues.map((c) => ({ ...c, t: c.t + offset })),
     );
   }
-  o.el.addEventListener('play', place);
-  o.el.addEventListener('seeked', place);
+
+  /**
+   * One reading of the gap between the two clocks, folded into the median.
+   *
+   * `mediaTime` is where the element says it is; a `requestVideoFrameCallback`
+   * supplies the one the compositor actually presented, which is the honest
+   * number when there is a picture. Everything else passes `el.currentTime`.
+   */
+  function sampleOffset(mediaTime: number): void {
+    if (!Number.isFinite(mediaTime)) return;
+    const now = o.ctx().currentTime;
+    if (!Number.isFinite(now)) return;
+    offsets.push(now - mediaTime);
+    if (offsets.length > OFFSET_WINDOW) offsets.shift();
+    const middle = median(offsets);
+    if (!Number.isFinite(placedAt) || Math.abs(middle - placedAt) >= OFFSET_EPSILON_SEC) {
+      place(middle);
+    }
+  }
+
+  /**
+   * Throw the readings away and take a fresh one.
+   *
+   * A seek moves one clock and not the other, so every sample taken before it
+   * is about a different mapping; a median that still held them would crawl
+   * toward the new offset over the next two seconds instead of jumping to it.
+   */
+  function reseed(): void {
+    offsets = [];
+    placedAt = Number.NaN;
+    sampleOffset(o.el.currentTime);
+  }
+
+  o.el.addEventListener('play', reseed);
+  o.el.addEventListener('seeked', reseed);
+  o.el.addEventListener('timeupdate', () => sampleOffset(o.el.currentTime));
+
+  // A `<video>` can say when a frame was actually presented and which media
+  // time was on it, which is the one reading that is not an estimate. It only
+  // fires while the picture is being composited, so it supplements the
+  // `timeupdate` sampling rather than replacing it.
+  const video = o.el as HTMLVideoElement & {
+    requestVideoFrameCallback?: (cb: (now: number, meta: { mediaTime: number }) => void) => number;
+  };
+  if (typeof video.requestVideoFrameCallback === 'function') {
+    const onFrame = (_now: number, meta: { mediaTime: number }): void => {
+      sampleOffset(meta.mediaTime);
+      video.requestVideoFrameCallback?.(onFrame);
+    };
+    video.requestVideoFrameCallback(onFrame);
+  }
 
   /** Start of a pass: the old track's cues are not this track's. */
   function begin(): number {
     cues = [];
+    offsets = [];
+    placedAt = Number.NaN;
     o.timeline.replaceSource('offline', 0, []);
     return ++pass;
   }

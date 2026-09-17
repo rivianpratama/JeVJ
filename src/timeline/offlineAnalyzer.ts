@@ -42,6 +42,7 @@
 
 import { fftMagnitudes } from '../analysis/fft';
 import { FeatureExtractor } from '../analysis/features';
+import { ONSET_REPORT_LAG_SEC } from '../analysis/onset';
 import { AnalysisPipeline } from '../analysis/pipeline';
 import { Summarizer } from '../analysis/summarizer';
 import { CueTimeline } from './timeline';
@@ -115,6 +116,29 @@ const MAX_CANDIDATES = 60;
 /** A sane bar when the grid never locked. */
 const FALLBACK_BAR_SEC = 2;
 
+/**
+ * How far back a refinement looks for the attack, and how finely it looks.
+ *
+ * A detector event is stamped at the *end* of the analyser window it was found
+ * in — 4096 samples, so up to 93 ms after the transient actually sounded, and a
+ * different amount each time depending on where in the window the attack fell.
+ * That is invisible on a pad and plainly wrong on a slam: the picture flashes
+ * an eighth of a beat late, and a listener hears the visualizer lagging.
+ *
+ * Offline there is no reason to guess. The samples are all there, so the
+ * envelope can simply be looked at: a millisecond-resolution RMS over the
+ * 120 ms behind the event — comfortably more than one window — and the instant
+ * of steepest *rise* in it. That is where the energy arrived, which is what a
+ * listener calls the hit.
+ *
+ * 1 ms is finer than any ear discriminates and coarse enough that the envelope
+ * is still an envelope rather than the waveform; 120 ms covers the whole window
+ * plus a little, and no more, because two bass notes an eighth apart at 150 BPM
+ * are 100 ms apart and a longer search would find the wrong one.
+ */
+const REFINE_WINDOW_SEC = 0.12;
+const ENVELOPE_HOP_SEC = 0.001;
+
 /** What found a candidate — which is also what makes it worth asking about. */
 export type CandidateReason = 'novelty' | 'impact' | 'gap' | 'tempo' | 'key' | 'vocal' | 'harsh';
 
@@ -164,6 +188,58 @@ export interface OfflineResult {
   samples: OfflineSample[];
   /** The moments pass 2 should ask about, in time order. */
   candidates: TransitionCandidate[];
+}
+
+/**
+ * The instant a transient at frame-end time `frameEnd` actually sounded.
+ *
+ * Returns the point of steepest rise in the 1 ms RMS envelope over the
+ * `REFINE_WINDOW_SEC` before `frameEnd`. When there is no rise to find — a
+ * clipped window at the top of the track, silence, a detector event on a fade —
+ * it falls back to `frameEnd − ONSET_REPORT_LAG_SEC`, which is the one-frame
+ * correction the live path has always used and is never worse than nothing.
+ *
+ * Pure: samples in, a time out.
+ */
+export function refineOnsetTime(
+  mono: Float32Array,
+  sampleRate: number,
+  frameEnd: number,
+): number {
+  const fallback = frameEnd - ONSET_REPORT_LAG_SEC;
+  if (!(sampleRate > 0) || !Number.isFinite(frameEnd) || mono.length === 0) return fallback;
+
+  const hop = Math.max(1, Math.round(ENVELOPE_HOP_SEC * sampleRate));
+  const end = Math.min(mono.length, Math.round(frameEnd * sampleRate));
+  const start = Math.max(0, end - Math.round(REFINE_WINDOW_SEC * sampleRate));
+  const blocks = Math.floor((end - start) / hop);
+  // Two blocks make one slope; fewer than three is not an envelope.
+  if (blocks < 3) return fallback;
+
+  let best = 0;
+  let bestBlock = -1;
+  let previous = rms(mono, start, hop);
+  for (let b = 1; b < blocks; b++) {
+    const level = rms(mono, start + b * hop, hop);
+    const slope = level - previous;
+    previous = level;
+    if (slope > best) {
+      best = slope;
+      bestBlock = b;
+    }
+  }
+  // The rise is credited to the boundary the energy crossed, which is the
+  // *start* of the block that is louder than the one before it.
+  return bestBlock < 0 ? fallback : (start + bestBlock * hop) / sampleRate;
+}
+
+/** Root mean square of `count` samples from `from`. */
+function rms(mono: Float32Array, from: number, count: number): number {
+  let sum = 0;
+  const end = Math.min(mono.length, from + count);
+  for (let i = from; i < end; i++) sum += mono[i]! * mono[i]!;
+  const n = end - from;
+  return n > 0 ? Math.sqrt(sum / n) : 0;
 }
 
 export async function analyzeOffline(
@@ -242,10 +318,20 @@ export async function analyzeOffline(
     const drop = snap.drop;
     if (drop !== null && drop.t !== lastDropAt) {
       lastDropAt = drop.t;
-      drops.push({ t: drop.t, kind: drop.kind, strength: drop.strength });
       if (drop.kind === 'impact') {
-        tl.add({ t: drop.t, source: 'offline', impact: drop.strength });
+        // The one place a timestamp is moved rather than passed through, and it
+        // is a *correction* rather than a compensation: the detector's instant
+        // is the end of the window it noticed the transient in, and this is the
+        // instant the transient is actually at. Everything downstream — the
+        // candidate, the model's verdict, the anticipation ramp drawn in front
+        // of the hit — hangs off this number. See `refineOnsetTime`.
+        const at = refineOnsetTime(mono, sampleRate, drop.t);
+        drops.push({ t: at, kind: drop.kind, strength: drop.strength });
+        tl.add({ t: at, source: 'offline', impact: drop.strength });
       } else {
+        // A hole is not a transient: its edge is where the energy *left*, and
+        // there is no attack in the envelope to find. The frame time stands.
+        drops.push({ t: drop.t, kind: drop.kind, strength: drop.strength });
         // Full tension when the floor goes, released a beat later: a hole
         // nothing follows up on is a quiet passage, not a held breath.
         const beatSec = snap.grid.period > 0 && Number.isFinite(snap.grid.period)

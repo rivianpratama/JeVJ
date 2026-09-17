@@ -77,6 +77,15 @@ export function applyDetectorEvent(
     return;
   }
 
+  // A moment pass 2 named is already sample-exact: the offline sweep refined
+  // its instant against the PCM envelope, and the anticipation ramp in front of
+  // it was drawn to land there. This reading was taken at the end of an
+  // analyser window and is late by however much of that window came after the
+  // attack, so moving the cue onto it would only drag a correct time backwards
+  // into the error it was corrected for. Those cues carry a `transition` tag; a
+  // live prediction never did.
+  if (predicted.transition !== undefined) return;
+
   // Move the prediction — and everything scheduled against it — onto the
   // instant, then write the measured strength onto it. The timeline merges
   // the two (same source, same instant) and keeps the louder reading.

@@ -1,13 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
   IDLE_MOOD,
+  climaxBloomSec,
   createDirector,
   direct,
   type FastFrame,
   type RenderParams,
 } from '../../src/visuals/director';
 import {
+  FLOURISH_SEC,
   SPIN_REVERSE_SEC,
+  activeFlourish,
+  createFlourishes,
+  dropBurstSec,
+  fireFlourish,
   pushOutFor,
   spinBaseRate,
   strandWaveFor,
@@ -33,6 +39,7 @@ function fast(over: Partial<FastFrame> = {}): FastFrame {
     // a frame with nothing findable in it, and the rotation is driven by both.
     beatConf: 0,
     regular: 0,
+    barSec: 2,
     ...over,
   };
 }
@@ -62,6 +69,52 @@ function run(
 function once(m: MoodVector, f: FastFrame = fast(), reduced = false): RenderParams {
   return direct(createDirector(), m, f, FRAME, null, reduced);
 }
+
+describe('the two sustain formulas', () => {
+  it('lets a drop\'s burst run for as long as the drop was big', () => {
+    // 0.6 s at the bottom, 1.4 s at the top. The shape inside the window is
+    // unchanged — `(1 − t)²` — so a bigger hit does not punch harder, it lets
+    // go more slowly.
+    expect(dropBurstSec(0)).toBeCloseTo(0.6, 9);
+    expect(dropBurstSec(0.5)).toBeCloseTo(1, 9);
+    expect(dropBurstSec(1)).toBeCloseTo(1.4, 9);
+    expect(dropBurstSec(-1)).toBe(dropBurstSec(0));
+    expect(dropBurstSec(9)).toBe(dropBurstSec(1));
+    expect(dropBurstSec(Number.NaN)).toBe(dropBurstSec(0));
+    // And it is never shorter than the table's own entry, which is what a drop
+    // nobody rated is worth.
+    expect(dropBurstSec(0)).toBe(FLOURISH_SEC['drop']);
+  });
+
+  it('keeps the burst running for its whole window and not a frame more', () => {
+    const s = createFlourishes();
+    expect(fireFlourish(s, 'drop', 0, 1)).toBe(true);
+    // Two thirds of the way through a 1.4 s window, where a fixed 0.6 s one
+    // would have been over for nearly a second.
+    expect(activeFlourish(s, 0.9)?.t).toBeCloseTo(0.9 / 1.4, 6);
+    expect(activeFlourish(s, 1.39)).not.toBeNull();
+    expect(activeFlourish(s, 1.41)).toBeNull();
+
+    // A gentle one is over when it says it is.
+    const quiet = createFlourishes();
+    fireFlourish(quiet, 'drop', 0, 0);
+    expect(activeFlourish(quiet, 0.59)).not.toBeNull();
+    expect(activeFlourish(quiet, 0.61)).toBeNull();
+  });
+
+  it('holds the climax flare for a bar rather than for a second', () => {
+    // 120 BPM is two seconds a bar, 60 BPM four — the same instruction, two
+    // gestures, which is why it could not be a fixed second.
+    expect(climaxBloomSec(2)).toBeCloseTo(2, 9);
+    expect(climaxBloomSec(1.6)).toBeCloseTo(1.6, 9);
+    // A grid locked onto a wrong multiple cannot blink it or leave it standing.
+    expect(climaxBloomSec(0.1)).toBeCloseTo(0.5, 9);
+    expect(climaxBloomSec(30)).toBeCloseTo(4, 9);
+    // And a grid that never locked reports nothing, which is two seconds.
+    expect(climaxBloomSec(0)).toBeCloseTo(2, 9);
+    expect(climaxBloomSec(Number.NaN)).toBeCloseTo(2, 9);
+  });
+});
 
 describe('direct', () => {
   it('always mixes to exactly one, with the ink as the bed', () => {
@@ -361,19 +414,33 @@ describe('direct', () => {
     expect(down.particleSpeed).toBeCloseTo(steady.particleSpeed * 0.5, 6);
   });
 
-  it('flares the bloom for a second after an impact in the climax', () => {
+  it('flares the bloom for a bar after an impact in the climax', () => {
+    // A bar and not a second: at 120 BPM that is two seconds, and at 60 BPM
+    // four. A flat second was half a bar of one and two bars of the other — the
+    // same instruction meaning two different gestures.
     const state = createDirector();
     const m = mood({ section: 'drop_climax' });
-    let prev = direct(state, m, fast(), FRAME, null, false);
+    const bar = 2;
+    const beat = (o: Partial<FastFrame> = {}): FastFrame => fast({ barSec: bar, ...o });
+    let prev = direct(state, m, beat(), FRAME, null, false);
     const quiet = prev.bloomStrength;
-    prev = direct(state, m, fast({ impact: 1 }), FRAME, prev, false);
+    prev = direct(state, m, beat({ impact: 1 }), FRAME, prev, false);
     expect(prev.bloomStrength).toBeGreaterThan(quiet * 1.25);
-    // Still lifted half a second later...
-    for (let i = 0; i < 30; i++) prev = direct(state, m, fast(), FRAME, prev, false);
+    // Still lifted most of the way through the bar...
+    for (let i = 0; i < Math.round(1.5 / FRAME); i++) prev = direct(state, m, beat(), FRAME, prev, false);
     expect(prev.bloomStrength).toBeGreaterThan(quiet * 1.25);
-    // ...and back down after the second is up.
-    for (let i = 0; i < 40; i++) prev = direct(state, m, fast(), FRAME, prev, false);
+    // ...and back down once it is over.
+    for (let i = 0; i < Math.round(1.5 / FRAME); i++) prev = direct(state, m, beat(), FRAME, prev, false);
     expect(prev.bloomStrength).toBeCloseTo(quiet, 3);
+
+    // The same hit over a faster bar lets go sooner.
+    const quick = createDirector();
+    const short = (o: Partial<FastFrame> = {}): FastFrame => fast({ barSec: 0.8, ...o });
+    let qp = direct(quick, m, short(), FRAME, null, false);
+    const quietQuick = qp.bloomStrength;
+    qp = direct(quick, m, short({ impact: 1 }), FRAME, qp, false);
+    for (let i = 0; i < Math.round(1.5 / FRAME); i++) qp = direct(quick, m, short(), FRAME, qp, false);
+    expect(qp.bloomStrength).toBeCloseTo(quietQuick, 3);
 
     // Only in the climax: the same hit in a verse does nothing to the bloom.
     const verse = createDirector();

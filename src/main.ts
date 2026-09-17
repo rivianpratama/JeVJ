@@ -21,7 +21,6 @@
 import './ui/styles.css';
 import './ui/columns.css';
 
-import { ONSET_REPORT_LAG_SEC } from './analysis/onset';
 import { AnalysisLoop } from './app/analysisLoop';
 import { createColumnsLink } from './app/columnsLink';
 import { createCueReader } from './app/cueReader';
@@ -35,6 +34,7 @@ import { CueTimeline } from './timeline/timeline';
 import { createCaption } from './ui/caption';
 import { createCard } from './ui/card';
 import { createHud } from './ui/hud';
+import type { AudioGraph } from './source/audioGraph';
 import type { TokenUsage } from './shared/types';
 
 const root = document.querySelector<HTMLElement>('#ui');
@@ -44,19 +44,58 @@ if (!bg) throw new Error('JeVJ: #bg is missing from the document');
 
 /** The user's own correction on top of the measured latency, in ms. */
 let latencyTrimMs = loadTrim();
+/** The graph, once there is one; the only thing that knows the output latency. */
+let graph: AudioGraph | null = null;
 
 /**
- * How far the analysis runs behind what the listener hears.
+ * What a browser that will not say is assumed to be holding, in seconds.
  *
- * The detector reports a transient one analyser window late, and everything
- * else on the timeline is derived from the same frames. Nothing is captured in
- * v2 — every track is a local file decoded off our own disk — so there is no
- * capture pipeline to add, and the trim slider covers whatever is left: a
- * bluetooth speaker, mostly. This is the only latency number in the app, and
+ * Every Chrome this app has run on reports `outputLatency`. Where it is
+ * missing, `baseLatency` is the render quantum alone — a fraction of a
+ * millisecond, which is an honest number about the wrong thing — and where both
+ * are missing, 20 ms is about what a laptop's own DAC holds and is much nearer
+ * the truth than zero.
+ */
+const ASSUMED_OUTPUT_LATENCY_SEC = 0.02;
+
+/**
+ * How far ahead of the speaker the audio clock runs.
+ *
+ * `ctx.currentTime` is the *scheduling* clock: it is where the graph is
+ * writing, not where the listener is hearing. The difference is the driver's
+ * buffer, which is tens of milliseconds and machine-specific, and it is the
+ * last unaccounted delay in the chain now that the cue times themselves are
+ * refined to the sample.
+ */
+function outputLatencySec(): number {
+  const ctx = graph?.ctx as (AudioContext & { outputLatency?: number }) | undefined;
+  const reported = ctx?.outputLatency;
+  if (typeof reported === 'number' && Number.isFinite(reported) && reported > 0) return reported;
+  const base = ctx?.baseLatency;
+  if (typeof base === 'number' && Number.isFinite(base) && base > 0) return base;
+  return ASSUMED_OUTPUT_LATENCY_SEC;
+}
+
+/**
+ * How far to read the timeline ahead of the audio clock, in seconds.
+ *
+ * It is *negative* now, which is the whole of the v2 correction. v1 read ahead
+ * by the detector's own reporting lag, because every cue on the timeline was
+ * stamped at the end of the analyser window it was found in and therefore late.
+ * The offline sweep no longer leaves them there: an impact is refined against
+ * the PCM envelope to the instant the attack actually happened
+ * (`refineOnsetTime`), and the ramps and the named moments hang off that. What
+ * is left to correct is in the other direction — the audio clock runs *ahead*
+ * of the speaker by the output buffer — so the timeline is read slightly
+ * *behind* now, and the frame that shows a cue coincides with the audible
+ * instant rather than with the scheduling one.
+ *
+ * The trim slider is on top of it, and is still the answer for a bluetooth
+ * speaker, which no API reports. This is the only latency number in the app and
  * it is applied in exactly one place: reading the timeline.
  */
 function latencySec(): number {
-  return ONSET_REPORT_LAG_SEC + latencyTrimMs / 1000;
+  return -outputLatencySec() + latencyTrimMs / 1000;
 }
 
 const card = createCard(root);
@@ -94,7 +133,10 @@ const transport = createTransport({
   card,
   caption,
   timeline,
-  onGraph: (g) => loop.start(g),
+  onGraph: (g) => {
+    graph = g;
+    loop.start(g);
+  },
   // A new track is taking over. What the last one left on the walls is about
   // music that is no longer playing, and its token count is about an analysis
   // that is no longer the one on screen — so both go before the new track's

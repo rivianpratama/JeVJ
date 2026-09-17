@@ -47,13 +47,38 @@ import type { Cue, CueSource, MoodVector, Section, TransitionKind } from '../sha
 const STEP = 0.2;
 /** Two cues from one writer this close together are one cue. */
 const MERGE_SEC = 0.005;
-/** How fast an impact falls away — one time constant per quarter second. */
-const IMPACT_TAU = 0.25;
+/**
+ * How fast an impact falls away — and why that is not one number.
+ *
+ * A quarter-second time constant is right for a clap and wrong for a slam. The
+ * two are the same *event* to this file, differing only in the `impact` on the
+ * cue, and decaying both at 0.25 s meant the biggest hit in a track was over
+ * in about a second — the picture flashed and went back to what it was doing
+ * while the room was still ringing, which is the "the hit is too short"
+ * complaint word for word.
+ *
+ * So the sustain scales with the hit: `0.25 + 0.5·intensity`, which is a
+ * quarter-second for something barely there and three quarters for an
+ * overwhelming slam. It is the intensity the model gave the moment, so a
+ * *named* drop rings longer than an unnamed transient of the same loudness,
+ * which is the right way round.
+ */
+const IMPACT_TAU_BASE = 0.25;
+const IMPACT_TAU_SPAN = 0.5;
+
+/** The time constant a hit of this strength falls away over. */
+export function impactTau(intensity: number): number {
+  const i = Number.isFinite(intensity) ? Math.min(1, Math.max(0, intensity)) : 0;
+  return IMPACT_TAU_BASE + IMPACT_TAU_SPAN * i;
+}
+
 /**
  * How far back `at` bothers to look for an impact. Five time constants is
- * e^-5 ≈ 0.7% of the hit, below anything a renderer can show.
+ * e^-5 ≈ 0.7% of the hit, below anything a renderer can show — taken at the
+ * *longest* constant, since a quiet hit that has already faded costs one
+ * comparison to skip and a loud one that has not must not be skipped.
  */
-const IMPACT_LOOKBACK = 5 * IMPACT_TAU;
+const IMPACT_LOOKBACK = 5 * impactTau(1);
 /**
  * How far *before* the predicted instant a cue still counts as the one being
  * re-anchored. The detector confirms a hit it can only measure to within a
@@ -334,7 +359,7 @@ export class CueTimeline {
       const age = t - c.t;
       if (age > IMPACT_LOOKBACK) break;
       if (c.impact === undefined) continue;
-      out = Math.max(out, c.impact * Math.exp(-Math.max(0, age) / IMPACT_TAU));
+      out = Math.max(out, c.impact * Math.exp(-Math.max(0, age) / impactTau(c.impact)));
     }
     return out;
   }

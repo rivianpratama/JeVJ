@@ -138,6 +138,8 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
     build: 0,
     beatConf: 0,
     regular: 0,
+    // The idle clock's own bar: 60 BPM, four to the bar.
+    barSec: (60 / IDLE_BPM) * IDLE_BEATS_PER_BAR,
   };
   // The effective mood, rebuilt in place from the mood layer and the timeline
   // — one object for the life of the page, like the FastFrame.
@@ -215,6 +217,12 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
       fast.impact = reading.impact;
       fast.build = reading.build;
       moodSrc = mergeMood(mood, o.mood(), reading.mood);
+
+      // Seconds in a bar, for anything the director holds for a *musical*
+      // length rather than a fixed one. A grid that has not locked reports a
+      // period of zero, and the idle bar is nearer the truth than nothing.
+      const bar = snap.grid.period * snap.grid.barLength;
+      fast.barSec = bar > 0 && Number.isFinite(bar) ? bar : (60 / IDLE_BPM) * IDLE_BEATS_PER_BAR;
 
       smoke.setMeter(snap.grid.barLength);
     }

@@ -24,10 +24,11 @@ export interface HudData {
   /** The pixel-ratio cap the governor has settled on. */
   dpr?: number;
   /**
-   * How far the timeline is read ahead of the analysis clock, in milliseconds:
-   * the detector's own reporting lag plus the trim below. There is no capture
-   * pipeline in v2 — every track is a file off our own disk. This is the number
-   * the trim slider is *correcting*, so the two belong together.
+   * The effective total: how far the timeline is read from the audio clock, in
+   * milliseconds, trim included. It is normally *negative* — the audio clock
+   * runs ahead of the speaker by the output buffer, so the timeline is read
+   * slightly behind it. This is the number the trim slider moves, so the two
+   * belong together.
    */
   latencyMs?: number;
   key?: string;
