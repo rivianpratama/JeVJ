@@ -14,7 +14,7 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { contentTypeFor, sendFile, sendJson } from './http';
-import { readEnvFile } from './env';
+import { listenOptions, readEnvFile } from './env';
 import { createJevClient } from './moodHandler';
 import { createRoutes } from './routes';
 import { JobRunner } from './ytdlp/job';
@@ -26,7 +26,7 @@ const cacheDir = join(root, 'cache');
 
 const env = { ...readEnvFile(join(root, '.env')), ...process.env };
 const apiKey = env['TYPESAFE_API_KEY'] ?? '';
-const port = Number(env['PORT'] ?? 5173);
+const { host, port } = listenOptions(env);
 
 mkdirSync(cacheDir, { recursive: true });
 
@@ -42,8 +42,9 @@ const server = createServer((req, res) => {
   router.handle(req, res, () => serveBuilt(req, res));
 });
 
-server.listen(port, () => {
-  console.log(`JeVJ on http://localhost:${port}`);
+// Loopback unless `HOST` says otherwise; see `listenOptions`.
+server.listen(port, host, () => {
+  console.log(`JeVJ on http://${host}:${port}`);
   console.log(`cache: ${cacheDir}`);
   if (apiKey === '') console.log('no TYPESAFE_API_KEY: the mood route will answer 500');
 });

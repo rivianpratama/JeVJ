@@ -40,8 +40,36 @@ export interface SpawnHooks {
   stderr(line: string): void;
 }
 
-/** Runs a command to completion and resolves with its exit code. */
-export type Spawner = (cmd: string, args: string[], hooks: SpawnHooks) => Promise<number>;
+/**
+ * Runs a command to completion and resolves with its exit code.
+ *
+ * `signal` is how the caller stops one: aborting it kills the process, which
+ * then settles the promise the way any other early exit does. It is optional so
+ * that a spawner that cannot be interrupted is still a spawner — the watchdog
+ * simply never lands.
+ */
+export type Spawner = (
+  cmd: string,
+  args: string[],
+  hooks: SpawnHooks,
+  signal?: AbortSignal,
+) => Promise<number>;
+
+/**
+ * How long yt-dlp may say nothing at all before it is considered wedged.
+ *
+ * It is a *silence* timeout, not a deadline: a two-hour set downloading at
+ * 200 kB/s prints a progress line every few hundred milliseconds and never goes
+ * near this, while a process whose socket died holds its slot — one of two —
+ * until the server restarts. Three minutes is long enough to cover the quiet
+ * stretches yt-dlp does have (resolving formats, and the ffmpeg merge at the
+ * end, which announces itself on stdout but then works in silence) and short
+ * enough that a wedged download is not an afternoon.
+ */
+export const STALL_TIMEOUT_MS = 3 * 60 * 1000;
+
+/** What a download that said nothing for `STALL_TIMEOUT_MS` reports. */
+export const STALL_MESSAGE = 'download stalled';
 
 /**
  * The format we ask for: 720p mp4 video plus m4a audio, merged — small enough
@@ -191,7 +219,24 @@ export class JobRunner {
     const errors: string[] = [];
     let filesDone = 0;
 
+    // The stall watchdog. Every line yt-dlp writes to stdout is a sign of life
+    // — the progress lines are the overwhelming majority of them — so the timer
+    // is restarted on each one and only ever fires when the process has gone
+    // quiet altogether. It starts here rather than in `start`, so a job still
+    // queued behind the concurrency cap is not timed out for waiting.
+    const stopper = new AbortController();
+    let stalled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const alive = (): void => {
+      if (timer !== null) clearTimeout(timer);
+      timer = setTimeout(() => {
+        stalled = true;
+        stopper.abort();
+      }, STALL_TIMEOUT_MS);
+    };
+
     const onStdout = (line: string): void => {
+      alive();
       // `queued` lasts until yt-dlp says something: resolving a video takes a
       // second or two before a single byte of media is fetched, and a bar that
       // sits at zero says less than a status that admits it has not started.
@@ -210,18 +255,32 @@ export class JobRunner {
     };
 
     let code: number;
+    alive();
     try {
-      code = await this.spawn(this.binary, ytdlpArgs(this.cacheDir, state.videoId), {
-        stdout: onStdout,
-        // yt-dlp puts its warnings and its one fatal line on stderr; only the
-        // last of them is ever shown, and only if the process fails.
-        stderr: (line) => void errors.push(line),
-      });
+      code = await this.spawn(
+        this.binary,
+        ytdlpArgs(this.cacheDir, state.videoId),
+        {
+          stdout: onStdout,
+          // yt-dlp puts its warnings and its one fatal line on stderr; only the
+          // last of them is ever shown, and only if the process fails.
+          stderr: (line) => void errors.push(line),
+        },
+        stopper.signal,
+      );
     } catch (err) {
+      // A killed process may reject rather than resolve, and a stall is a
+      // stall whichever way it came back.
+      if (stalled) return this.fail(state, STALL_MESSAGE);
       // The process never ran: a missing binary, usually.
       return this.fail(state, sanitize(err instanceof Error ? err.message : String(err)));
+    } finally {
+      if (timer !== null) clearTimeout(timer);
     }
 
+    // Before the exit code, because a killed process exits non-zero with
+    // nothing on stderr and would otherwise report 'download failed'.
+    if (stalled) return this.fail(state, STALL_MESSAGE);
     if (code !== 0) return this.fail(state, describe(errors));
     if (cachedMedia(this.cacheDir, state.videoId) === null) {
       return this.fail(state, 'download produced no file');

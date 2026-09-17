@@ -95,6 +95,15 @@ const transport = createTransport({
   caption,
   timeline,
   onGraph: (g) => loop.start(g),
+  // A new track is taking over. What the last one left on the walls is about
+  // music that is no longer playing, and its token count is about an analysis
+  // that is no longer the one on screen — so both go before the new track's
+  // first byte arrives, rather than staying up through the download and the
+  // two passes and then being replaced.
+  onTrackChange: () => {
+    usage = null;
+    columns.setAnalysis(null);
+  },
   onAnalysis: (a) => {
     usage = a.usage ?? null;
     columns.setAnalysis(a);

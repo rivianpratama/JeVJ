@@ -65,6 +65,8 @@ function fakeElement(): {
   el: HTMLMediaElement;
   fire: (event: string) => void;
   src: () => string;
+  /** Move the playhead, as a seek does before `seeked` fires. */
+  seekTo: (t: number) => void;
 } {
   const handlers = new Map<string, Array<() => void>>();
   const el = {
@@ -81,6 +83,9 @@ function fakeElement(): {
   return {
     el,
     src: () => el.src,
+    seekTo(t: number): void {
+      el.currentTime = t;
+    },
     fire(event: string): void {
       for (const h of handlers.get(event) ?? []) h();
     },
@@ -88,7 +93,7 @@ function fakeElement(): {
 }
 
 /** A context that decodes whatever it is handed into 12 s of clicks. */
-function fakeCtx(): AudioContext {
+function fakeCtx(o: { decodes?: boolean } = {}): AudioContext {
   const mono = clickTrack(128, SECONDS, SR);
   const buffer = {
     sampleRate: SR,
@@ -99,7 +104,12 @@ function fakeCtx(): AudioContext {
   } as unknown as AudioBuffer;
   return {
     currentTime: CTX_NOW,
-    decodeAudioData: async () => buffer,
+    decodeAudioData: async () => {
+      // What a browser does with a file that is not audio: the promise
+      // rejects, and the name of the error is not something to show anyone.
+      if (o.decodes === false) throw new Error('EncodingError: Unable to decode audio data');
+      return buffer;
+    },
   } as unknown as AudioContext;
 }
 
@@ -191,7 +201,7 @@ function fakeFetch(o: { cached?: TrackAnalysis } = {}): {
   return { fetchFn, urls, posted: () => posted };
 }
 
-function build(o: { cached?: TrackAnalysis } = {}): {
+function build(o: { cached?: TrackAnalysis; decodes?: boolean } = {}): {
   flow: ReturnType<typeof createTrackFlow>;
   timeline: CueTimeline;
   progress: number[];
@@ -207,10 +217,11 @@ function build(o: { cached?: TrackAnalysis } = {}): {
   const progress: number[] = [];
   let resolved = 0;
 
+  const ctx = fakeCtx(o);
   const flow = createTrackFlow({
     timeline,
     el: element.el,
-    ctx: fakeCtx,
+    ctx: () => ctx,
     onProgress: (p) => progress.push(p),
     onResolved: () => {
       resolved += 1;
@@ -219,6 +230,35 @@ function build(o: { cached?: TrackAnalysis } = {}): {
     deps: model.deps,
   });
   return { flow, timeline, progress, element, model, api, resolved: () => resolved };
+}
+
+/**
+ * The object URLs handed out and given back, in order.
+ *
+ * There is exactly one media element for the life of the page, so a file's blob
+ * URL is only released when the *next* track takes the element — and a leak
+ * here is a decoded track held in memory for as long as the tab is open.
+ */
+function trackObjectUrls(): { created: string[]; revoked: string[]; restore: () => void } {
+  const created: string[] = [];
+  const revoked: string[] = [];
+  const realCreate = URL.createObjectURL;
+  const realRevoke = URL.revokeObjectURL;
+  let n = 0;
+  URL.createObjectURL = (() => {
+    const url = `blob:jevj/${++n}`;
+    created.push(url);
+    return url;
+  }) as typeof URL.createObjectURL;
+  URL.revokeObjectURL = ((url: string) => void revoked.push(url)) as typeof URL.revokeObjectURL;
+  return {
+    created,
+    revoked,
+    restore(): void {
+      URL.createObjectURL = realCreate;
+      URL.revokeObjectURL = realRevoke;
+    },
+  };
 }
 
 describe('createTrackFlow', () => {
@@ -271,6 +311,67 @@ describe('createTrackFlow', () => {
   it('refuses something that is not a youtube link', async () => {
     const { flow } = build();
     await expect(flow.open('https://example.com/song')).rejects.toThrow(/youtube/);
+  });
+
+  it('starts the next track over: no cues from the last one, and its blob let go', async () => {
+    const urls = trackObjectUrls();
+    try {
+      // A dropped file has no video id, so nothing is read from or written to
+      // the analysis cache: both tracks are analyzed for real.
+      const { flow, timeline, element } = build();
+
+      await flow.openFile(new File([new Uint8Array(8)], 'first.wav', { type: 'audio/wav' }));
+      element.fire('play');
+      const firstTrack = [...timeline.cues()].length;
+      expect(firstTrack).toBeGreaterThan(0);
+      expect(urls.created).toHaveLength(1);
+
+      // The second track's `begin()` runs before a byte of it is read, so the
+      // first track's cues are off the timeline for the whole of the second
+      // one's analysis rather than only once it finishes.
+      const second = flow.openFile(new File([new Uint8Array(8)], 'second.wav', { type: 'audio/wav' }));
+      expect([...timeline.cues()]).toHaveLength(0);
+      await second;
+
+      // One element for the life of the page means the first blob is only
+      // released when the second takes its place.
+      expect(urls.revoked).toEqual([urls.created[0]]);
+      expect(element.src()).toBe(urls.created[1]);
+      element.fire('play');
+      expect([...timeline.cues()]).toHaveLength(firstTrack);
+    } finally {
+      urls.restore();
+    }
+  }, 60_000);
+
+  it('re-maps the offset on a seek, so a cue still lands where the ear is', async () => {
+    const { flow, timeline, element } = build({ cached: cachedRecord() });
+    await flow.open('https://youtu.be/jNQXAC9IVRw');
+
+    element.fire('play');
+    expect([...timeline.cues()].map((c) => c.t)).toEqual([1.5 + CTX_NOW - EL_AT]);
+
+    // A seek moves the element's clock without moving the audio context's, so
+    // the offset between the two is a different number afterwards. Nothing
+    // else on the timeline is re-derived — `replaceSource` rewrites the whole
+    // offline source — so a stale offset would put every cue in the track at
+    // the wrong instant for the rest of the session.
+    const to = 95;
+    element.seekTo(to);
+    element.fire('seeked');
+    expect([...timeline.cues()].map((c) => c.t)).toEqual([1.5 + CTX_NOW - to]);
+  }, 60_000);
+
+  it('refuses a file the decoder will not take, in words worth showing', async () => {
+    const { flow, timeline } = build({ decodes: false });
+    const file = new File([new Uint8Array(8)], 'notes.txt', { type: 'audio/wav' });
+
+    // Not the browser's own message: `EncodingError: Unable to decode audio
+    // data` is a sentence about a codec. `transport` puts whatever this throws
+    // straight into a toast, and lands the page back on `empty` — see
+    // tests/app/transport.test.ts.
+    await expect(flow.openFile(file)).rejects.toThrow('that audio could not be decoded');
+    expect([...timeline.cues()]).toHaveLength(0);
   });
 
   it('writes nothing once its track has been replaced', async () => {

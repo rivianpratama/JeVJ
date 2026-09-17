@@ -2,9 +2,15 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { JobRunner, type SpawnHooks } from '../../server/ytdlp/job';
+import {
+  JobRunner,
+  STALL_MESSAGE,
+  STALL_TIMEOUT_MS,
+  type Spawner,
+  type SpawnHooks,
+} from '../../server/ytdlp/job';
 
 const ID = 'jNQXAC9IVRw';
 
@@ -343,3 +349,118 @@ describe('JobRunner, concurrency', () => {
 async function tick(): Promise<void> {
   for (let i = 0; i < 10; i++) await Promise.resolve();
 }
+
+/* ----------------------------------------------------------- stall watchdog */
+
+/** A second real video id, for the job that has to get the stalled one's slot. */
+const OTHER_ID = 'dQw4w9WgXcQ';
+
+/**
+ * A yt-dlp that says what it is told to and otherwise sits there forever.
+ *
+ * `say` is the test's hand on the process's stdout, and the only thing that
+ * ever ends it is the watchdog's signal — which is exactly a wedged download:
+ * the socket is gone, the process is alive, and nothing will ever arrive.
+ */
+function wedgedSpawn(): {
+  spawn: Spawner;
+  say: (line: string) => void;
+  started: () => boolean;
+  killed: () => boolean;
+} {
+  let out: ((line: string) => void) | null = null;
+  let killed = false;
+  return {
+    started: () => out !== null,
+    killed: () => killed,
+    say: (line) => out?.(line),
+    spawn: (_cmd, _args, hooks, signal) =>
+      new Promise<number>((resolve) => {
+        out = hooks.stdout;
+        signal?.addEventListener('abort', () => {
+          killed = true;
+          // A killed child exits non-zero with nothing on stderr.
+          resolve(1);
+        });
+      }),
+  };
+}
+
+describe('JobRunner, stall watchdog', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('kills a download that has said nothing for three minutes, and says so', async () => {
+    const wedged = wedgedSpawn();
+    const runner = new JobRunner(dir, wedged.spawn);
+    const job = runner.start(ID);
+
+    await vi.advanceTimersByTimeAsync(0);
+    wedged.say(INFO_LINE);
+    wedged.say('[download]  12.0% of  218.53KiB at    1.69MiB/s ETA 00:02');
+    expect(job.status).toBe('downloading');
+
+    // A minute short of the timeout it is still a download, not a casualty.
+    await vi.advanceTimersByTimeAsync(STALL_TIMEOUT_MS - 60_000);
+    expect(wedged.killed()).toBe(false);
+    expect(job.status).toBe('downloading');
+
+    await vi.advanceTimersByTimeAsync(61_000);
+    const settled = await runner.settled(ID);
+    expect(wedged.killed()).toBe(true);
+    expect(settled?.status).toBe('error');
+    // Not 'download failed': a killed process exits non-zero with an empty
+    // stderr, and the reason it exited is the thing worth reporting.
+    expect(settled?.error).toBe(STALL_MESSAGE);
+    expect(settled?.mediaUrl).toBeUndefined();
+  });
+
+  it('restarts the clock on every line, so a slow download is not a stalled one', async () => {
+    const wedged = wedgedSpawn();
+    const runner = new JobRunner(dir, wedged.spawn);
+    runner.start(ID);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Four progress lines, each arriving with a minute to spare. A deadline
+    // rather than a silence timeout would have killed this at three minutes.
+    for (let i = 1; i <= 4; i++) {
+      await vi.advanceTimersByTimeAsync(STALL_TIMEOUT_MS - 60_000);
+      wedged.say(`[download]  ${i * 20}.0% of  218.53KiB at  600.00KiB/s ETA 00:30`);
+      expect(wedged.killed(), `after line ${i}`).toBe(false);
+    }
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    await vi.advanceTimersByTimeAsync(STALL_TIMEOUT_MS + 1);
+    expect(wedged.killed()).toBe(true);
+  });
+
+  it('gives the slot back, so the job queued behind it runs', async () => {
+    // The whole point of killing it. One wedged download holding one of the two
+    // slots for the life of the server is the failure; holding it for three
+    // minutes is merely a wait.
+    const wedged = wedgedSpawn();
+    const next = wedgedSpawn();
+    let first = true;
+    const spawn: Spawner = (cmd, args, hooks, signal) => {
+      const which = first ? wedged : next;
+      first = false;
+      return which.spawn(cmd, args, hooks, signal);
+    };
+
+    const runner = new JobRunner(dir, spawn, 'yt-dlp', 1);
+    runner.start(ID);
+    const queued = runner.start(OTHER_ID);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(queued.status).toBe('queued');
+    expect(next.started()).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(STALL_TIMEOUT_MS + 1);
+    expect((await runner.settled(ID))?.error).toBe(STALL_MESSAGE);
+    expect(next.started()).toBe(true);
+  });
+});
