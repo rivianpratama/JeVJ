@@ -1,5 +1,7 @@
 # JeVJ Visualizer Implementation Plan
 
+**Status:** implemented (Tasks 1–12 on `feat/jevj-v1`); see `.superpowers/sdd/progress.md` for the ledger of departures.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A Vercel-hosted three.js visualizer that plays a YouTube link inside an oval feathered card, analyzes the tab's audio with music-theory-aware DSP, asks TypeSafe's Jev for the mood every few seconds from a ~130-token JSON, and renders concert-grade visuals that hit drops on the exact sample via a beat-grid cue timeline.
