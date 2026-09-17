@@ -9,106 +9,86 @@ import {
 } from '../../src/app/state';
 
 describe('transition', () => {
-  it('walks the live path: idle → loaded → capturing → playing → paused', () => {
-    expect(transition('idle', 'url:cued')).toBe('loaded');
-    expect(transition('loaded', 'capture:started')).toBe('capturing');
-    expect(transition('capturing', 'play')).toBe('playing');
+  it('walks the whole v2 path: empty → resolving → analyzing → ready → playing ⇄ paused → ended', () => {
+    expect(transition('empty', 'url:submit')).toBe('resolving');
+    expect(transition('resolving', 'resolved')).toBe('analyzing');
+    expect(transition('analyzing', 'analyzed')).toBe('ready');
+    expect(transition('ready', 'play')).toBe('playing');
     expect(transition('playing', 'pause')).toBe('paused');
     expect(transition('paused', 'play')).toBe('playing');
+    expect(transition('playing', 'ended')).toBe('ended');
   });
 
-  it('walks the file path: analyzing → playing', () => {
-    expect(transition('idle', 'file:drop')).toBe('analyzing');
-    expect(transition('analyzing', 'play')).toBe('playing');
-  });
-
-  it('takes a dropped file from any state at all', () => {
-    for (const from of APP_STATES) expect(transition(from, 'file:drop')).toBe('analyzing');
-  });
-
-  it('takes a pasted link from any state at all', () => {
-    for (const from of APP_STATES) expect(transition(from, 'url:cued')).toBe('loaded');
-  });
-
-  it('returns to idle when a link fails to load', () => {
-    for (const from of APP_STATES) expect(transition(from, 'url:failed')).toBe('idle');
-  });
-
-  it('returns to loaded when the user stops sharing the tab', () => {
-    expect(transition('capturing', 'capture:ended')).toBe('loaded');
-    expect(transition('playing', 'capture:ended')).toBe('loaded');
-    expect(transition('paused', 'capture:ended')).toBe('loaded');
-  });
-
-  it('takes the share picker\'s answer from any state at all', () => {
-    // The picker is open for as long as the user takes over it, and everything
-    // else stays live underneath: they can paste a link that fails (→ idle) or
-    // drop a file (→ analyzing) while it is up. The answer still has to land.
-    // A `playing` machine is the one exception and it was already here: the
-    // player usually reports itself playing while the picker is still open.
-    for (const from of APP_STATES) {
-      expect(transition(from, 'capture:started')).toBe(from === 'playing' ? 'playing' : 'capturing');
+  it('starts a dropped file over from empty, ready and ended', () => {
+    for (const from of ['empty', 'ready', 'ended'] as const) {
+      expect(transition(from, 'file:drop')).toBe('analyzing');
     }
   });
 
-  it('takes the share ending from any state at all', () => {
-    // `capture:ended` comes from the browser's own bar and can arrive whenever
-    // the user presses it — including after a link failed (idle) or a file was
-    // dropped (analyzing), neither of which stops a share that is still
-    // running. Nothing is loaded in those two, so the machine stays where it
-    // is; everywhere else a video is still cued and the app falls back to it.
-    expect(transition('idle', 'capture:ended')).toBe('idle');
-    expect(transition('analyzing', 'capture:ended')).toBe('analyzing');
-    expect(transition('loaded', 'capture:ended')).toBe('loaded');
-    expect(transition('capturing', 'capture:ended')).toBe('loaded');
-    expect(transition('playing', 'capture:ended')).toBe('loaded');
-    expect(transition('paused', 'capture:ended')).toBe('loaded');
+  it('ignores a file dropped into a track that is already under way', () => {
+    // The input is gone once a track is loaded and a reload is how you change
+    // it; a drop landing mid-analysis would put two pipelines on one graph.
+    for (const from of ['resolving', 'analyzing', 'playing', 'paused'] as const) {
+      expect(transition(from, 'file:drop')).toBe(from);
+    }
   });
 
-  it('throws on a transition that means nothing', () => {
-    expect(() => transition('idle', 'play')).toThrow(/idle/);
-    expect(() => transition('idle', 'pause')).toThrow(/pause/);
+  it('returns to empty from anywhere when something fails', () => {
+    for (const from of APP_STATES) expect(transition(from, 'failed')).toBe('empty');
   });
 
-  it('is defined for every state and event it does not throw on', () => {
+  it('plays again from the end of the track', () => {
+    expect(transition('ended', 'play')).toBe('playing');
+  });
+
+  it('takes a link only from empty', () => {
+    expect(transition('empty', 'url:submit')).toBe('resolving');
+    for (const from of APP_STATES) {
+      if (from === 'empty') continue;
+      expect(transition(from, 'url:submit')).toBe(from);
+    }
+  });
+
+  it('is a no-op rather than a throw wherever an event means nothing', () => {
+    // Every event reaches the machine from something the user or the browser
+    // did — a media element emits `pause` as it is torn down, `ended` fires on
+    // a seek past the end — and none of it is worth a thrown exception in a
+    // handler that is halfway through swapping a track.
     for (const from of APP_STATES) {
       for (const event of APP_EVENTS) {
-        let to: AppState | null = null;
-        try {
-          to = transition(from, event);
-        } catch {
-          to = null;
-        }
-        if (to !== null) expect(APP_STATES).toContain(to);
+        expect(() => transition(from, event)).not.toThrow();
+        expect(APP_STATES).toContain(transition(from, event));
       }
     }
   });
 });
 
 describe('createAppMachine', () => {
-  it('starts idle and moves with what it is sent', () => {
+  it('starts empty and moves with what it is sent', () => {
     const m = createAppMachine();
-    expect(m.state()).toBe('idle');
-    expect(m.send('url:cued')).toBe('loaded');
-    expect(m.state()).toBe('loaded');
+    expect(m.state()).toBe('empty');
+    expect(m.send('url:submit')).toEqual({ next: 'resolving', changed: true });
+    expect(m.state()).toBe('resolving');
+  });
+
+  it('says so when an event changed nothing', () => {
+    const m = createAppMachine();
+    expect(m.send('play')).toEqual({ next: 'empty', changed: false });
+    expect(m.send('pause')).toEqual({ next: 'empty', changed: false });
+    expect(m.state()).toBe('empty');
   });
 
   it('reports only the changes, with what caused them', () => {
     const seen: [AppState, AppState, AppEvent][] = [];
     const m = createAppMachine((to, from, event) => seen.push([to, from, event]));
-    m.send('url:cued');
-    // A second link over the first: the state is the same, so nobody is told.
-    m.send('url:cued');
-    m.send('capture:started');
+    m.send('file:drop');
+    // A second drop while the first is still being analyzed: no move, nobody
+    // is told.
+    m.send('file:drop');
+    m.send('analyzed');
     expect(seen).toEqual([
-      ['loaded', 'idle', 'url:cued'],
-      ['capturing', 'loaded', 'capture:started'],
+      ['analyzing', 'empty', 'file:drop'],
+      ['ready', 'analyzing', 'analyzed'],
     ]);
-  });
-
-  it('keeps its state when a transition throws', () => {
-    const m = createAppMachine();
-    expect(() => m.send('play')).toThrow();
-    expect(m.state()).toBe('idle');
   });
 });

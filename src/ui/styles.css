@@ -12,7 +12,9 @@
   --ink: #e8e8ef;
   --ink-dim: rgba(232, 232, 239, 0.55);
   --danger: #ff8a8a;
-  --card-w: min(56vw, 900px);
+  /* Square, and never more than a third of a wide screen: the picture is an
+     object in the smoke, not the thing the page is about. */
+  --card-w: min(30vw, 440px);
 }
 
 /* The UI is a pass-through layer: only real controls catch the pointer. */
@@ -34,23 +36,36 @@
   white-space: nowrap;
 }
 
-/* ---------------------------------------------------------------- top bar */
+/* ------------------------------------------------------------ input bar */
 
-.topbar {
+/*
+ * The empty state is this and nothing else: one field in the middle of the
+ * page, with a line under it. It fades out when a track is taken and never
+ * comes back — changing track is a reload.
+ */
+.inputbar {
   position: fixed;
-  top: 18px;
+  top: 50%;
   left: 50%;
-  transform: translateX(-50%);
+  transform: translate(-50%, -50%);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  width: min(560px, calc(100vw - 32px));
-  transition: top 0.2s ease;
+  gap: 10px;
+  width: min(560px, 80vw);
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 0.3s ease,
+    visibility 0s linear 0.3s;
 }
 
-body.has-banner .topbar {
-  top: 52px;
+.inputbar.is-on {
+  opacity: 1;
+  visibility: visible;
+  transition:
+    opacity 0.3s ease,
+    visibility 0s;
 }
 
 .urlbar {
@@ -64,17 +79,12 @@ body.has-banner .topbar {
   -webkit-backdrop-filter: var(--glass-blur);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
   pointer-events: auto;
-  transition: opacity 0.2s ease;
-}
-
-.urlbar.is-busy {
-  opacity: 0.55;
 }
 
 .urlbar-input {
   flex: 1;
   min-width: 0;
-  padding: 12px 20px;
+  padding: 13px 22px;
   border: 0;
   border-radius: 999px;
   background: transparent;
@@ -83,6 +93,7 @@ body.has-banner .topbar {
   font-size: 14px;
   line-height: 1.4;
   outline: none;
+  text-align: center;
 }
 
 .urlbar-input::placeholder {
@@ -111,6 +122,31 @@ body.is-dragging .drophint {
   color: var(--ink);
 }
 
+/* ------------------------------------------------------------- caption */
+
+/*
+ * Plain text, no surface of any kind. It is the only thing on screen while a
+ * track is being analyzed, and the moment it has nothing to say it is gone.
+ */
+.caption {
+  position: fixed;
+  top: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+  opacity: 0;
+  transition: opacity 0.6s ease;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.caption.is-in {
+  opacity: 0.8;
+}
+
 /* Whole-page drop target feedback. */
 body.is-dragging::after {
   content: '';
@@ -128,112 +164,124 @@ body.is-dragging::after {
   position: fixed;
   inset: 0;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 18px;
   pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 0.5s ease,
+    visibility 0s linear 0.5s;
+}
+
+.card-stage.is-on {
+  opacity: 1;
+  visibility: visible;
+  transition:
+    opacity 0.5s ease,
+    visibility 0s;
 }
 
 .card-frame {
   position: relative;
   width: var(--card-w);
-  aspect-ratio: 16 / 9;
+  aspect-ratio: 1 / 1;
 }
 
-/* The blurred outer rim: same oval, 12% larger, sitting behind the card. */
+/*
+ * The halo: the same square, a third larger again, blurring whatever the
+ * visualizer is drawing behind the picture so the picture has something to sit
+ * in. Masked to nothing well inside its own box, so it has no edge either.
+ */
 .card-halo {
   position: absolute;
   inset: 0;
-  transform: scale(1.12);
-  border-radius: 50% / 42%;
-  background: rgba(255, 255, 255, 0.04);
-  backdrop-filter: blur(22px);
-  -webkit-backdrop-filter: blur(22px);
-  mask-image: radial-gradient(ellipse, #000 55%, transparent 100%);
-  -webkit-mask-image: radial-gradient(ellipse, #000 55%, transparent 100%);
+  transform: scale(1.35);
+  border-radius: 14%;
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(28px);
+  -webkit-backdrop-filter: blur(28px);
+  mask-image: radial-gradient(circle, #000 35%, transparent 100%);
+  -webkit-mask-image: radial-gradient(circle, #000 35%, transparent 100%);
 }
 
+/*
+ * The picture. The feather is painted into the canvas rather than masked here
+ * — see `card.ts` — so all this box does is hold it and round off whatever the
+ * falloff has left, which on a full-frame picture is nothing.
+ */
 .card {
   position: absolute;
   inset: 0;
   overflow: hidden;
-  border-radius: 50% / 42%;
-  /*
-   * No fill of its own: before a video is cued the card is an empty oval, and a
-   * dark wash across it would put a hole in the visualizer where the picture is
-   * supposed to be brightest. The halo behind it is what makes the shape read.
-   */
-  mask-image: radial-gradient(ellipse at center, #000 58%, rgba(0, 0, 0, 0.6) 78%, transparent 100%);
-  -webkit-mask-image: radial-gradient(
-    ellipse at center,
-    #000 58%,
-    rgba(0, 0, 0, 0.6) 78%,
-    transparent 100%
-  );
+  border-radius: 14%;
 }
 
-/* The mount element, and the iframe the YouTube API swaps in for it. */
-.card-player,
-.card iframe {
+.card-canvas {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
+  display: block;
+}
+
+/*
+ * The source of those frames, kept in the page and out of sight. Not
+ * `display: none` and not `visibility: hidden`: a video that is not being
+ * rendered is a video the compositor is free to stop feeding frames to, and
+ * the frames are the whole point. It is also where the sound comes from — the
+ * audio graph is built on this element.
+ */
+.card-video {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  width: 8px;
+  height: 8px;
   border: 0;
-  /* Our own buttons drive playback; the iframe never takes the pointer. */
+  opacity: 0;
   pointer-events: none;
-}
-
-.card-file {
-  position: absolute;
-  inset: 0;
-  display: none;
-  align-items: center;
-  justify-content: center;
-  font-size: clamp(48px, 8vw, 120px);
-  color: rgba(255, 255, 255, 0.5);
-}
-
-.card[data-mode='file'] .card-player,
-.card[data-mode='file'] iframe {
-  visibility: hidden;
-}
-
-.card[data-mode='file'] .card-file {
-  display: flex;
-}
-
-.card-label {
-  max-width: var(--card-w);
-  padding: 0 12px;
-  font-size: 13px;
-  letter-spacing: 0.01em;
-  color: var(--ink-dim);
-  text-align: center;
-  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.6);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* ------------------------------------------------------------- transport */
 
+/*
+ * One button, at the exact centre of the screen and over the card. It fades
+ * out two seconds after the pointer stops while a track plays, and comes back
+ * the moment it moves — see `IDLE_HIDE_MS` in `controls.ts`.
+ */
 .transport {
   position: fixed;
-  /* Never lower than the toast stack, which owns the last 80px. */
-  bottom: max(7vh, 96px);
+  top: 50%;
   left: 50%;
-  transform: translateX(-50%);
+  transform: translate(-50%, -50%);
+  z-index: 3;
   display: flex;
   align-items: center;
-  gap: 10px;
   pointer-events: auto;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 0.3s ease,
+    visibility 0s linear 0.3s;
+}
+
+.transport.is-on {
+  opacity: 1;
+  visibility: visible;
+  transition:
+    opacity 0.3s ease,
+    visibility 0s;
+}
+
+.transport.is-on.is-idle {
+  opacity: 0;
+  transition: opacity 0.8s ease;
 }
 
 .toggle {
-  width: 56px;
-  height: 56px;
+  width: 64px;
+  height: 64px;
   display: grid;
   place-items: center;
   border: 1px solid var(--glass-border);
@@ -244,7 +292,7 @@ body.is-dragging::after {
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
   color: var(--ink);
   font-family: var(--font-ui);
-  font-size: 18px;
+  font-size: 20px;
   line-height: 1;
   cursor: pointer;
   transition: transform 0.15s;
@@ -252,13 +300,6 @@ body.is-dragging::after {
 
 .toggle:hover {
   transform: scale(1.05);
-}
-
-.toggle.is-busy,
-.toggle:disabled {
-  opacity: 0.45;
-  cursor: default;
-  transform: none;
 }
 
 /* ----------------------------------------------------------------- toast */
@@ -305,60 +346,13 @@ body.is-dragging::after {
   border-color: rgba(255, 138, 138, 0.35);
 }
 
-/* ---------------------------------------------------------------- banner */
-
-.banner {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 7;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  padding: 7px 40px 7px 16px;
-  border-bottom: 1px solid var(--glass-border);
-  background: var(--glass-bg);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  color: var(--ink);
-  font-family: var(--font-ui);
-  font-size: 12px;
-  line-height: 1.4;
-  text-align: center;
-}
-
-.banner a {
-  color: inherit;
-}
-
-.banner-close {
-  position: absolute;
-  right: 10px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 22px;
-  height: 22px;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--ink-dim);
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.banner-close:hover {
-  color: var(--ink);
-}
-
 /* ------------------------------------------------------------------- hud */
 
 .hud {
   position: fixed;
-  /* Clears the centred top bar; moves up to the corner once there is room. */
-  top: 100px;
+  /* Its own corner: nothing else in v2 lives up here but the caption, which is
+     centred. `H` toggles it. */
+  top: 16px;
   left: 16px;
   min-width: 190px;
   max-width: 280px;
@@ -371,20 +365,6 @@ body.is-dragging::after {
   font: 11px/1.5 var(--font-mono);
   opacity: 0.8;
   pointer-events: auto;
-}
-
-body.has-banner .hud {
-  top: 134px;
-}
-
-@media (min-width: 1200px) {
-  .hud {
-    top: 16px;
-  }
-
-  body.has-banner .hud {
-    top: 50px;
-  }
 }
 
 .hud[hidden] {
@@ -444,15 +424,15 @@ body.has-banner .hud {
  * each piece reappears when the pointer is over it, which for the play button
  * means over the place it was.
  */
-body.is-immersive .topbar,
-body.is-immersive .card-label,
-body.is-immersive .transport {
+body.is-immersive .inputbar,
+body.is-immersive .caption,
+body.is-immersive .transport.is-on {
   opacity: 0;
   transition: opacity 0.4s ease;
 }
 
-body.is-immersive .topbar:hover,
-body.is-immersive .topbar:focus-within,
+body.is-immersive .inputbar:hover,
+body.is-immersive .inputbar:focus-within,
 body.is-immersive .transport:hover,
 body.is-immersive .transport:focus-within {
   opacity: 1;
@@ -461,6 +441,6 @@ body.is-immersive .transport:focus-within {
 
 @media (max-width: 700px) {
   :root {
-    --card-w: min(88vw, 900px);
+    --card-w: min(64vw, 440px);
   }
 }
