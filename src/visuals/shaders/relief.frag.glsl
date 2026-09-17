@@ -29,7 +29,7 @@ uniform float uContrast;
 uniform vec3 uBg;
 /** The lightest stop: what a fully lit face is painted with. */
 uniform vec3 uStop4;
-uniform vec3 uAccent;
+uniform vec3 uEmber;
 uniform float uAggression;
 uniform float uSub;
 uniform float uExposure;
@@ -69,9 +69,12 @@ void main() {
   vec3 col = mix(uBg, uStop4, pow(ndl, uContrast));
 
   // Embers: the high ground of an angry landscape is lit from inside, and the
-  // sub-bass is what makes it pulse.
+  // sub-bass is what makes it pulse. `uEmber` and not the palette's accent —
+  // the accent is the complement, so a metal palette pulled toward red has an
+  // accent in the greens, and jade coals on a rust landscape read as alien
+  // rather than as heat. See `Palette.ember`.
   if (vH > EMBER_FLOOR && uAggression > EMBER_AGGRESSION) {
-    col += uAccent * (vH - EMBER_FLOOR) * EMBER_GAIN * (0.5 + 0.5 * uSub);
+    col += uEmber * (vH - EMBER_FLOOR) * EMBER_GAIN * (0.5 + 0.5 * uSub);
   }
 
   float fade = 1.0 - smoothstep(uFade.x, uFade.y, vViewDist);

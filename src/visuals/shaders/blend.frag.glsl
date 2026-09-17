@@ -21,9 +21,15 @@
 //
 // The last two layers are the exceptions to "everything is light":
 //
-//  - **relief** is a *surface*. It occludes, so it composites alpha-over by its
-//    weight rather than adding. Added, a ridge would brighten the ink behind it
-//    and read as a fog bank rather than as rock;
+//  - **relief** is a *surface*. It occludes, so it composites alpha-over rather
+//    than adding — added, a ridge would brighten the ink behind it and read as
+//    a fog bank rather than as rock. Its opacity is its weight *squared*, gained
+//    1.6 and clamped: a layer that occludes in proportion to its weight puts a
+//    floor over the ink the moment the mood has any grief in it at all, and a
+//    faint terrain should be a texture the ink shows through rather than a lid
+//    on it. Squared, a 0.06 idle weight is 0.6% opaque (invisible, as it should
+//    be), a half-share is 40%, and only a layer that has genuinely taken the
+//    frame — 0.79 and up — becomes solid ground;
 //  - **breath** *replaces*. It runs over a talking voice and the whole point of
 //    it is that nothing else is on screen; mixed in, the dust and silk it is
 //    meant to clear away would show through it. It crossfades in over the first
@@ -50,6 +56,8 @@ uniform float uW[5];
 
 /** How much of the smoothstep curve is mixed in. */
 const float CONTRAST = 0.35;
+/** The gain on the relief's squared weight; see the note above. */
+const float RELIEF_OPACITY = 1.6;
 /** The breath weight at which the frame is entirely the breath. */
 const float BREATH_FULL = 0.5;
 
@@ -64,9 +72,13 @@ void main() {
 
   vec3 col = screen(ink, particles) + texture2D(uTex2, vUv).rgb * uW[2];
 
-  // Relief: alpha-over, by its own coverage times its weight.
+  // Relief: alpha-over, by its own coverage times an opacity that rises with
+  // the square of its weight. The embers are inside `relief.rgb`, so they fade
+  // with the terrain they sit on rather than burning through a layer that is
+  // otherwise not there.
   vec4 relief = texture2D(uTex3, vUv);
-  col = mix(col, relief.rgb, relief.a * uW[3]);
+  float reliefAlpha = min(uW[3] * uW[3] * RELIEF_OPACITY, 1.0);
+  col = mix(col, relief.rgb, relief.a * reliefAlpha);
 
   // Breath: a replace that fades in, rather than a mix that never finishes.
   vec3 breath = texture2D(uTex4, vUv).rgb;

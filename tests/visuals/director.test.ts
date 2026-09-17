@@ -160,17 +160,20 @@ describe('direct', () => {
     expect(flat.weights.relief).toBeCloseTo(0, 6);
   });
 
-  it('gives metal and drone more terrain than pop at the same mood', () => {
+  it('gives metal more terrain than pop at the same mood, and only metal', () => {
+    // The drone bonus was dropped: `IDLE_MOOD` is an ambient drone, so it put a
+    // fifth of the frame under a terrain on a page that had heard nothing.
     const m = { melancholy: 0.5, aggression: 0.5, spoken: 0 };
     const pop = once(mood({ ...m, genre: 'pop' }), fast());
-    for (const genre of ['rock_metal', 'ambient_drone'] as const) {
-      const p = once(mood({ ...m, genre }), fast());
-      expect(p.weights.relief).toBeGreaterThan(pop.weights.relief);
-    }
-    expect(once(mood({ ...m, genre: 'jazz' }), fast()).weights.relief).toBeCloseTo(
+    expect(once(mood({ ...m, genre: 'rock_metal' }), fast()).weights.relief).toBeGreaterThan(
       pop.weights.relief,
-      6,
     );
+    for (const genre of ['ambient_drone', 'jazz'] as const) {
+      expect(once(mood({ ...m, genre }), fast()).weights.relief).toBeCloseTo(
+        pop.weights.relief,
+        6,
+      );
+    }
   });
 
   it('folds the mirror for dominant relief even when nothing is hypnotic', () => {
@@ -279,9 +282,13 @@ describe('direct', () => {
     const p = once(IDLE_MOOD, fast());
     expect(p.weights.ink).toBeGreaterThan(p.weights.particles);
     expect(p.weights.ink).toBeGreaterThan(p.weights.relief);
-    expect(p.weights.strands).toBeLessThan(0.35);
+    expect(p.weights.strands).toBeLessThan(0.42);
     expect(Math.abs(p.weights.strands - p.weights.ink)).toBeLessThan(0.02);
     expect(p.weights.breath).toBe(0);
+    // And barely any terrain: `IDLE_MOOD` is calm, so the only bid the relief
+    // has is melancholy and aggression at 0.1, which the blend's own
+    // `w²·1.6` opacity then renders all but invisible.
+    expect(p.weights.relief).toBeLessThan(0.07);
   });
 
   it('blooms into a soft explosion on the downbeat and settles back', () => {

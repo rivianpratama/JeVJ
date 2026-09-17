@@ -17,7 +17,7 @@ function forGenre(g: Genre, over: Partial<MoodVector> = {}) {
 }
 
 describe('paletteFor', () => {
-  it('gives five stops, a background and an accent', () => {
+  it('gives five stops, a background, an accent and an ember', () => {
     const p = paletteFor(mood({}));
     expect(p.stops).toHaveLength(5);
     for (const stop of p.stops) {
@@ -208,5 +208,42 @@ describe('desaturate', () => {
     const p = paletteFor(mood({ valence: 0.31 }));
     expect(desaturate(p, 0.2)).toBe(desaturate(p, 0.2));
     expect(desaturate(p, 0.5)).not.toBe(desaturate(p, 0.2));
+  });
+});
+
+describe('paletteFor ember', () => {
+  it('is fire, not the complement: warm music burns orange', () => {
+    // The accent is the palette's *complement*, so on a metal palette it lands
+    // in the greens — jade embers on a rust landscape, which reads as alien
+    // rather than as heat. The ember is its own colour and always warm.
+    const [r, g, b] = paletteFor(mood({ warmth: 1 })).ember;
+    expect(r).toBeGreaterThan(g);
+    expect(g).toBeGreaterThan(b);
+  });
+
+  it('slides to blood red as the music goes cold, and never past it', () => {
+    const hot = paletteFor(mood({ warmth: 1 })).ember;
+    const cold = paletteFor(mood({ warmth: 0 })).ember;
+    // Still red-dominant at either end...
+    for (const e of [hot, cold]) expect(e[0]).toBeGreaterThan(Math.max(e[1], e[2]));
+    // ...but the cold end is blood rather than flame: less green, more blue.
+    expect(cold[1]).toBeLessThan(hot[1]);
+    expect(cold[2]).toBeGreaterThan(hot[2]);
+    // At and above warmth 0.4 the hue is parked at 32 degrees.
+    expect(paletteFor(mood({ warmth: 0.4 })).ember).toEqual(
+      paletteFor(mood({ warmth: 0.9 })).ember,
+    );
+  });
+
+  it('does not follow the palette hue, unlike the accent', () => {
+    // Two palettes at opposite ends of the ramp share one ember.
+    const a = paletteFor(mood({ warmth: 1, genre: 'rock_metal' })).ember;
+    const b = paletteFor(mood({ warmth: 0.6, genre: 'ambient_drone' })).ember;
+    for (let i = 0; i < 3; i++) expect(a[i]).toBeCloseTo(b[i]!, 12);
+  });
+
+  it('is greyed by desaturate along with everything else', () => {
+    const p = paletteFor(mood({ warmth: 1 }));
+    expect(sat(desaturate(p, 0.2).ember)).toBeCloseTo(sat(p.ember) * 0.2, 6);
   });
 });

@@ -188,10 +188,18 @@ const DOLLY_SNAP = 0.8;
 
 /** What melancholy and aggression bid for the terrain, at most. */
 const RELIEF_BID = 0.8;
-/** The extra the two genres built out of texture rather than notes get. */
+/** The extra the one genre built out of surface rather than notes gets. */
 const RELIEF_GENRE_BONUS = 0.3;
-/** Genres whose whole character is surface rather than melody. */
-const RELIEF_GENRES: ReadonlySet<Genre> = new Set<Genre>(['rock_metal', 'ambient_drone']);
+/**
+ * Genres that want terrain for their own sake.
+ *
+ * `ambient_drone` was here too and was taken out: `IDLE_MOOD` *is* an ambient
+ * drone, so the flat bonus put a fifth of the frame under a landscape on a page
+ * that had heard nothing, and the idle picture stopped being ink-dominant. A
+ * drone still gets terrain the moment it is a *sad* or an *angry* drone, which
+ * is what the melancholy/aggression bid is for.
+ */
+const RELIEF_GENRES: ReadonlySet<Genre> = new Set<Genre>(['rock_metal']);
 /** Below this `spoken` the voice layer is not asked for at all. */
 const BREATH_GATE = 0.5;
 /**

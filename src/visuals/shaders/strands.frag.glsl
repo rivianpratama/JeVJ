@@ -64,11 +64,13 @@ const float CORE_POWER = 2.2;
  * thicker (`lerp(0.012, 0.035, sub)` rather than `lerp(0.004, 0.02, sub)`) and
  * carries a three-times-wider halo pass at 0.15 alpha on top, so the same
  * number gave each visible strand about four times the light it had before.
- * Measured over a 54 s idle run: at 0.28 the composite reads mean 0.155 with
- * its darkest fifth at 0.047; at 0.55 the floor goes to 0.063 and the target
- * is 0.06.
+ * It is set to the largest value the idle floor will carry, and the floor is
+ * quantised to 1/255 on the measured scale, so the search ends at a single
+ * step: 0.30 reads mean 0.212 with its darkest fifth at 0.0588, and 0.32 tips
+ * the floor to 0.0627 against a target of 0.06. Further up the curve, for the
+ * record: 0.34 → 0.2175/0.0627, 0.42 → 0.2277/0.0706, 0.55 → 0.24/0.078.
  */
-const float EMISSION = 0.28;
+const float EMISSION = 0.30;
 
 void main() {
   // Visible when the strand's hash falls under the layer's weight, so the

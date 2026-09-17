@@ -96,7 +96,7 @@ export class Relief implements Scene {
         uContrast: { value: 1 },
         uBg: { value: new THREE.Vector3() },
         uStop4: { value: new THREE.Vector3(1, 1, 1) },
-        uAccent: { value: new THREE.Vector3(1, 1, 1) },
+        uEmber: { value: new THREE.Vector3(1, 1, 1) },
         uAggression: { value: 0 },
         uSub: { value: 0 },
         uExposure: { value: 1 },
@@ -139,10 +139,10 @@ export class Relief implements Scene {
     const stop4 = p.palette.stops[4] ?? p.palette.stops[p.palette.stops.length - 1]!;
     (u['uStop4']!.value as THREE.Vector3).set(stop4[0], stop4[1], stop4[2]);
     (u['uBg']!.value as THREE.Vector3).set(p.palette.bg[0], p.palette.bg[1], p.palette.bg[2]);
-    (u['uAccent']!.value as THREE.Vector3).set(
-      p.palette.accent[0],
-      p.palette.accent[1],
-      p.palette.accent[2],
+    (u['uEmber']!.value as THREE.Vector3).set(
+      p.palette.ember[0],
+      p.palette.ember[1],
+      p.palette.ember[2],
     );
 
     // The pan. Bounded, slow, and on two incommensurate rates so the camera

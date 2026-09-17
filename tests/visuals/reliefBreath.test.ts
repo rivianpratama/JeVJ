@@ -34,7 +34,7 @@ describe('relief shaders', () => {
       'uContrast',
       'uBg',
       'uStop4',
-      'uAccent',
+      'uEmber',
       'uAggression',
       'uSub',
       'uExposure',
@@ -58,7 +58,9 @@ describe('relief shaders', () => {
     expect(reliefHeight).toContain('for (int k = 2; k <= 4; k++)');
     expect(reliefHeight).toContain('uBands[k] * sin(q.x * (3.0 + float(k))');
     expect(reliefFrag).toContain('mix(uBg, uStop4, pow(ndl, uContrast))');
-    expect(reliefFrag).toContain('uAccent * (vH - EMBER_FLOOR) * EMBER_GAIN * (0.5 + 0.5 * uSub)');
+    // Fire, not the palette's complement: see `Palette.ember`.
+    expect(reliefFrag).toContain('uEmber * (vH - EMBER_FLOOR) * EMBER_GAIN * (0.5 + 0.5 * uSub)');
+    expect(reliefFrag).not.toContain('uAccent');
   });
 
   it('matches every varying the vertex stage writes with one the fragment reads', () => {
@@ -94,7 +96,14 @@ describe('breath shader', () => {
 
 describe('blend', () => {
   it('composites relief alpha-over and breath as a crossfading replace', () => {
-    expect(blendFrag).toContain('col = mix(col, relief.rgb, relief.a * uW[3]);');
+    // The relief's opacity is its weight *squared*, gained 1.6 and clamped, so
+    // a faint terrain is a translucent texture over the ink and only a terrain
+    // that has actually taken the frame becomes a floor that occludes it.
+    expect(blendFrag).toContain('const float RELIEF_OPACITY = 1.6;');
+    expect(blendFrag).toContain(
+      'float reliefAlpha = min(uW[3] * uW[3] * RELIEF_OPACITY, 1.0);',
+    );
+    expect(blendFrag).toContain('col = mix(col, relief.rgb, relief.a * reliefAlpha);');
     expect(blendFrag).toContain('clamp(uW[4] / BREATH_FULL, 0.0, 1.0)');
   });
 

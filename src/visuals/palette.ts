@@ -36,6 +36,16 @@ export interface Palette {
   stops: [number, number, number][];
   bg: [number, number, number];
   accent: [number, number, number];
+  /**
+   * The colour of heat: what glows from inside the terrain.
+   *
+   * It is *not* on the ramp and it does not follow the palette's hue, which is
+   * the whole reason it exists. The accent is the complement, so on a metal
+   * palette — hue pulled toward red — the accent lands in the greens, and jade
+   * embers on a rust landscape read as alien rather than as fire. The ember is
+   * always warm: flame at warmth 1, blood at warmth 0.
+   */
+  ember: [number, number, number];
 }
 
 /** Violet/ice at warmth 0, amber/crimson at warmth 1. */
@@ -49,6 +59,20 @@ const HUE_SWING_DEG = 40;
 const BG_DARKEN = 0.6;
 const ACCENT_L = 0.8;
 const ACCENT_C = 0.18;
+/**
+ * The ember: flame at 32°, sliding to blood at 350° as the music goes cold.
+ *
+ * Only the *bottom* of the warmth range moves it. Above 0.4 a track is warm
+ * enough that its embers are ordinary fire, and sliding the hue further round
+ * with warmth would take it into the yellows, which is a sodium lamp rather
+ * than a coal. Below that it darkens toward the red end, so a cold, angry
+ * track glows like iron rather than like a hearth.
+ */
+const EMBER_L = 0.55;
+const EMBER_C = 0.19;
+const EMBER_HUE_HOT = 32;
+const EMBER_HUE_COLD = 350;
+const EMBER_WARM_AT = 0.4;
 
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
@@ -188,6 +212,7 @@ export function desaturate(palette: Palette, k: number): Palette {
     stops: palette.stops.map((s) => greyToward(s, k)),
     bg: greyToward(palette.bg, k),
     accent: greyToward(palette.accent, k),
+    ember: greyToward(palette.ember, k),
   };
   return greyed;
 }
@@ -214,10 +239,17 @@ function build(m: PaletteKey): Palette {
     return oklchToLinearRgb(clamp01(L), chroma, h);
   });
 
+  const warmth = clamp01(m.warmth);
+  const emberHue =
+    warmth >= EMBER_WARM_AT
+      ? EMBER_HUE_HOT
+      : lerpHue(EMBER_HUE_COLD, EMBER_HUE_HOT, warmth / EMBER_WARM_AT);
+
   const darkest = stops[0]!;
   return {
     stops,
     bg: [darkest[0] * BG_DARKEN, darkest[1] * BG_DARKEN, darkest[2] * BG_DARKEN],
     accent: oklchToLinearRgb(ACCENT_L, ACCENT_C, hue + 180),
+    ember: oklchToLinearRgb(EMBER_L, EMBER_C, emberHue),
   };
 }
