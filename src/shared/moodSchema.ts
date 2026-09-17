@@ -393,6 +393,18 @@ export function validateTrackAnalysis(x: unknown): Valid<TrackAnalysis> | Invali
     log,
   };
   if (typeof x['videoId'] === 'string') out.videoId = x['videoId'];
+  // What the analysis cost, when the record carries it. Optional rather than
+  // required: a record cached before v2.1 has none, and a cache that rejects
+  // its own old entries is a cache that re-analyzes every track once.
+  const u = x['usage'];
+  if (isRecord(u) && num(u['calls'], 0, Infinity)) {
+    out.usage = {
+      calls: u['calls'],
+      input_tokens: num(u['input_tokens'], 0, Infinity) ? u['input_tokens'] : 0,
+      output_tokens: num(u['output_tokens'], 0, Infinity) ? u['output_tokens'] : 0,
+      lastLatencyMs: num(u['lastLatencyMs'], 0, Infinity) ? u['lastLatencyMs'] : 0,
+    };
+  }
   return { ok: true, value: out };
 }
 

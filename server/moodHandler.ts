@@ -1,13 +1,13 @@
 /**
  * The one place a mood request is answered, wherever it arrives from.
  *
- * Both front doors — the Vercel function in `api/mood.ts` and the Vite dev
- * middleware — are thin: they turn their own runtime's request into a body and
- * their own runtime's response out of `{ status, json }`. Everything that is
- * actually a decision (is this payload real, what do we ask, what does the
- * answer mean, what do we say when the model is down) lives here, so the two
- * doors cannot drift apart and so it can all be tested against a fake client
- * with no HTTP and no key in sight.
+ * Both front doors — the Vite dev middleware in development and the Node
+ * server that serves the built app — are thin: they turn their own runtime's
+ * request into a body and their own runtime's response out of
+ * `{ status, json }`. Everything that is actually a decision (is this payload
+ * real, what do we ask, what does the answer mean, what do we say when the
+ * model is down) lives here, so the two doors cannot drift apart and so it can
+ * all be tested against a fake client with no HTTP and no key in sight.
  *
  * The key never leaves this module's caller: `createJevClient` is the only
  * thing that sees it, and nothing it throws is forwarded to the client.

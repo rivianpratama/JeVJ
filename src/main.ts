@@ -33,6 +33,7 @@ import { CueTimeline } from './timeline/timeline';
 import { createCaption } from './ui/caption';
 import { createCard } from './ui/card';
 import { createHud } from './ui/hud';
+import type { TokenUsage } from './shared/types';
 
 const root = document.querySelector<HTMLElement>('#ui');
 if (!root) throw new Error('JeVJ: #ui is missing from the document');
@@ -73,12 +74,18 @@ const hud = createHud(root, (ms) => {
 });
 hud.update({ latencyTrimMs });
 
+/** What this track's two passes cost, for the HUD's Jev row. */
+let usage: TokenUsage | null = null;
+
 const transport = createTransport({
   root,
   card,
   caption,
   timeline,
   onGraph: (g) => loop.start(g),
+  onAnalysis: (a) => {
+    usage = a.usage ?? null;
+  },
 });
 
 // Nothing else tells the grid a section ended, and the phrase count it keeps
@@ -87,7 +94,7 @@ const transport = createTransport({
 const feed = new MoodFeed({ onSectionChange: (now) => loop.markSectionChange(now) });
 // The mood layer, listening but not asking: the timeline already holds one
 // judgment per section of this track, written before it started playing.
-const moodLink = new MoodLink({ feed, live: false });
+const moodLink = new MoodLink({ feed });
 
 // And the visuals, on their own rAF but the same audio clock. Started here and
 // never stopped: before there is any audio it runs its idle mode, so the page
@@ -107,5 +114,15 @@ visuals.start();
 // rather than when a graph appears, so the overlay can describe an idle page —
 // which frame rate, which particle tier, which pixel ratio — before any audio
 // exists to describe.
-const tick = createHudTick({ loop, timeline, cues, moodLink, visuals, transport, hud, latencySec });
+const tick = createHudTick({
+  loop,
+  timeline,
+  cues,
+  moodLink,
+  visuals,
+  transport,
+  hud,
+  latencySec,
+  usage: () => usage,
+});
 setInterval(tick, HUD_INTERVAL_MS);

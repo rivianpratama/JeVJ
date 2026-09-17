@@ -247,6 +247,21 @@ export interface AnalysisLogEntry {
   json: string;
 }
 
+/**
+ * What the two passes cost, in the model's own accounting.
+ *
+ * Summed from the `usage` every `/api/mood` and `/api/transition` response
+ * carries, so it is what was billed rather than an estimate of what was sent.
+ * `lastLatencyMs` is the last call's round trip, which is the only latency the
+ * HUD has ever printed.
+ */
+export interface TokenUsage {
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  lastLatencyMs: number;
+}
+
 /** The whole pre-analysis of one track: what to draw, and how we got there. */
 export interface TrackAnalysis {
   videoId?: string;
@@ -256,4 +271,10 @@ export interface TrackAnalysis {
   transitions: AnalyzedTransition[];
   cues: Cue[];
   log: AnalysisLogEntry[];
+  /**
+   * What the analysis cost, when the caller was counting. Optional because a
+   * record cached before v2.1 does not carry one, and a cache that rejects its
+   * own old entries is a cache that re-analyzes every track once.
+   */
+  usage?: TokenUsage;
 }

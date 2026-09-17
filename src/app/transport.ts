@@ -23,6 +23,7 @@ import { toast } from '../ui/toast';
 import type { Caption } from '../ui/caption';
 import type { Card } from '../ui/card';
 import type { CueTimeline } from '../timeline/timeline';
+import type { TrackAnalysis } from '../shared/types';
 
 export interface TransportOptions {
   root: HTMLElement;
@@ -33,6 +34,8 @@ export interface TransportOptions {
   onGraph: (g: AudioGraph) => void;
   /** A new track is taking over: whatever the last one left behind is stale. */
   onTrackChange?: () => void;
+  /** The finished analysis record; the scrolling columns read it. */
+  onAnalysis?: (a: TrackAnalysis) => void;
 }
 
 export interface Transport {
@@ -77,6 +80,7 @@ export function createTransport(o: TransportOptions): Transport {
     ctx: () => ensureGraph().ctx,
     onProgress: (percent) => o.caption.progress(percent),
     onResolved: () => app.send('resolved'),
+    onAnalysis: (a) => o.onAnalysis?.(a),
   });
 
   const controls = createControls(o.root, {

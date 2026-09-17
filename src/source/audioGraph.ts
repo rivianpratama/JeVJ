@@ -8,10 +8,10 @@
  *   from inside a user gesture. Browsers start a context created any other way
  *   in the `suspended` state, and a suspended analyser returns silence
  *   forever.
- * - A tab-capture source is connected to the analyser *only*. The captured tab
- *   is already audible through its own iframe; routing it to `destination`
- *   would play it a second time, slightly delayed. File sources are the
- *   exception — nothing else is playing them.
+ * - There is exactly one source, and it is the page's own media element, so it
+ *   is connected to the analyser *and* to `destination`: nothing else is
+ *   playing it. v1's tab-capture source, which went to the analyser only
+ *   because the captured tab was already audible, is gone with the capture.
  * - The magnitudes `readFrame` hands out are in the same units as
  *   `analysis/fft.ts` produces. That is not automatic; see `MAGNITUDE_SCALE`.
  */

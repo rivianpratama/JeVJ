@@ -19,7 +19,7 @@ import { writeGridCues } from '../timeline/gridWriter';
 import { applyDetectorEvent } from '../timeline/detectorWriter';
 import type { AnalysisLoop } from './analysisLoop';
 import type { CueReader } from './cueReader';
-import type { Cue } from '../shared/types';
+import type { Cue, TokenUsage } from '../shared/types';
 import type { CueTimeline } from '../timeline/timeline';
 import type { Hud } from '../ui/hud';
 import type { MoodLink } from './moodLink';
@@ -45,6 +45,14 @@ export interface HudTickOptions {
   hud: Hud;
   /** How far ahead of the analysis the timeline is read, in seconds. */
   latencySec: () => number;
+  /**
+   * What this track's two Jev passes actually cost, once they have run.
+   *
+   * v2 spends its whole model budget before the track plays, so the HUD's Jev
+   * row is a fact about the *analysis* rather than a running count of calls
+   * made while you watch. Null until a track has been analyzed.
+   */
+  usage?: () => TokenUsage | null;
 }
 
 /**
@@ -80,13 +88,7 @@ export function createHudTick(o: HudTickOptions): () => void {
       return;
     }
 
-    const t = o.moodLink.update(
-      snap,
-      o.transport.positionSec(),
-      o.transport.durationSec(),
-      o.transport.playing(),
-      !document.hidden,
-    );
+    const t = o.moodLink.update(snap, o.transport.positionSec(), o.transport.durationSec());
 
     const now = snap.features.t;
     writeGridCues(o.timeline, o.loop.beatGrid(), now, CUE_HORIZON_SEC);
@@ -99,6 +101,8 @@ export function createHudTick(o: HudTickOptions): () => void {
 
     o.timeline.prune(now - CUE_HISTORY_SEC);
 
+    const usage = o.usage?.() ?? null;
+
     o.hud.update({
       ...hudRows(snap, {
         novelty: t.reading.novelty,
@@ -106,12 +110,16 @@ export function createHudTick(o: HudTickOptions): () => void {
         // The mood the renderer is drawing with, not Jev's raw last answer.
         mood: o.visuals.mood(),
         moodSrc: o.visuals.moodSource(),
-        jev: {
-          calls: t.stats.calls,
-          tokens: t.stats.tokens,
-          lastLatencyMs: t.stats.lastLatencyMs,
-          nextIn: t.nextIn,
-        },
+        ...(usage === null
+          ? {}
+          : {
+              jev: {
+                calls: usage.calls,
+                tokens: usage.input_tokens + usage.output_tokens,
+                lastLatencyMs: usage.lastLatencyMs,
+                nextIn: 0,
+              },
+            }),
       }),
       upcoming: upcomingRows(o.cues, now),
       // `fps` is wall-clock, and the only wall-clock number on the overlay:

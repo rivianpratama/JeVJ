@@ -1,8 +1,8 @@
 /**
  * The browser side of a download: one link in, one playable file out.
  *
- * v2 cannot analyse a YouTube iframe, so the server downloads the track and
- * serves it back. That is a job rather than a request — it takes seconds, and
+ * v2 analyses the audio itself, which means it has to have the audio: the
+ * server downloads the track and serves it back. That is a job rather than a request — it takes seconds, and
  * the page has a progress caption to fill while it runs — so this is the one
  * place that knows the job protocol: resolve the link, poll the job, hand back
  * something a `<video>` can load.

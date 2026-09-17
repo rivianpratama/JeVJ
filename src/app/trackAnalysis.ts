@@ -42,6 +42,7 @@ import type {
   MoodInput,
   MoodVector,
   TrackAnalysis,
+  TokenUsage,
   TransitionInput,
   TransitionVerdict,
 } from '../shared/types';
@@ -74,6 +75,16 @@ export interface TrackAnalysisDeps {
   sleep?: (ms: number) => Promise<void>;
   title?: string;
   videoId?: string;
+  /**
+   * Running totals, mutated in place by whoever owns the two callbacks above.
+   *
+   * It is on the deps rather than returned by them because only the thing that
+   * actually talks to the network sees a `usage` field, and the two callbacks
+   * hand back a mood and a list of verdicts. `httpDeps` allocates one and adds
+   * to it; a test that injects its own callbacks simply does not pass one, and
+   * the record comes out without a cost attached.
+   */
+  usage?: TokenUsage;
 }
 
 /**
@@ -163,6 +174,7 @@ export async function analyzeTrack(
     segments: offline.segments.map((s) => ({ start: s.start, end: s.end, input: s.input, mood: s.mood })),
     transitions,
     cues: [...tl.cues()],
+    ...(deps.usage === undefined ? {} : { usage: { ...deps.usage } }),
     log,
   };
   if (deps.videoId !== undefined) analysis.videoId = deps.videoId;
@@ -461,6 +473,9 @@ export function httpDeps(
   o: { fetchFn?: typeof fetch; title?: string; videoId?: string } = {},
 ): TrackAnalysisDeps {
   const fetchFn = o.fetchFn ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
+  // One object for the whole analysis, added to as the answers come back and
+  // copied into the record at the end. See `TrackAnalysisDeps.usage`.
+  const usage: TokenUsage = { calls: 0, input_tokens: 0, output_tokens: 0, lastLatencyMs: 0 };
 
   const post = async (url: string, body: unknown): Promise<unknown> => {
     const res = await fetchFn(url, {
@@ -469,10 +484,20 @@ export function httpDeps(
       body: JSON.stringify(body),
     });
     if (!res.ok) return null;
-    return (await res.json()) as unknown;
+    const json = (await res.json()) as unknown;
+    // Both routes answer with the same shape of accounting. A response that
+    // carries none is still a call, which is the number the HUD divides by.
+    const u = (json as { usage?: { input_tokens?: number; output_tokens?: number } } | null)?.usage;
+    const ms = (json as { latencyMs?: number } | null)?.latencyMs;
+    usage.calls += 1;
+    usage.input_tokens += Number(u?.input_tokens) || 0;
+    usage.output_tokens += Number(u?.output_tokens) || 0;
+    if (Number.isFinite(ms)) usage.lastLatencyMs = ms as number;
+    return json;
   };
 
   return {
+    usage,
     ...(o.title === undefined ? {} : { title: o.title }),
     ...(o.videoId === undefined ? {} : { videoId: o.videoId }),
     askJev: async (input) => {

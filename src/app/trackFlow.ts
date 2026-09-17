@@ -6,8 +6,8 @@
  * then let a sample of it play. A YouTube link costs a download first and
  * carries a picture at the end of it; a dropped file skips straight to the
  * decode and has nothing to show. Everything after that is identical, which is
- * why this is one module rather than two — v1's `fileFlow` was the file half of
- * it and the iframe was the other, and the two could never be compared.
+ * why this is one module rather than two — v1 had a file path and a captured-tab
+ * path that shared nothing, and the two could never be compared.
  *
  * Three things make it its own module rather than a function in `transport`.
  *
@@ -72,6 +72,14 @@ export interface TrackFlowOptions {
   onProgress: (percent: number) => void;
   /** The download is done and the analysis is starting. */
   onResolved?: () => void;
+  /**
+   * The finished record, cache hit or fresh analysis.
+   *
+   * It is not the same thing as `OpenedTrack`: that is what the *screen* needs
+   * to know, and this is the transcript — every question and every answer, with
+   * the track time each is about. The scrolling columns are its only reader.
+   */
+  onAnalysis?: (a: TrackAnalysis) => void;
   fetchFn?: typeof fetch;
   /** The two model callbacks. Injected so a test never reaches the network. */
   deps?: (o: { title?: string; videoId?: string }) => TrackAnalysisDeps;
@@ -229,6 +237,7 @@ export function createTrackFlow(o: TrackFlowOptions): TrackFlow {
       if (!current()) return null;
 
       cues = analysis.cues;
+      o.onAnalysis?.(analysis);
       return { video: true, durationSec: analysis.durationSec || media.durationSec };
     },
 
@@ -245,6 +254,7 @@ export function createTrackFlow(o: TrackFlowOptions): TrackFlow {
       if (!current()) return null;
 
       cues = analysis.cues;
+      o.onAnalysis?.(analysis);
       return { video: false, durationSec: analysis.durationSec };
     },
   };
