@@ -9,6 +9,12 @@ export interface HudData {
   /** A number once measured; a placeholder string before anything is known. */
   bpm?: number | string;
   beatConf?: number | string;
+  /**
+   * Analysis steps a second. A browser throttles `requestAnimationFrame` in a
+   * hidden or backgrounded tab, and a beat confidence read off two frames a
+   * second is not a fact about the music.
+   */
+  fps?: number;
   key?: string;
   mode?: string;
   tempo?: string;
@@ -81,6 +87,7 @@ export function createHud(root: HTMLElement, onTrim: (ms: number) => void): Hud 
 
     push('bpm', num(data.bpm, 1));
     push('beat', num(data.beatConf, 2));
+    push('fps', num(data.fps, 0));
     push('key', data.key);
     push('mode', data.mode);
     push('tempo', data.tempo);

@@ -164,6 +164,71 @@ export function kickPad(bpm: number, seconds: number, sr = 44100): Float32Array 
   return out;
 }
 
+/** The hat's burst: how long it rings, how loud, and the band it lives in. */
+const HAT_SECONDS = 0.04;
+/**
+ * Peak of one hat, against the kick's 0.9.
+ *
+ * Loud for a hi-hat, and deliberately so: the point of this fixture is that a
+ * hat *is* an event, so it must not be arguable that the detector missed it
+ * because it was inaudible. Even at this level the hat moves the wideband flux
+ * about a third as much as the kick does, because a kick is a huge amount of
+ * energy in a handful of bins and a hat is a modest amount spread over
+ * hundreds.
+ */
+const HAT_AMP = 0.4;
+/**
+ * The band the hat's noise sits in. Above `CHROMA_MIN_HZ` and below the 8 kHz
+ * where `FeatureExtractor.flux` stops looking, so the hat is inside the
+ * measurement rather than an argument about its edges.
+ */
+const HAT_LO_HZ = 3000;
+const HAT_HI_HZ = 8000;
+/** How many sines the hat's noise is made of — see `amNoise` for the trick. */
+const HAT_PARTIALS = 40;
+
+/**
+ * `kickPad` with a hi-hat on every off-beat: four-to-the-floor with the
+ * eighth-note that makes it a groove rather than a pulse.
+ *
+ * `kickPad` is a beat and nothing else, and a detector tested only against it
+ * is never asked the question this fixture asks: can it hear a hit that is not
+ * the kick? Everything a rhythm reading is made of depends on that answer.
+ * Syncopation is the share of onset energy away from the beat, and on a signal
+ * whose only detected events are kicks it is 0 by construction however busy
+ * the music is; regularity is the spread of the intervals between onsets, and
+ * with the hats in it is measuring a 0.234 s pulse rather than a 0.469 s one.
+ *
+ * The hat is a decaying burst of forty sines scattered over 3-8 kHz with fixed
+ * random phases — deterministic, and it puts the energy where a hi-hat puts it
+ * without a filter. As everywhere else here, every hat is the *same* hat.
+ */
+export function edmLoop(bpm: number, seconds: number, sr = 44100): Float32Array {
+  const out = kickPad(bpm, seconds, sr);
+  const span = Math.round(HAT_SECONDS * sr);
+  const rand = mulberry32(0x0ffbea7);
+
+  const hat = new Float32Array(span);
+  for (let k = 0; k < HAT_PARTIALS; k++) {
+    const hz = HAT_LO_HZ + (HAT_HI_HZ - HAT_LO_HZ) * rand();
+    const phase = rand() * 2 * Math.PI;
+    for (let i = 0; i < span; i++) hat[i] = hat[i]! + Math.sin((2 * Math.PI * hz * i) / sr + phase);
+  }
+  normalisePeak(hat, HAT_AMP);
+  for (let i = 0; i < span; i++) hat[i] = hat[i]! * Math.exp((-5 * i) / span);
+
+  const period = (60 / bpm) * sr;
+  for (let beat = 0; (beat + 0.5) * period < out.length; beat++) {
+    const start = Math.round((beat + 0.5) * period);
+    for (let i = 0; i < span; i++) {
+      const at = start + i;
+      if (at >= out.length) break;
+      out[at] = out[at]! + hat[i]!;
+    }
+  }
+  return out;
+}
+
 /**
  * `signal` through the same extractor the live graph feeds: one frame every
  * `hop` samples, `t = frameIndex * hop / sr`.

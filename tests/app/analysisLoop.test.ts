@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AnalysisLoop } from '../../src/app/analysisLoop';
 import { BeatGrid } from '../../src/analysis/grid';
+import { magnitudesFromDecibels } from '../../src/source/audioGraph';
 import type { AudioGraph } from '../../src/source/audioGraph';
-import { clickTrack, windowsFrom } from '../helpers/synth';
+import { clickTrack, edmLoop, windowsFrom } from '../helpers/synth';
 
 /** A metronome that accents every third beat. */
 function waltz(bpm: number, seconds: number, sr: number): Float32Array {
@@ -15,6 +16,40 @@ const FFT = 4096;
 /** An `AudioGraph` that plays a pre-rendered signal, one frame per read. */
 function fakeGraph(signal: Float32Array): AudioGraph {
   const frames = windowsFrom(signal, FS, FFT);
+  let i = 0;
+  return {
+    ctx: { sampleRate: FS } as AudioContext,
+    analyser: { fftSize: FFT } as AnalyserNode,
+    connectSource: () => {},
+    disconnectSource: () => {},
+    readFrame: () => frames[Math.min(i++, frames.length - 1)]!,
+  };
+}
+
+/** What `createAudioGraph` sets on its `AnalyserNode`. */
+const MIN_DB = -100;
+const MAX_DB = -10;
+
+/**
+ * The same signal as the *live* graph delivers it.
+ *
+ * `AnalyserNode` divides its spectrum by `fftSize` and reports decibels
+ * clamped to the analyser's range; `fftMagnitudes` normalizes by nothing. So
+ * this takes the test fixture's magnitudes the whole way down that path and
+ * back up through the conversion `AudioGraph.readFrame` actually uses, which
+ * is the only way a Node test can hold the live scale to the offline one.
+ */
+function analyserGraph(signal: Float32Array): AudioGraph {
+  const frames = windowsFrom(signal, FS, FFT).map((w) => {
+    const db = new Float32Array(w.mags.length);
+    for (let i = 0; i < w.mags.length; i++) {
+      const level = 20 * Math.log10(Math.max(w.mags[i]! / FFT, 1e-12));
+      db[i] = Math.min(MAX_DB, Math.max(MIN_DB, level));
+    }
+    const mags = new Float32Array(db.length);
+    magnitudesFromDecibels(db, mags);
+    return { mags, time: w.time, t: w.t };
+  });
   let i = 0;
   return {
     ctx: { sampleRate: FS } as AudioContext,
@@ -199,6 +234,99 @@ describe('AnalysisLoop', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  /**
+   * The HUD's `fps` row.
+   *
+   * `requestAnimationFrame` does not run at 60 Hz in a tab the browser has
+   * backgrounded, or in a pane the desktop app has hidden: measured in Chrome
+   * against a hidden pane it fired 1.3 times a second. The pipeline is honest
+   * about this — every frame carries the audio clock, so a skipped frame is
+   * simply audio nobody looked at — but the *reader* is then looking at 93 ms
+   * of every 770, and no amount of correctness downstream recovers a tempo
+   * from that. So the rate is measured and printed, and a beat confidence of
+   * 0.2 next to `fps 1` explains itself.
+   */
+  describe('step rate', () => {
+    it('counts the steps of the last second', () => {
+      let now = 0;
+      const loop = new AnalysisLoop({ now: () => now });
+      loop.start(fakeGraph(clickTrack(120, 4, FS)));
+
+      expect(loop.stepsPerSec()).toBe(0);
+
+      for (let i = 0; i < 60; i++) {
+        now = i * (1000 / 60);
+        loop.step();
+      }
+      expect(loop.stepsPerSec()).toBe(60);
+
+      // A second of nothing — a hidden tab — and the row says so.
+      now += 1000;
+      expect(loop.stepsPerSec()).toBe(0);
+    });
+
+    it('forgets the steps that have scrolled out of the window', () => {
+      let now = 0;
+      const loop = new AnalysisLoop({ now: () => now });
+      loop.start(fakeGraph(clickTrack(120, 8, FS)));
+
+      for (let i = 0; i < 300; i++) {
+        now = i * (1000 / 60);
+        loop.step();
+      }
+      // Five seconds of stepping, one second of it counted.
+      expect(loop.stepsPerSec()).toBeGreaterThanOrEqual(58);
+      expect(loop.stepsPerSec()).toBeLessThanOrEqual(61);
+    });
+
+    it('counts a throttled loop as the handful of steps it is', () => {
+      let now = 0;
+      const loop = new AnalysisLoop({ now: () => now });
+      loop.start(fakeGraph(clickTrack(120, 8, FS)));
+
+      for (let i = 0; i < 20; i++) {
+        now = i * 770;
+        loop.step();
+      }
+      expect(loop.stepsPerSec()).toBeLessThanOrEqual(2);
+    });
+  });
+
+  /**
+   * The live path and the offline one, on the same audio, must agree.
+   *
+   * They did not. Everything the analysis does with a spectrum is a ratio bar
+   * one number — the onset detector's absolute floor, which is what stops
+   * silence from triggering — and the live graph was handing over magnitudes
+   * five thousand times smaller than the offline path's, so the whole
+   * detection function sat below that floor. Onsets fired on whichever frames
+   * of a kick happened to clear an absolute bar, and the browser read
+   * `regular 0.00` on a loop the same file read 1.00 on when swept. Measured
+   * in Chrome after the fix, on a 30 s render of this same fixture: `bpm
+   * 127.7 beat 1.00 regular 1.00 meter duple`.
+   */
+  it('reads the same groove through the analyser scale as through the fft', () => {
+    const signal = edmLoop(128, 20, FS);
+    const steps = Math.floor((20 * FS) / 735);
+
+    const offline = new AnalysisLoop();
+    offline.start(fakeGraph(signal));
+    for (let i = 0; i < steps; i++) offline.step();
+
+    const live = new AnalysisLoop();
+    live.start(analyserGraph(signal));
+    for (let i = 0; i < steps; i++) live.step();
+
+    const a = offline.latest()!;
+    const b = live.latest()!;
+    expect(b.grid.bpm).toBeCloseTo(a.grid.bpm, 1);
+    expect(b.grid.confidence).toBeGreaterThan(0.5);
+    expect(b.rhythm.regular).toBeGreaterThanOrEqual(0.8);
+    expect(b.rhythm.onsetsPerSec).toBeGreaterThan(3);
+    expect(b.rhythm.meter).toBe('duple');
+    expect(b.speech).toBeLessThanOrEqual(0.25);
   });
 
   it('stops reading once stopped', () => {

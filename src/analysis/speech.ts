@@ -8,6 +8,15 @@
  * crossing rate swing about. Four weak cues, combined, are worth more than any
  * one of them.
  *
+ * Except that the first cue and the second are not independent, and pretending
+ * they were is what made a 128 BPM instrumental score 0.46. A beat is a pulse
+ * train, a pulse train has harmonics, and 128 BPM is 2.13 Hz whose second and
+ * third harmonics are 4.3 and 6.4 Hz — inside the syllabic band, by
+ * arithmetic, on every dance record ever made. So the detector is told where
+ * the beat is and takes those harmonics out of the measurement before it makes
+ * it, and discounts what is left in proportion to how sure of the beat the
+ * grid is. See `score`.
+ *
  * The envelope modulation spectrum is the main one. The rms history is
  * resampled onto a fixed 50 Hz grid so the answer does not depend on the
  * display rate, mean-removed so the dc level is not the loudest thing in it,
@@ -63,6 +72,32 @@ const SHORT_WINDOW_SEC = 2;
  */
 const ACTIVE_SHARE = 0.1;
 
+/**
+ * Beat confidence at which the beat's own harmonics are notched out of the
+ * modulation spectrum, and how wide each notch is.
+ *
+ * Half sure is the point where the period is worth acting on: below it the
+ * grid is as likely to be notching a frequency the music does not have. The
+ * width is a little over the 0.25 Hz the 200-point transform resolves, so a
+ * harmonic that has drifted a bin either way — a beat that is not exactly
+ * where the grid put it, which is every real beat — is still inside it.
+ */
+const NOTCH_CONFIDENCE = 0.5;
+const NOTCH_HALF_WIDTH_HZ = 0.35;
+/** The highest harmonic of the beat that is notched out. */
+const NOTCH_HARMONICS = 4;
+/**
+ * How much of the modulation cue a fully confident beat takes away.
+ *
+ * The notch removes the beat's own lines; this covers what a notch cannot —
+ * the swing, the shuffle and the sixteenths that smear a real groove's
+ * modulation across the whole band. Music the grid is certain about keeps
+ * three tenths of the cue, which is enough for a spoken word over a loop to
+ * still out-score the loop, and not enough for the loop to reach the score a
+ * voice does.
+ */
+const BEAT_DISCOUNT = 0.7;
+
 /** How the four cues are weighted. */
 const W_MODULATION = 0.4;
 const W_NO_BEAT = 0.25;
@@ -102,7 +137,11 @@ export class SpeechDetector {
 
   private readonly grid = new Float64Array(ENVELOPE_POINTS);
   private cachedAt = -Infinity;
-  private cachedCues = 0;
+  /** The modulation cue, and the beat that was notched out of it. */
+  private cachedMod = 0;
+  private cachedNotchHz = 0;
+  /** The two cues that do not depend on the beat at all. */
+  private cachedRest = 0;
 
   push(rms: number, t: number, f: FrameFeatures): void {
     this.rmsHistory.push(t, Math.max(0, rms));
@@ -114,21 +153,41 @@ export class SpeechDetector {
 
   /**
    * 0..1. `beatConfidence` is the beat grid's — music that the tracker is sure
-   * of is music, whatever its envelope looks like.
+   * of is music, whatever its envelope looks like — and `beatHz` is the beat
+   * it is that sure of, in beats per second, or 0 when there is no grid to ask.
+   *
+   * Told both, the detector stops competing with the music: the beat and its
+   * harmonics come out of the modulation spectrum, and what remains is
+   * discounted by how sure of the beat the grid is. Told neither, it behaves
+   * exactly as it did — a detector with no beat to be told about is the case
+   * it was always right about.
    */
-  score(beatConfidence: number): number {
+  score(beatConfidence: number, beatHz = 0): number {
     if (!this.any) return 0;
+    const confidence = clamp(beatConfidence, 0, 1);
+    const notchHz = confidence >= NOTCH_CONFIDENCE && beatHz > 0 ? beatHz : 0;
 
-    if (this.lastT - this.cachedAt >= CACHE_SEC) {
+    if (this.lastT - this.cachedAt >= CACHE_SEC || notchHz !== this.cachedNotchHz) {
       this.cachedAt = this.lastT;
-      this.cachedCues =
-        W_MODULATION * this.modulationRatio() + W_CENTROID * this.centroidMid() + W_ZCR * this.zcrVariation();
+      this.cachedNotchHz = notchHz;
+      this.cachedMod = this.modulationRatio(notchHz);
+      this.cachedRest = W_CENTROID * this.centroidMid() + W_ZCR * this.zcrVariation();
     }
-    return clamp(this.cachedCues + W_NO_BEAT * (1 - clamp(beatConfidence, 0, 1)), 0, 1);
+    return clamp(
+      W_MODULATION * this.cachedMod * (1 - BEAT_DISCOUNT * confidence) +
+        this.cachedRest +
+        W_NO_BEAT * (1 - confidence),
+      0,
+      1,
+    );
   }
 
-  /** Share of the envelope's modulation energy that sits at syllable rate. */
-  private modulationRatio(): number {
+  /**
+   * Share of the envelope's modulation energy that sits at syllable rate,
+   * with the bins around `notchHz` and its harmonics left out of both the
+   * share and the total. `notchHz` of 0 notches nothing.
+   */
+  private modulationRatio(notchHz: number): number {
     const grid = this.resample();
     if (grid === null) return 0;
 
@@ -145,6 +204,7 @@ export class SpeechDetector {
     let syllable = 0;
     let all = 0;
     for (let k = bandLo; k <= bandHi; k++) {
+      if (isBeatHarmonic(k * perBin, notchHz)) continue;
       let re = 0;
       let im = 0;
       for (let n = 0; n < ENVELOPE_POINTS; n++) {
@@ -248,6 +308,18 @@ export class SpeechDetector {
     const loudest = this.rmsHistory.max(from, this.lastT);
     return Number.isFinite(loudest) ? loudest * ACTIVE_SHARE : 0;
   }
+}
+
+/**
+ * Whether `hz` is within a notch of the beat or one of its first few
+ * harmonics. False for every frequency when `beatHz` is 0.
+ */
+function isBeatHarmonic(hz: number, beatHz: number): boolean {
+  if (!(beatHz > 0)) return false;
+  for (let n = 1; n <= NOTCH_HARMONICS; n++) {
+    if (Math.abs(hz - n * beatHz) <= NOTCH_HALF_WIDTH_HZ) return true;
+  }
+  return false;
 }
 
 function clamp(v: number, lo: number, hi: number): number {

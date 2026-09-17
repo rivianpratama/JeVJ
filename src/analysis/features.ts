@@ -39,8 +39,16 @@ const BAND_ATTACK = 0.6;
 const BAND_RELEASE = 0.12;
 
 const CENTROID_MIN_HZ = 20;
-const NOISE_LO_HZ = 60;
-const NOISE_HI_HZ = 8000;
+/**
+ * The band `flux` and `flatness` average over. Exported because `flux` is a
+ * *mean per bin* across it, so anything that adds another measurement to flux
+ * has to divide by the same width or the sum is two different units. See
+ * `LOW_IN_FLUX_UNITS` in `onset.ts`.
+ */
+export const FLUX_LO_HZ = 60;
+export const FLUX_HI_HZ = 8000;
+const NOISE_LO_HZ = FLUX_LO_HZ;
+const NOISE_HI_HZ = FLUX_HI_HZ;
 const CHROMA_MIN_HZ = 60;
 const ROLLOFF_FRACTION = 0.95;
 /** Keeps log(0) out of the flatness geometric mean. */

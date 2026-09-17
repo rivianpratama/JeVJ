@@ -17,11 +17,12 @@
  *   One missed onset doubles one interval, and that must not turn a machine
  *   into a rubato player.
  * - Meter is decided by where the accents fall. Two accumulators collect onset
- *   strength by beat-position-modulo-3 and modulo-4; whichever hypothesis has
- *   one position standing further above its siblings is the one the music is
- *   counted in. That answer is debounced: the grid rebuilds its downbeat from
- *   scratch every time the bar length moves, so a hypothesis has to hold for a
- *   bar before it is published.
+ *   strength by beat-position-modulo-3 and modulo-4; triple has to stand
+ *   clearly above duple to be believed, and everything else — including music
+ *   with no accent pattern at all, which is what four-to-the-floor is — is
+ *   counted in two. That answer is debounced: the grid rebuilds its downbeat
+ *   from scratch every time the bar length moves, so a hypothesis has to hold
+ *   for a bar before it is published.
  *
  * Pure: times come from the caller's audio clock and nothing here touches the
  * DOM.
@@ -53,7 +54,18 @@ const IRREGULAR_SCALE = 0.2;
 
 /** Beats of evidence before the meter is worth naming. */
 const MIN_METER_BEATS = 8;
-/** Two hypotheses this close are not telling us anything. */
+/**
+ * How far triple has to stand above duple before the music is counted in three.
+ *
+ * Asymmetric on purpose. A four-to-the-floor kick is the same strength on every
+ * beat, so *neither* accumulator finds a dominant position and the two scores
+ * are both ~0 — and the tracker used to answer `unclear` forever on the most
+ * common arrangement in dance music. Absence of a triple accent is not absence
+ * of a meter: with a beat the grid believes and nothing saying three, two is
+ * the answer, and `unclear` is kept for the case that really is unclear, which
+ * is not yet having a beat worth counting against at all (see
+ * `setBeatEvidence`).
+ */
 const METER_DECIDE_MARGIN = 0.1;
 /** What last beat's accent evidence is worth once another beat has gone by. */
 const METER_DECAY = 0.99;
@@ -75,6 +87,8 @@ export class RhythmTracker {
   private readonly ts = new Float64Array(CAPACITY);
   private readonly strengths = new Float64Array(CAPACITY);
   private readonly phases = new Float64Array(CAPACITY);
+  /** 1 where the phase stored beside it came from a beat worth believing. */
+  private readonly believed = new Uint8Array(CAPACITY);
   private head = 0;
   private stored = 0;
 
@@ -85,13 +99,14 @@ export class RhythmTracker {
   private prevPhase = -1;
 
   /**
-   * Whether the phases coming in are worth counting a meter from. On by
-   * default — a tracker driven on its own has no reason to distrust its
-   * caller — and turned off by the analysis loop until the tempo is measured,
-   * because until then the grid is free-running on a default 120 BPM and its
-   * phase wraps are fiction.
+   * Whether the phases coming in describe a real beat. On by default — a
+   * tracker driven on its own has no reason to distrust its caller — and
+   * turned off by the analysis loop until the tempo is measured, because until
+   * then the grid has no beat at all: `BeatGrid.phase()` answers 0 to every
+   * question it is asked before its first tempo, so every onset in that stretch
+   * looks like it landed exactly on the beat.
    */
-  private meterEvidence = true;
+  private beatEvidence = true;
 
   /** The answer `meter()` gives, the one competing with it, and its run. */
   private published: Meter = 'unclear';
@@ -127,13 +142,20 @@ export class RhythmTracker {
   /**
    * Whether the beat these phases come from is real.
    *
-   * Only the meter is gated. Syncopation, regularity and the onset counts keep
-   * working throughout: they are measured against phases and wall times that
-   * are no worse for the beat being a guess, whereas a bar counted off a
-   * free-running grid is an accent pattern read out of nothing.
+   * Everything measured *against the beat* is gated on this: the meter, which
+   * is an accent pattern read out of nothing while the grid is guessing, and
+   * syncopation, which is where an onset sat inside its beat. Regularity and
+   * the onset counts are not — they are measured from the times the onsets
+   * arrived, which are no worse for the beat being a guess.
+   *
+   * The gate is per onset rather than global, because the eight seconds
+   * syncopation looks back over outlive the moment the tempo locks: an onset
+   * stored with a phase of 0 because there was no grid yet would go on saying
+   * "dead on the beat" for eight seconds after there was one, which is exactly
+   * how a track with a hat on every off-beat came to read `sync 0.08`.
    */
-  setMeterEvidence(enabled: boolean): void {
-    this.meterEvidence = enabled;
+  setBeatEvidence(enabled: boolean): void {
+    this.beatEvidence = enabled;
   }
 
   /** One onset, with the grid's phase at the moment it sounded. */
@@ -143,17 +165,24 @@ export class RhythmTracker {
     this.ts[this.head] = t;
     this.strengths[this.head] = strength;
     this.phases[this.head] = wrap(phase);
+    this.believed[this.head] = this.beatEvidence ? 1 : 0;
     this.head = (this.head + 1) % CAPACITY;
     if (this.stored < CAPACITY) this.stored += 1;
 
-    if (this.meterEvidence) {
+    if (this.beatEvidence) {
       this.acc3[this.beats % 3] = this.acc3[this.beats % 3]! + strength;
       this.acc4[this.beats % 4] = this.acc4[this.beats % 4]! + strength;
     }
     this.onsets += 1;
   }
 
-  /** 0 when every onset is on a beat, 1 when every onset is between them. */
+  /**
+   * 0 when every onset is on a beat, 1 when every onset is between them.
+   *
+   * Only onsets whose phase was read off a believed beat count; see
+   * `setBeatEvidence`. 0 while none of them were, which is the honest answer:
+   * without a beat there is nothing to be off.
+   */
   syncopation(): number {
     if (this.syncAt === this.onsets) return this.syncValue;
     this.syncAt = this.onsets;
@@ -162,6 +191,7 @@ export class RhythmTracker {
     let off = 0;
     let all = 0;
     for (let i = this.indexFrom(from); i < this.stored; i++) {
+      if (this.believedAt(i) === 0) continue;
       const s = this.strengthAt(i);
       all += s;
       off += s * offBeatWeight(this.phaseAt(i));
@@ -234,7 +264,7 @@ export class RhythmTracker {
   /** A phase that has gone backwards is a beat that has gone by. */
   private advance(phase: number): void {
     const p = wrap(phase);
-    if (this.meterEvidence && this.prevPhase >= 0 && p < this.prevPhase) {
+    if (this.beatEvidence && this.prevPhase >= 0 && p < this.prevPhase) {
       this.beats += 1;
       for (let i = 0; i < 3; i++) this.acc3[i] = this.acc3[i]! * METER_DECAY;
       for (let i = 0; i < 4; i++) this.acc4[i] = this.acc4[i]! * METER_DECAY;
@@ -262,12 +292,17 @@ export class RhythmTracker {
     if (raw !== this.published && this.candidateBeats >= METER_HOLD_BEATS) this.published = raw;
   }
 
-  /** What this beat's accumulators say, before any loyalty to the last answer. */
+  /**
+   * What this beat's accumulators say, before any loyalty to the last answer.
+   *
+   * Triple has to win; duple is what is left. See `METER_DECIDE_MARGIN` — and
+   * note that this is only ever reached with a beat the caller believes, so
+   * "nothing says three" really does mean two rather than "no idea".
+   */
   private rawMeter(): Meter {
     const triple = dominance(this.acc3);
     const duple = dominance(this.acc4);
-    if (Math.abs(triple - duple) <= METER_DECIDE_MARGIN) return 'unclear';
-    return triple > duple ? 'triple' : 'duple';
+    return triple - duple > METER_DECIDE_MARGIN ? 'triple' : 'duple';
   }
 
   private countIn(from: number, to: number): number {
@@ -311,6 +346,10 @@ export class RhythmTracker {
 
   private phaseAt(i: number): number {
     return this.phases[this.slot(i)]!;
+  }
+
+  private believedAt(i: number): number {
+    return this.believed[this.slot(i)]!;
   }
 }
 

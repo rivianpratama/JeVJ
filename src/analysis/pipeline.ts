@@ -188,7 +188,7 @@ export class AnalysisPipeline {
     // The rhythm tracker counts beats from phase wraps, so it has to see every
     // frame, not only the ones an onset landed on — but those wraps are only
     // the music's beats once the tempo is measured and believed.
-    this.rhythm.setMeterEvidence(
+    this.rhythm.setBeatEvidence(
       this.tempo !== null && this.tempo.confidence >= METER_EVIDENCE_CONFIDENCE,
     );
     this.rhythm.tick(phase);
@@ -240,7 +240,10 @@ export class AnalysisPipeline {
         sub: this.timbre.subWeight(),
         centroidSlope: this.timbre.centroidSlope(),
       },
-      speech: this.speech.score(grid.confidence),
+      // The beat as well as how sure of it we are: a pulse train's harmonics
+      // sit in the syllabic band, and the detector can only take them out of
+      // the measurement if it is told where they are.
+      speech: this.speech.score(grid.confidence, grid.period > 0 ? 1 / grid.period : 0),
       drop: this.drop,
     };
     return this.snapshot;

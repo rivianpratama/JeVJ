@@ -28,7 +28,8 @@
  * clock in `FrameFeatures.t`.
  */
 
-import type { FrameFeatures } from '../shared/types';
+import { FLUX_HI_HZ, FLUX_LO_HZ } from './features';
+import { BAND_EDGES_HZ, type FrameFeatures } from '../shared/types';
 import { Ring } from './ring';
 
 export interface OnsetOptions {
@@ -46,7 +47,39 @@ const DEFAULT_HISTORY = 43;
 const DEFAULT_RATIO = 1.5;
 const DEFAULT_MIN_GAP = 0.05;
 
-/** Weight on the low-band rise, relative to full-spectrum flux. */
+/**
+ * Turns a rise in the low band *means* into the units `flux` is in.
+ *
+ * `flux` is the summed positive rise across 60 Hz - 8 kHz divided by the
+ * number of bins in it; `bandsRaw[0]` and `bandsRaw[1]` are means over the
+ * bins of 20-60 Hz and 60-130 Hz. Adding one to the other unscaled adds a mean
+ * over ten bins to a mean over seven hundred, and the low term wins by the
+ * ratio between them whatever the music is doing: measured on `kickPad`, a
+ * kick's flux is 1.0 and its raw low rise is 123 — a factor of sixty — so the
+ * detection function stops being "how much did the spectrum gain" and becomes
+ * "how much bass arrived".
+ *
+ * That is what hid the hats. `PEAK_SHARE` asks a hit to stand within an eighth
+ * of the loudest frame in the window, and on any track with a kick in it the
+ * loudest frame was sixty times what a full-band event could reach, so
+ * everything that was not a kick was gated out: a hi-hat at 45% of the kick's
+ * amplitude measured 2% of its detection value. `sync` then read 0 on music
+ * that is half off-beat, and `regular` measured the quarter-note pulse of a
+ * track whose events are eighths.
+ *
+ * The conversion is the ratio of the two spans in Hz, which is the ratio of
+ * their bin counts at any fft size or sample rate, so this is one constant and
+ * not a geometry the detector has to be told about.
+ */
+const LOW_IN_FLUX_UNITS = (BAND_EDGES_HZ[2]! - BAND_EDGES_HZ[0]!) / (FLUX_HI_HZ - FLUX_LO_HZ);
+/**
+ * Weight on the low-band rise, relative to full-spectrum flux, once that rise
+ * is in flux's units.
+ *
+ * A kick is still the biggest thing in the detection function — which is what
+ * the tempo estimator locks onto — but by about four to one over a hi-hat
+ * rather than by fifty to one. Measured on `edmLoop`: kick 2.6, hat 0.73.
+ */
 const LOW_WEIGHT = 0.5;
 /** Added to the threshold so silence, whose median is 0, cannot trigger. */
 const ABSOLUTE_FLOOR = 0.01;
@@ -152,7 +185,7 @@ export class OnsetDetector {
     this.prevLow1 = low1;
     this.hasPrevBands = true;
 
-    const low = LOW_WEIGHT * lowRise;
+    const low = LOW_WEIGHT * LOW_IN_FLUX_UNITS * lowRise;
     const df = f.flux + low;
     this.record(f.t, df);
 

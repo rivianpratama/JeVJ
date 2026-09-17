@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AnalysisPipeline } from '../../src/analysis/pipeline';
 import { RhythmTracker } from '../../src/analysis/rhythm';
-import { framesFrom, kickPad, mulberry32 } from '../helpers/synth';
+import { edmLoop, framesFrom, kickPad, mulberry32 } from '../helpers/synth';
 
 /** 120 BPM: one beat every half second, four beats to the bar. */
 const PERIOD = 0.5;
@@ -25,7 +25,7 @@ function run(
   meterEvidence = true,
 ): RhythmTracker {
   const tracker = new RhythmTracker();
-  tracker.setMeterEvidence(meterEvidence);
+  tracker.setBeatEvidence(meterEvidence);
   const sorted = [...onsets].sort((a, b) => a.t - b.t);
   let next = 0;
 
@@ -125,8 +125,15 @@ describe('RhythmTracker meter', () => {
     expect(tracker.onsetsPerSec(17.5)).toBeGreaterThan(1.8);
   });
 
-  it('will not guess from flat onsets, or from none', () => {
-    expect(run(onBeats(36), 18).meter()).toBe('unclear');
+  /**
+   * Flat onsets used to read `unclear`, on the reasoning that nothing had been
+   * proved. But nothing being proved about *three* is not nothing: a steady
+   * unaccented pulse the grid believes is four-to-the-floor, which is duple,
+   * and the old answer left every house track in the world counting in no
+   * meter at all. `unclear` now means there is no beat to count against yet.
+   */
+  it('counts flat onsets in two, and says nothing before it has heard any', () => {
+    expect(run(onBeats(36), 18).meter()).toBe('duple');
     expect(new RhythmTracker().meter()).toBe('unclear');
   });
 });
@@ -240,5 +247,63 @@ describe('rhythm through the analysis pipeline', () => {
     // And not many more than the beats themselves: an onset on every pad
     // wobble is what made `regular` read zero.
     expect(onsets.filter((t) => t <= COVERED_SEC).length).toBeLessThanOrEqual(20);
+  });
+});
+
+/**
+ * And the same chain against a groove rather than a pulse.
+ *
+ * `kickPad` above can only ever answer "did you hear the kick?". This asks the
+ * question the HUD was wrong about on a real 128 BPM EDM track: a hi-hat on
+ * every off-beat is half the events in the music, and if the detector cannot
+ * hear it then `sync` is 0 by construction, `regular` is measuring the wrong
+ * pulse, and `onsetsPerSec` is half what the listener is counting.
+ */
+describe('rhythm through the analysis pipeline, with off-beat hats', () => {
+  const FS = 44100;
+  const BPM = 128;
+  const BEAT = 60 / BPM;
+  /** Where the assertions start: the tempo is measured and locked by 8 s. */
+  const SETTLED_SEC = 8;
+
+  const snapshots = (() => {
+    const pipeline = new AnalysisPipeline();
+    const out: Array<ReturnType<AnalysisPipeline['step']>> = [];
+    for (const f of framesFrom(edmLoop(BPM, 20, FS), FS)) out.push(pipeline.step(f));
+    return out;
+  })();
+
+  const settled = snapshots.filter((s) => s.features.t >= SETTLED_SEC);
+
+  it('locks the tempo it is given', () => {
+    for (const s of settled) {
+      expect(s.grid.bpm).toBeGreaterThan(BPM - 3);
+      expect(s.grid.bpm).toBeLessThan(BPM + 3);
+    }
+  });
+
+  it('hears both the kick and the hat, so the pulse is the eighth', () => {
+    // Two events a beat: 4.3 a second at 128 BPM. Well under that means the
+    // hats were thrown away; well over means the pad is being heard as well.
+    for (const s of settled) {
+      expect(s.rhythm.onsetsPerSec).toBeGreaterThan(1.6 / BEAT);
+      expect(s.rhythm.onsetsPerSec).toBeLessThan(2.6 / BEAT);
+    }
+  });
+
+  it('reads the alternating kick and hat as regular', () => {
+    for (const s of settled) expect(s.rhythm.regular).toBeGreaterThanOrEqual(0.8);
+  });
+
+  it('reads the off-beat hats as moderate syncopation', () => {
+    for (const s of settled) {
+      expect(s.rhythm.sync).toBeGreaterThanOrEqual(0.2);
+      expect(s.rhythm.sync).toBeLessThanOrEqual(0.6);
+    }
+  });
+
+  it('settles on a duple meter by sixteen seconds', () => {
+    const at16 = snapshots.filter((s) => s.features.t >= 16);
+    for (const s of at16) expect(s.rhythm.meter).toBe('duple');
   });
 });

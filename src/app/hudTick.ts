@@ -88,6 +88,11 @@ export function createHudTick(o: HudTickOptions): () => void {
         },
       }),
       upcoming: upcomingRows(o.cues, now),
+      // Wall-clock, and the only wall-clock number on the overlay: whether the
+      // loop above is being given frames at all. A hidden tab runs it at one
+      // or two a second, and every reading below is then taken off a twentieth
+      // of the music.
+      fps: o.loop.stepsPerSec(),
     });
   };
 }
