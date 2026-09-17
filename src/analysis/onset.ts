@@ -16,6 +16,13 @@
  *   onset is a local maximum that stands out from the *median* of the last
  *   second — the median, not the mean, so one big hit does not raise the bar
  *   for the hits around it.
+ * - And it is relative to the *hits*, not only to the floor. The median of a
+ *   second of music is a floor statistic: at 128 BPM only four frames in forty
+ *   are a kick, so the median sits in the gap between them however loud the
+ *   kicks are. A bar set at some multiple of that floor is a bar set at the
+ *   noise, and anything still sounding — a held pad, two partials beating —
+ *   clears it many times a second. So a hit must also stand within reach of
+ *   the biggest thing the same window saw. See PEAK_SHARE.
  *
  * Pure: no DOM, no Web Audio, and every time it handles comes from the audio
  * clock in `FrameFeatures.t`.
@@ -31,6 +38,8 @@ export interface OnsetOptions {
   thresholdRatio?: number;
   /** Two onsets closer than this are the same hit seen twice. */
   minGapSec?: number;
+  /** The least share of the window's loudest frame a hit may be. */
+  peakShare?: number;
 }
 
 const DEFAULT_HISTORY = 43;
@@ -41,6 +50,26 @@ const DEFAULT_MIN_GAP = 0.05;
 const LOW_WEIGHT = 0.5;
 /** Added to the threshold so silence, whose median is 0, cannot trigger. */
 const ABSOLUTE_FLOOR = 0.01;
+/**
+ * How small a fraction of the window's loudest frame a frame may be and still
+ * be a hit — the second, scale-free floor under the threshold.
+ *
+ * `ABSOLUTE_FLOOR` cannot do this job. The detection function is built from
+ * raw FFT magnitudes, so its scale is the signal's: on a click track the hits
+ * measure ~0.02-1.5 and a floor of 0.01 is a real gate, while on a kick-and-pad
+ * mix the same hits measure 8-60 and 0.01 is six thousand times below them,
+ * gating nothing. A share of the recent maximum is the same gate expressed in
+ * units the signal sets for itself.
+ *
+ * An eighth. Measured over `tests/helpers/synth.ts`: on `kickPad` the pad's
+ * frame-to-frame wobble peaks at 3.3 against kicks of 30-64, so anything from
+ * about a twentieth up removes it; on `clickTrack` the quietest beat still
+ * reaches a sixth of the loudest beat inside the same window, and a share of
+ * 0.2 starts dropping real beats. An eighth sits between the two with better
+ * than a factor of two of margin on each side, and it still admits a ghost note
+ * eight times quieter than the kick before it.
+ */
+const PEAK_SHARE = 0.125;
 
 /** How much detection function to keep, and at what rate it is handed out. */
 const ENVELOPE_SECONDS = 8;
@@ -63,8 +92,12 @@ const CAPACITY = ENVELOPE_SECONDS * 200;
  * inside the window on the frame after it sounded; the flux peak lands one
  * frame late. Measured on the 120 BPM click-track fixture (`tests/helpers/
  * synth.ts`, same window geometry as the live graph): all 16 beats detected,
- * lag 16.7 ms on every one of them (std 0 — one frame at 60 fps), rounded here
- * to the nearest 5 ms. `tests/analysis/onset.test.ts` holds it to ±15 ms.
+ * lag 16.7 ms — one frame at 60 fps — on twelve of them and 33.3 ms on the four
+ * accented downbeats, whose thump takes a second frame to clear `PEAK_SHARE`.
+ * Rounded here to the nearest 5 ms off the frame the great majority land on
+ * rather than off the 20.8 ms mean, because a latency to subtract wants the
+ * lag the next hit will have, and that is one frame.
+ * `tests/analysis/onset.test.ts` holds it to ±15 ms.
  */
 export const ONSET_REPORT_LAG_SEC = 0.015;
 
@@ -73,6 +106,7 @@ export class OnsetDetector {
   private readonly scratch: Float32Array;
   private readonly ratio: number;
   private readonly minGap: number;
+  private readonly peakShare: number;
 
   /** The detection function of the previous two frames, for the local max. */
   private prev1 = 0;
@@ -100,6 +134,7 @@ export class OnsetDetector {
     this.scratch = new Float32Array(frames);
     this.ratio = o.thresholdRatio ?? DEFAULT_RATIO;
     this.minGap = o.minGapSec ?? DEFAULT_MIN_GAP;
+    this.peakShare = o.peakShare ?? PEAK_SHARE;
   }
 
   /**
@@ -122,8 +157,12 @@ export class OnsetDetector {
     this.record(f.t, df);
 
     // Threshold against the frames *before* this one: including it would let a
-    // single loud frame raise its own bar.
-    const threshold = this.ratio * this.median() + ABSOLUTE_FLOOR;
+    // single loud frame raise its own bar. Both floors are read from that same
+    // history — one off its middle, one off its top — and the higher wins.
+    const threshold = Math.max(
+      this.ratio * this.median() + ABSOLUTE_FLOOR,
+      this.peakShare * this.history.max(),
+    );
     const isPeak = df >= this.prev1 && df >= this.prev2;
     const isOnset = df > threshold && isPeak && f.t - this.lastOnset >= this.minGap;
 

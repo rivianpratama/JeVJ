@@ -75,6 +75,31 @@ describe('hudRows', () => {
     expect(mood['drop']).toBe('impact 0.75');
   });
 
+  it('prints the mood the director is actually drawing with, and where it came from', () => {
+    // Not Jev's last answer: the renderer draws with the live mood merged with
+    // whatever the timeline overrides, and a HUD that prints the other one is
+    // a diagnostic that lies. The `mood src` row says which layer had the last
+    // word, so a disagreement is readable rather than mysterious.
+    const snap = after(clickTrack(120, 12, FS), 12);
+    const effective = { ...NEUTRAL_MOOD, arousal: 0.9375, motion: 'shatter' as const };
+
+    const live = hudRows(snap, { novelty: 0.2, tokens: 1, mood: NEUTRAL_MOOD, moodSrc: 'live' });
+    expect(live.mood!['mood src']).toBe('live');
+
+    const timeline = hudRows(snap, {
+      novelty: 0.2,
+      tokens: 1,
+      mood: effective,
+      moodSrc: 'timeline',
+    });
+    expect(timeline.mood!['arousal']).toBe('0.94');
+    expect(timeline.mood!['motion']).toBe('shatter');
+    expect(timeline.mood!['mood src']).toBe('timeline');
+
+    const idle = hudRows(snap, { novelty: 0.2, tokens: 1, mood: NEUTRAL_MOOD, moodSrc: 'idle' });
+    expect(idle.mood!['mood src']).toBe('idle');
+  });
+
   it('prints jev\'s judgment and what it has cost, once there is one', () => {
     const snap = after(clickTrack(120, 12, FS), 12);
     const rows = hudRows(snap, {
@@ -97,6 +122,7 @@ describe('hudRows', () => {
   it('leaves the jev rows out entirely before the first answer', () => {
     const rows = hudRows(after(clickTrack(120, 12, FS), 12), { novelty: 0.2, tokens: 142 });
     expect(rows.mood!['valence']).toBeUndefined();
+    expect(rows.mood!['mood src']).toBeUndefined();
     expect(rows.calls).toBeUndefined();
     expect(rows.tokensTotal).toBeUndefined();
   });

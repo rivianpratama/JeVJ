@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DropDetector, type DropEvent } from '../../src/analysis/drop';
+import { OnsetDetector } from '../../src/analysis/onset';
+import { framesFrom, kickPad } from '../helpers/synth';
 import type { FrameFeatures } from '../../src/shared/types';
 
 /** The live hop: 735 samples at 44.1 kHz, the rate the analysis actually runs at. */
@@ -93,6 +95,46 @@ describe('DropDetector', () => {
     const d = new DropDetector();
     const events = span(0, 6).map((t) => d.push(frame(t, -10, 0.6), t % 0.5 < HOP ? 1 : 0));
     expect(events.every((e) => e === null)).toBe(true);
+  });
+
+  it('says nothing about a kick drum, however hard it hits', () => {
+    // Real audio, and the onsets the live chain would hand the detector with
+    // it: every beat is a loud low-frequency transient with an onset on it,
+    // which is three of the five conditions an impact has to meet. What it is
+    // not is louder than the rest of the track, and that is the whole
+    // difference between a drop and a beat.
+    const d = new DropDetector();
+    const onsets = new OnsetDetector();
+    const impacts: DropEvent[] = [];
+
+    for (const f of framesFrom(kickPad(128, 8, 44100), 44100)) {
+      const event = d.push(f, onsets.push(f));
+      if (event?.kind === 'impact') impacts.push(event);
+    }
+
+    expect(impacts).toHaveLength(0);
+  });
+
+  it('fires once, on the slam, at the end of a long build', () => {
+    // Eight seconds climbing 2 dB a second, then the floor drops out. No
+    // second of the build is 6 dB above the one before it, and no moment of it
+    // clears what came just before by enough to be new.
+    const d = new DropDetector();
+    const impacts: DropEvent[] = [];
+    const push = (t: number, db: number, low: number, onset: number) => {
+      const event = d.push(frame(t, db, low), onset);
+      if (event?.kind === 'impact') impacts.push(event);
+    };
+
+    for (const t of span(0, 8)) push(t, -30 + 2 * t, 0.6, t % 0.5 < HOP ? 1 : 0);
+    expect(impacts).toHaveLength(0);
+
+    for (const t of span(8, 9)) push(t, -2, 0.9, 1);
+
+    expect(impacts).toHaveLength(1);
+    expect(impacts[0]!.t).toBeGreaterThanOrEqual(8);
+    expect(impacts[0]!.t).toBeLessThan(8.2);
+    expect(impacts[0]!.strength).toBeGreaterThan(0.5);
   });
 
   it('takes its thresholds from the caller', () => {

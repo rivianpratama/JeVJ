@@ -91,6 +91,79 @@ export function clickTrack(
   return out;
 }
 
+/** The kick's resting pitch, and where its sweep starts. */
+const KICK_HZ = 55;
+const KICK_SWEEP_HZ = 175;
+/** How long the sweep from `KICK_SWEEP_HZ` down to `KICK_HZ` takes. */
+const KICK_SWEEP_SEC = 0.03;
+/** How long a kick rings before it is inaudible. */
+const KICK_SECONDS = 0.25;
+/** Peak of one kick, leaving headroom for the pad underneath it. */
+const KICK_AMP = 0.9;
+/**
+ * Peak of the pad, well below the kick's. A drop detector asks whether the
+ * low end carries the frame, and a pad loud enough to rival the kick would
+ * make every frame look like a kick; a pad this quiet is a bed the kick
+ * stands on, which is what a mix sounds like.
+ */
+const PAD_AMP = 0.12;
+/** A minor triad low enough to share the kick's octave without masking it. */
+const PAD_CHORD_HZ = [110, 130.81, 164.81];
+
+/**
+ * `seconds` of four-to-the-floor at `bpm`: a swept 55 Hz kick on every beat
+ * over a sustained minor-triad pad.
+ *
+ * `clickTrack` is a metronome — broadband bursts over silence, the friendliest
+ * signal a detector will ever see. This is the other half of the job: the thing
+ * the detectors actually meet. Two properties matter and neither is in the
+ * click track.
+ *
+ * The pad never stops, so spectral flux never returns to zero between hits and
+ * the relative threshold an onset has to clear is being held up by a sound that
+ * is not an event. A kick that reads as an onset here is one that would read as
+ * an onset over a real track.
+ *
+ * The kick sweeps rather than sitting at 55 Hz, because a bare 55 Hz sine is
+ * three bins wide and rises over a whole cycle — 18 ms, more than a frame. The
+ * sweep puts the attack up at 175 Hz where the analysis has resolution, which
+ * is what makes a kick's transient a transient rather than a swell.
+ *
+ * As in `clickTrack`, the first kick is at t = 0 and every kick is the *same*
+ * kick: nothing here varies beat to beat, so a test that fails failed on the
+ * detector.
+ */
+export function kickPad(bpm: number, seconds: number, sr = 44100): Float32Array {
+  const out = new Float32Array(Math.round(seconds * sr));
+  for (const hz of PAD_CHORD_HZ) addSaw(out, hz, 0, out.length, sr);
+  normalisePeak(out, PAD_AMP);
+
+  // One kick, struck over and over. The sweep is integrated rather than
+  // evaluated: sin(2π·f(t)·t) with a moving f is not a chirp, it is a
+  // discontinuity at every sample where f changed.
+  const span = Math.min(Math.round(KICK_SECONDS * sr), out.length);
+  const kick = new Float32Array(span);
+  let phase = 0;
+  for (let i = 0; i < span; i++) {
+    const at = i / sr;
+    const hz =
+      at < KICK_SWEEP_SEC ? KICK_SWEEP_HZ + (KICK_HZ - KICK_SWEEP_HZ) * (at / KICK_SWEEP_SEC) : KICK_HZ;
+    kick[i] = KICK_AMP * Math.exp((-5 * i) / span) * Math.sin(phase);
+    phase += (2 * Math.PI * hz) / sr;
+  }
+
+  const period = (60 / bpm) * sr;
+  for (let beat = 0; beat * period < out.length; beat++) {
+    const start = Math.round(beat * period);
+    for (let i = 0; i < span; i++) {
+      const at = start + i;
+      if (at >= out.length) break;
+      out[at] = out[at]! + kick[i]!;
+    }
+  }
+  return out;
+}
+
 /**
  * `signal` through the same extractor the live graph feeds: one frame every
  * `hop` samples, `t = frameIndex * hop / sr`.

@@ -7,6 +7,7 @@
  */
 
 import type { AnalysisSnapshot } from './analysisLoop';
+import type { MoodSource } from './effectiveMood';
 import type { HudData } from '../ui/hud';
 import type { MoodVector } from '../shared/types';
 
@@ -29,8 +30,14 @@ export interface MoodRows {
   novelty: number;
   /** Estimated token cost of that payload serialized. */
   tokens: number;
-  /** Jev's current judgment, once there has been one. */
+  /**
+   * The mood the director is drawing with — the live one merged with whatever
+   * the timeline overrides — once there has been one. Not Jev's raw last
+   * answer: the point of the HUD is reading what is on screen.
+   */
   mood?: MoodVector | null;
+  /** Which layer had the last word on it. */
+  moodSrc?: MoodSource | null;
   /** What asking has cost so far, and when we will ask again. */
   jev?: {
     calls: number;
@@ -73,10 +80,11 @@ export function hudRows(snap: AnalysisSnapshot, feed: MoodRows | null = null): H
     mood[`b${i}`] = '█'.repeat(Math.round((f.bands[i] ?? 0) * BAND_BLOCKS));
   }
 
-  // What Jev said, under what the analysis measured: the point of the HUD is
-  // reading the two against each other.
+  // What the director believes, under what the analysis measured: the point of
+  // the HUD is reading the two against each other.
   const m = feed?.mood ?? null;
   if (m) {
+    if (feed?.moodSrc) mood['mood src'] = feed.moodSrc;
     mood['valence'] = m.valence.toFixed(2);
     mood['arousal'] = m.arousal.toFixed(2);
     mood['tension'] = m.tension.toFixed(2);

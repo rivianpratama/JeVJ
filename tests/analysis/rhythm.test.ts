@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { AnalysisPipeline } from '../../src/analysis/pipeline';
 import { RhythmTracker } from '../../src/analysis/rhythm';
-import { mulberry32 } from '../helpers/synth';
+import { framesFrom, kickPad, mulberry32 } from '../helpers/synth';
 
 /** 120 BPM: one beat every half second, four beats to the bar. */
 const PERIOD = 0.5;
@@ -179,5 +180,65 @@ describe('RhythmTracker density', () => {
   it('says nothing changed when there is no history to compare with', () => {
     expect(new RhythmTracker().onsetRatio(1, BAR)).toBe(1);
     expect(new RhythmTracker().onsetsPerSec(1)).toBe(0);
+  });
+});
+
+/**
+ * The unit tests above hand the tracker onsets that are already correct. This
+ * one puts real audio through the whole chain, because the rows the HUD shows
+ * are only as good as what the onset detector feeds them: a four-to-the-floor
+ * kick over a sustained pad read `regular 0.00` while the tracker itself was
+ * faultless — every kick was found, and so were fifty-five wobbles of the pad
+ * in between them.
+ *
+ * `kickPad`, not `clickTrack`: the click track is bursts over silence, and a
+ * detector that only ever meets that never has to tell an event from a sound
+ * that is merely still going.
+ */
+describe('rhythm through the analysis pipeline', () => {
+  const FS = 44100;
+  /** 128 BPM: 0.469 s a beat, 16 beats in the 7.5 s the assertions cover. */
+  const BPM = 128;
+  const KICK_PERIOD = 60 / BPM;
+  const COVERED_SEC = 16 * KICK_PERIOD;
+  /** How far a detection may sit from a kick and still be that kick's. */
+  const PAIRING_WINDOW = 0.12;
+
+  function run(seconds: number) {
+    const pipeline = new AnalysisPipeline();
+    const onsets: number[] = [];
+    let last = null as ReturnType<AnalysisPipeline['step']> | null;
+    for (const f of framesFrom(kickPad(BPM, seconds, FS), FS)) {
+      const snapshot = pipeline.step(f);
+      if (snapshot.onset > 0) onsets.push(f.t);
+      last = snapshot;
+    }
+    return { onsets, snapshot: last! };
+  }
+
+  it('reads a steady kick over a pad as regular and on the beat', () => {
+    const { snapshot } = run(10);
+
+    expect(snapshot.rhythm.regular).toBeGreaterThanOrEqual(0.8);
+    expect(snapshot.rhythm.sync).toBeLessThanOrEqual(0.2);
+  });
+
+  it('finds the kick on nearly every beat of the first sixteen', () => {
+    const { onsets } = run(10);
+    const used = new Set<number>();
+    let found = 0;
+
+    for (let beat = 0; beat < 16; beat++) {
+      const at = beat * KICK_PERIOD;
+      const hit = onsets.findIndex((t, i) => !used.has(i) && Math.abs(t - at) <= PAIRING_WINDOW);
+      if (hit < 0) continue;
+      used.add(hit);
+      found += 1;
+    }
+
+    expect(found).toBeGreaterThanOrEqual(12);
+    // And not many more than the beats themselves: an onset on every pad
+    // wobble is what made `regular` read zero.
+    expect(onsets.filter((t) => t <= COVERED_SEC).length).toBeLessThanOrEqual(20);
   });
 });

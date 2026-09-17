@@ -5,9 +5,22 @@
  * Jev answers in hundreds of milliseconds, which is fine for "this is a
  * build" and useless for "hit now". So the impact stays here, in a detector
  * that runs on every frame and owes nothing to the network: a short window
- * that is suddenly much louder than the second before it, with the bass in it
- * and an onset on it, is a drop. A short window far below the last few seconds
- * is the silence before one.
+ * that is suddenly much louder than the second before it *and* louder than
+ * nearly all of the last few seconds, with the bass in it and an onset on it,
+ * is a drop. A short window far below the last few seconds is the silence
+ * before one.
+ *
+ * That second condition is the one that stops the detector calling a drop four
+ * times a bar. A kick drum satisfies everything else: it is a low-frequency
+ * transient, it has an onset on it, and 0.2 s of kick is comfortably more than
+ * 6 dB above the second around it, because most of that second is the gap
+ * between kicks. What a kick is *not* is louder than the track it is part of —
+ * the last kick was exactly this loud, and so was the one before it. Comparing
+ * the moment against a high quantile of the last four seconds asks precisely
+ * that: is this the loudest thing that has happened lately, or just the latest?
+ * The 90th percentile rather than the maximum, so one stray peak — a clipped
+ * sample, a crowd noise — cannot immunise the track against the drop that
+ * follows it.
  *
  * Loudness is averaged in the power domain, not in dB. A mean of decibels is a
  * geometric mean of energies: one loud frame among eleven quiet ones barely
@@ -22,12 +35,37 @@
 import { TimedRing } from './ring';
 import type { FrameFeatures } from '../shared/types';
 
-/** How much louder than the preceding dip a slam has to be. */
-const JUMP_DB = 8;
-/** How far back the dip that a slam is measured against is looked for. */
-const DIP_WINDOW_SEC = 1;
+/**
+ * How much louder than the second before it a slam has to be.
+ *
+ * Against the *mean* of that second, not its quietest moment. A minimum is the
+ * bottom of whatever hole the music happened to leave, so on any track with a
+ * beat in it the comparison is "loud moment versus gap between loud moments" —
+ * which every beat wins. A mean is the level of the passage, and 6 dB over the
+ * passage is the four-fold jump in energy that reads as the music arriving.
+ * (8 dB over a minimum was the old pair; 6 over a mean is the stricter of the
+ * two on a kick track and the more forgiving on a real, dense drop.)
+ */
+const JUMP_DB = 6;
+/** How much of the recent past that mean is taken over. */
+const MEAN_WINDOW_SEC = 1;
 /** The window "now" is measured over. */
 const SHORT_SEC = 0.2;
+
+/**
+ * How far above the recent quantile a slam has to stand, and what "recent"
+ * and "quantile" mean.
+ *
+ * 2 dB is deliberately small: this condition is a comparison, not a margin.
+ * Either the moment is above almost everything behind it or it is not, and the
+ * 2 dB only keeps a tie from counting. Four seconds is two bars at club tempo —
+ * long enough to contain the passage the drop is arriving *out of*, short
+ * enough that the loud section before a breakdown has rolled off the back by
+ * the time the drop lands.
+ */
+const HEADROOM_DB = 2;
+const HEADROOM_WINDOW_SEC = 4;
+const HEADROOM_QUANTILE = 0.9;
 
 /** How much of the low end an impact has to carry. */
 const LOW_SHARE = 0.5;
@@ -54,27 +92,40 @@ export interface DropEvent {
 }
 
 export interface DropOptions {
+  /** dB above the preceding second's mean. */
   jumpDb?: number;
-  dipWindowSec?: number;
+  /** How much of the preceding audio that mean covers. */
+  meanWindowSec?: number;
+  /** dB above the preceding quantile. */
+  headroomDb?: number;
+  /** How far back that quantile is taken over. */
+  headroomWindowSec?: number;
+  /** The window "now" is measured over. */
   shortSec?: number;
 }
 
 export class DropDetector {
   private readonly jumpDb: number;
-  private readonly dipWindowSec: number;
+  private readonly meanWindowSec: number;
+  private readonly headroomDb: number;
+  private readonly headroomWindowSec: number;
   private readonly shortSec: number;
 
   /** Per-frame energy, linear. */
   private readonly power = new TimedRing(CAPACITY);
-  /** The short-window loudness of each frame, in dB — what a dip is a dip in. */
+  /** The short-window loudness of each frame, in dB — what the quantile is of. */
   private readonly short = new TimedRing(CAPACITY);
+  /** Scratch for the quantile, so the per-frame path allocates nothing. */
+  private readonly scratch = new Float64Array(CAPACITY);
 
   private lastImpactAt = -Infinity;
   private lastGapAt = -Infinity;
 
   constructor(o: DropOptions = {}) {
     this.jumpDb = o.jumpDb ?? JUMP_DB;
-    this.dipWindowSec = o.dipWindowSec ?? DIP_WINDOW_SEC;
+    this.meanWindowSec = o.meanWindowSec ?? MEAN_WINDOW_SEC;
+    this.headroomDb = o.headroomDb ?? HEADROOM_DB;
+    this.headroomWindowSec = o.headroomWindowSec ?? HEADROOM_WINDOW_SEC;
     this.shortSec = o.shortSec ?? SHORT_SEC;
   }
 
@@ -88,7 +139,8 @@ export class DropDetector {
     const t = f.t;
     this.power.push(t, toPower(f.db));
 
-    const now = toDb(this.meanPower(t - this.shortSec, t));
+    // The frame just pushed is always inside this window, so it is never empty.
+    const now = toDb(this.meanPower(t - this.shortSec, t) ?? 0);
     this.short.push(t, now);
 
     const impact = this.impact(f, onset, t, now);
@@ -97,8 +149,12 @@ export class DropDetector {
   }
 
   /**
-   * A slam: much louder than the quietest moment of the preceding second,
-   * with the bass in it and an onset on it.
+   * A slam: louder than the passage it came out of *and* louder than nearly
+   * all of the last few seconds, with the bass in it and an onset on it.
+   *
+   * The cheap tests come first — an onset, the cooldown, the bass share are
+   * all reads of numbers already in hand — and the two window statistics are
+   * only computed for the frames that get that far.
    */
   private impact(f: FrameFeatures, onset: number, t: number, now: number): DropEvent | null {
     if (onset <= 0) return null;
@@ -107,18 +163,25 @@ export class DropDetector {
     const low = ((f.bands[0] ?? 0) + (f.bands[1] ?? 0)) / 2;
     if (low < LOW_SHARE) return null;
 
-    // The dip is looked for *before* the short window, so the slam itself is
-    // never the thing it is measured against.
-    const dipEnd = t - this.shortSec;
-    const dip = this.minShort(dipEnd - this.dipWindowSec, dipEnd);
-    if (dip === null) return null;
+    // Both windows end where the short one begins, so the slam is never part
+    // of the thing it is being measured against.
+    const before = t - this.shortSec;
 
-    const jump = now - dip;
+    const passage = this.meanPower(before - this.meanWindowSec, before);
+    if (passage === null) return null;
+    const jump = now - toDb(passage);
     if (jump < this.jumpDb) return null;
 
+    const usual = this.quantileShort(before - this.headroomWindowSec, before, HEADROOM_QUANTILE);
+    if (usual === null) return null;
+    if (now - usual < this.headroomDb) return null;
+
     this.lastImpactAt = t;
-    // Half the strength is how far the jump overshot the threshold — twice it
-    // is as hard as this reads — and half is how much of it was bass.
+    // Strength is read off the jump, not off the headroom: the headroom is a
+    // yes-or-no question — is this new? — and a drop that clears the recent
+    // quantile by 20 dB is not twice the event one that clears it by 10 is.
+    // So: how far the jump overshot its threshold, twice it being as hard as
+    // this reads, mixed with how much of the hit was bass.
     const rise = clamp01(jump / (2 * this.jumpDb));
     return { t, strength: clamp01(0.6 * rise + 0.4 * clamp01(low)), kind: 'impact' };
   }
@@ -128,7 +191,7 @@ export class DropDetector {
     if (t - this.lastGapAt < GAP_COOLDOWN_SEC) return null;
     if (this.power.countIn(t - GAP_REFERENCE_SEC, t) < 2) return null;
 
-    const reference = toDb(this.meanPower(t - GAP_REFERENCE_SEC, t));
+    const reference = toDb(this.meanPower(t - GAP_REFERENCE_SEC, t) ?? 0);
     const depth = reference - now;
     if (depth < GAP_DEPTH_DB) return null;
 
@@ -136,8 +199,12 @@ export class DropDetector {
     return { t, strength: clamp01(depth / (2 * GAP_DEPTH_DB)), kind: 'gap' };
   }
 
-  /** Mean energy over `(from, to]` — the last `to - from` seconds, exactly. */
-  private meanPower(from: number, to: number): number {
+  /**
+   * Mean energy over `(from, to]` — the last `to - from` seconds, exactly —
+   * or null when the span holds no frames, which is a span the detector has
+   * no opinion about rather than a silent one.
+   */
+  private meanPower(from: number, to: number): number | null {
     let sum = 0;
     let n = 0;
     for (let i = this.firstAfter(from, this.power); i < this.power.length; i++) {
@@ -145,17 +212,26 @@ export class DropDetector {
       sum += this.power.valueAt(i);
       n += 1;
     }
-    return n === 0 ? 0 : sum / n;
+    return n === 0 ? null : sum / n;
   }
 
-  /** Quietest short-window loudness in `(from, to]`, or null when empty. */
-  private minShort(from: number, to: number): number | null {
-    let m = Infinity;
+  /**
+   * The `p`-quantile of the short-window loudness over `(from, to]`, in dB, or
+   * null when empty. Nearest rank, so the answer is always a level the music
+   * actually reached.
+   */
+  private quantileShort(from: number, to: number, p: number): number | null {
+    let n = 0;
     for (let i = this.firstAfter(from, this.short); i < this.short.length; i++) {
       if (this.short.timeAt(i) > to) break;
-      m = Math.min(m, this.short.valueAt(i));
+      this.scratch[n] = this.short.valueAt(i);
+      n += 1;
     }
-    return m === Infinity ? null : m;
+    if (n === 0) return null;
+
+    const slice = this.scratch.subarray(0, n);
+    slice.sort();
+    return slice[Math.min(n - 1, Math.max(0, Math.ceil(p * n) - 1))]!;
   }
 
   /** First index strictly after `t`: the windows here exclude their own start. */
