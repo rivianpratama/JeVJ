@@ -1,0 +1,439 @@
+/*
+ * The UI layer. Everything here floats over the fullscreen visualizer canvas,
+ * so surfaces are glass (blurred backdrop, low-alpha fill) and never opaque.
+ */
+
+:root {
+  --font-ui: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --glass-bg: rgba(10, 10, 14, 0.35);
+  --glass-border: rgba(255, 255, 255, 0.14);
+  --glass-blur: blur(18px) saturate(140%);
+  --ink: #e8e8ef;
+  --ink-dim: rgba(232, 232, 239, 0.55);
+  --danger: #ff8a8a;
+  --card-w: min(56vw, 900px);
+}
+
+/* The UI is a pass-through layer: only real controls catch the pointer. */
+#ui {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  font-family: var(--font-ui);
+  color: var(--ink);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- top bar */
+
+.topbar {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: min(560px, calc(100vw - 32px));
+  transition: top 0.2s ease;
+}
+
+body.has-banner .topbar {
+  top: 52px;
+}
+
+.urlbar {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  pointer-events: auto;
+  transition: opacity 0.2s ease;
+}
+
+.urlbar.is-busy {
+  opacity: 0.55;
+}
+
+.urlbar-input {
+  flex: 1;
+  min-width: 0;
+  padding: 12px 20px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.4;
+  outline: none;
+}
+
+.urlbar-input::placeholder {
+  color: var(--ink-dim);
+}
+
+.urlbar:focus-within {
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.drophint {
+  padding: 2px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--ink-dim);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: color 0.15s ease;
+}
+
+.drophint:hover,
+body.is-dragging .drophint {
+  color: var(--ink);
+}
+
+/* Whole-page drop target feedback. */
+body.is-dragging::after {
+  content: '';
+  position: fixed;
+  inset: 12px;
+  z-index: 2;
+  border: 1px dashed rgba(255, 255, 255, 0.35);
+  border-radius: 18px;
+  pointer-events: none;
+}
+
+/* ------------------------------------------------------------------ card */
+
+.card-stage {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  pointer-events: none;
+}
+
+.card-frame {
+  position: relative;
+  width: var(--card-w);
+  aspect-ratio: 16 / 9;
+}
+
+/* The blurred outer rim: same oval, 12% larger, sitting behind the card. */
+.card-halo {
+  position: absolute;
+  inset: 0;
+  transform: scale(1.12);
+  border-radius: 50% / 42%;
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+  mask-image: radial-gradient(ellipse, #000 55%, transparent 100%);
+  -webkit-mask-image: radial-gradient(ellipse, #000 55%, transparent 100%);
+}
+
+.card {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 50% / 42%;
+  background: rgba(0, 0, 0, 0.4);
+  mask-image: radial-gradient(ellipse at center, #000 58%, rgba(0, 0, 0, 0.6) 78%, transparent 100%);
+  -webkit-mask-image: radial-gradient(
+    ellipse at center,
+    #000 58%,
+    rgba(0, 0, 0, 0.6) 78%,
+    transparent 100%
+  );
+}
+
+/* The mount element, and the iframe the YouTube API swaps in for it. */
+.card-player,
+.card iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  /* Our own buttons drive playback; the iframe never takes the pointer. */
+  pointer-events: none;
+}
+
+.card-file {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-size: clamp(48px, 8vw, 120px);
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.card[data-mode='file'] .card-player,
+.card[data-mode='file'] iframe {
+  visibility: hidden;
+}
+
+.card[data-mode='file'] .card-file {
+  display: flex;
+}
+
+.card-label {
+  max-width: var(--card-w);
+  padding: 0 12px;
+  font-size: 13px;
+  letter-spacing: 0.01em;
+  color: var(--ink-dim);
+  text-align: center;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------- transport */
+
+.transport {
+  position: fixed;
+  /* Never lower than the toast stack, which owns the last 80px. */
+  bottom: max(7vh, 96px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  pointer-events: auto;
+}
+
+.toggle {
+  width: 56px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--glass-border);
+  border-radius: 50%;
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: transform 0.15s;
+}
+
+.toggle:hover {
+  transform: scale(1.05);
+}
+
+.toggle.is-busy,
+.toggle:disabled {
+  opacity: 0.45;
+  cursor: default;
+  transform: none;
+}
+
+/* ----------------------------------------------------------------- toast */
+
+.toasts {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  max-width: min(480px, calc(100vw - 32px));
+  padding: 9px 16px;
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  text-align: center;
+  opacity: 0;
+  transform: translateY(8px);
+  transition:
+    opacity 0.25s ease,
+    transform 0.25s ease;
+}
+
+.toast.is-in {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.toast--error {
+  color: var(--danger);
+  border-color: rgba(255, 138, 138, 0.35);
+}
+
+/* ---------------------------------------------------------------- banner */
+
+.banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 7px 40px 7px 16px;
+  border-bottom: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.banner a {
+  color: inherit;
+}
+
+.banner-close {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink-dim);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.banner-close:hover {
+  color: var(--ink);
+}
+
+/* ------------------------------------------------------------------- hud */
+
+.hud {
+  position: fixed;
+  /* Clears the centred top bar; moves up to the corner once there is room. */
+  top: 100px;
+  left: 16px;
+  min-width: 190px;
+  max-width: 280px;
+  padding: 10px 12px;
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  font: 11px/1.5 var(--font-mono);
+  opacity: 0.8;
+  pointer-events: auto;
+}
+
+body.has-banner .hud {
+  top: 134px;
+}
+
+@media (min-width: 1200px) {
+  .hud {
+    top: 16px;
+  }
+
+  body.has-banner .hud {
+    top: 50px;
+  }
+}
+
+.hud[hidden] {
+  display: none;
+}
+
+.hud-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.hud-key {
+  color: var(--ink-dim);
+}
+
+.hud-val {
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-upcoming:not(:empty) {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.hud-cue {
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-trim {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--ink-dim);
+}
+
+.hud-trim input[type='range'] {
+  flex: 1;
+  min-width: 0;
+  accent-color: #e8e8ef;
+}
+
+.hud-trim-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+@media (max-width: 700px) {
+  :root {
+    --card-w: min(88vw, 900px);
+  }
+}
