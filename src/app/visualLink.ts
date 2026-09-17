@@ -33,6 +33,7 @@ import { ParticleField } from '../visuals/scenes/ParticleField';
 import { Relief } from '../visuals/scenes/Relief';
 import { Strands } from '../visuals/scenes/Strands';
 import { createFrameClock } from './frameClock';
+import { createDprState, stepDpr } from '../visuals/dprGovernor';
 import { PROBE_WINDOW_SEC, createVisuals, drawsAtWeight, type Visuals } from '../visuals/renderer';
 import { mergeMood, type MoodSource } from './effectiveMood';
 import type { AnalysisLoop } from './analysisLoop';
@@ -120,6 +121,11 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
   let moodSrc: MoodSource = 'idle';
 
   const director = createDirector();
+  // How many pixels this machine can afford. It watches the same measured
+  // frame time the particle tier does, and for the same reason: what the
+  // renderer can spend is a fact about the machine, and the only honest way to
+  // learn it is to try.
+  const dpr = createDprState();
   // The renderer's own clock. The audio clock jumps on a seek and stalls
   // whenever the analyser has no new snapshot; `uTime` may do neither.
   const clock = createFrameClock();
@@ -191,6 +197,13 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
       visuals.requestFrameTiming(PROBE_WINDOW_SEC);
     }
 
+    // And the same question about the frame itself. The cloud is asked first
+    // because it is the cheaper thing to give up: half a million points is a
+    // layer the mood may not even want, where the pixel ratio is every pass in
+    // the chain at once.
+    const cap = stepDpr(dpr, { dt: tick.step, frameMs: visuals.frameMs(), playing });
+    if (visuals.setPixelRatioCap(cap)) visuals.requestFrameTiming(PROBE_WINDOW_SEC);
+
     params = direct(director, mood, fast, tick.step, params, reduced);
     visuals.frame(tick.step, params, fast, tick.time);
   }
@@ -229,7 +242,10 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
     mood: () => mood,
     moodSource: () => moodSrc,
     particleTier: () => particles.tierName(),
-    frameMs: () => visuals.frameMs(),
+    // The smoothed reading the governor is deciding on, not the raw one: the
+    // HUD is there to explain the decision, and a number that jumps 8 ms
+    // between two frames explains nothing.
+    frameMs: () => (dpr.seeded ? dpr.frameMs : Number.NaN),
     pixelRatio: () => visuals.pixelRatio(),
   };
 }

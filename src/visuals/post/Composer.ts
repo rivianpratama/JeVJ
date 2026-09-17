@@ -25,6 +25,17 @@ import type { FastFrame, RenderParams } from '../director';
 
 /** Fixed by the brief; only strength and threshold are steered. */
 const BLOOM_RADIUS = 0.6;
+/**
+ * The bloom's own working resolution, as a fraction of the frame.
+ *
+ * `UnrealBloomPass` is five downsamples, five gaussian blurs and five upsamples
+ * on top of a bright pass, and every one of them is a full-screen draw: it was
+ * the single most expensive thing in the chain, measured. Halving its base
+ * resolution quarters all of that, and the result is a *blur* — the one pass in
+ * the app whose output has no detail in it to lose. What the eye sees is a
+ * slightly wider, slightly softer glow, which is what a bloom is for.
+ */
+const BLOOM_SCALE = 0.5;
 
 export class Composer {
   private readonly renderer: THREE.WebGLRenderer;
@@ -73,12 +84,19 @@ export class Composer {
    * display changes the device pixel ratio without changing the layout.
    *
    * The composer scales every pass it owns, the bloom included, so sizing the
-   * bloom again here would set it to the CSS size and undo that.
+   * bloom again here would set it to the CSS size and undo that — which is
+   * exactly why the bloom is re-sized *after* it, in device pixels, to half the
+   * frame it was just handed.
    */
   setSize(width: number, height: number): void {
     this.aspect = width / Math.max(1, height);
-    this.composer.setPixelRatio(this.renderer.getPixelRatio());
+    const ratio = this.renderer.getPixelRatio();
+    this.composer.setPixelRatio(ratio);
     this.composer.setSize(width, height);
+    this.bloom.setSize(
+      Math.max(2, Math.floor(width * ratio * BLOOM_SCALE)),
+      Math.max(2, Math.floor(height * ratio * BLOOM_SCALE)),
+    );
   }
 
   /**

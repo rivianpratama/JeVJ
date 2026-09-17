@@ -121,6 +121,9 @@ export interface RenderParams {
    * colour — the right answer for a cold track, where the sparks are the one
    * thing that is *not* the hue, and the wrong one for a warm track, where they
    * read as debris from another picture.
+   *
+   * With one exception, `COOL_GRAIN_GENRES`: a frame that is already terrain
+   * and embers has no cold left in it to lose.
    */
   warmGrains: boolean;
 }
@@ -133,8 +136,39 @@ const SLEW_TAU = 0.8;
  */
 const MIRROR_TAU = 0.5;
 const MIRROR_SWITCH = 0.05;
+/**
+ * Below this the mirror is simply off.
+ *
+ * An exponential approach never reaches its target, so a kaleidoscope that has
+ * been faded out sits at 1e-9 for the rest of the track — invisible, and still
+ * a full-screen pass with a fold count in it, because `MirrorPass` early-outs
+ * on exactly zero. This is where "invisible" becomes "off": a mix of 0.001 is
+ * a quarter of one code value at 8 bits.
+ */
+const MIRROR_OFF = 1e-3;
 /** Above this warmth the dust's accent grains are embers rather than the complement. */
 const WARM_GRAINS_AT = 0.4;
+/**
+ * The genres whose own picture is already warm enough without warm dust.
+ *
+ * Metal takes terrain for its own sake (`RELIEF_GENRES`) and the terrain glows
+ * when the music is angry, so a warm palette there is a rust landscape with
+ * embers in it — and warm accent grains on top make the whole frame one colour.
+ * The complement is the only cold thing left in the picture.
+ */
+const COOL_GRAIN_GENRES: ReadonlySet<Genre> = new Set<Genre>(['rock_metal']);
+/**
+ * The safety at which the posterize clamp engages, and where it lets go.
+ *
+ * One threshold is one flicker: `spoken` lands as a step every few seconds and
+ * the safety slews across it, so a bare `safety > 0.5` put the banding on and
+ * off about once a second for as long as the reading sat near the middle —
+ * which over a podcast with music under it is most of the time. Everything else
+ * the safety touches is mixed rather than switched, and this one cannot be:
+ * posterize is a level count, and 5.5 levels is not a picture.
+ */
+const POSTERIZE_CLAMP_ON = 0.6;
+const POSTERIZE_CLAMP_OFF = 0.4;
 /** The strobe cap: at most three luminance reversals a second. */
 const MIN_FLIP_SEC = 1 / 3;
 /** Exposure moves smaller than this do not count as a direction. */
@@ -314,6 +348,8 @@ export interface DirectorState {
   mirrorMix: number;
   /** How far the speech clamp is engaged, slewed: 1 is fully clamped. */
   safety: number;
+  /** Whether the safety currently has posterize switched off; see the constants. */
+  posterizeClamped: boolean;
   /**
    * When the last climax impact landed, on the same clock. The bloom flare is
    * a one-second window after a hit and cannot be read back off the previous
@@ -337,6 +373,7 @@ export function createDirector(): DirectorState {
     pendingFoldsSince: Number.NEGATIVE_INFINITY,
     mirrorMix: 0,
     safety: 0,
+    posterizeClamped: false,
     lastClimaxAt: Number.NEGATIVE_INFINITY,
   };
 }
@@ -550,6 +587,9 @@ export function direct(
   if (reducedMotion) mirrorMixTarget = 0;
   mirrorMixTarget = Math.min(mirrorMixTarget, 1 - safety);
   state.mirrorMix += (mirrorMixTarget - state.mirrorMix) * kMirror;
+  // Off is off: see `MIRROR_OFF`. Only on the way down — on the way up the mix
+  // starts at zero, and snapping it back would hold the figure out forever.
+  if (mirrorMixTarget === 0 && state.mirrorMix < MIRROR_OFF) state.mirrorMix = 0;
   if (state.mirrorMix < MIRROR_SWITCH) state.folds = wantedFolds;
   const mirrorMix = state.mirrorMix;
   const mirrorFolds = state.folds;
@@ -604,7 +644,13 @@ export function direct(
   // owns it. An assignment after the limiter would be a cut with a safety
   // label on it, which is the failure mode this whole pass is about.
   chroma *= 1 - safety;
-  if (safety > 0.5) posterize = 0;
+  // The one clamp that is a switch rather than a mix, so it is the one clamp
+  // that needs a hand on it: engaged at 0.6, released at 0.4, and holding
+  // whatever it was doing in between.
+  if (prev === null) state.posterizeClamped = safety > POSTERIZE_CLAMP_ON;
+  else if (safety > POSTERIZE_CLAMP_ON) state.posterizeClamped = true;
+  else if (safety < POSTERIZE_CLAMP_OFF) state.posterizeClamped = false;
+  if (state.posterizeClamped) posterize = 0;
 
   // The bloom's slewed base is held aside for the same reason chroma's is: the
   // climax flare is a multiplier on top, and a flared `prev.bloomStrength` fed
@@ -650,8 +696,11 @@ export function direct(
     // Not slewed: the thickness *is* the bass, and silk that swells a second
     // after the note is silk that is not listening. Ribbons, not hairlines —
     // at 0.004 a strand was a hairline scratch and four hundred of them read
-    // as rain rather than as silk.
-    strandThickness: lerp(0.012, 0.035, clamp01(fast.sub)),
+    // as rain rather than as silk. Widened again by 1.8 after the real-music
+    // pass: at 1440×900 with a 0.5 scene scale, 0.012 of a 4-unit field is
+    // under two device pixels, which is a scratch however many of them there
+    // are.
+    strandThickness: lerp(0.022, 0.06, clamp01(fast.sub)),
 
     reliefHeight: slew(reliefHeightTarget, prev?.reliefHeight ?? reliefHeightTarget),
     reliefContrast: slew(reliefContrastTarget, prev?.reliefContrast ?? reliefContrastTarget),
@@ -669,6 +718,6 @@ export function direct(
     exposure,
 
     flowStyle: mood.motion,
-    warmGrains: clamp01(mood.warmth) >= WARM_GRAINS_AT,
+    warmGrains: clamp01(mood.warmth) >= WARM_GRAINS_AT && !COOL_GRAIN_GENRES.has(mood.genre),
   };
 }

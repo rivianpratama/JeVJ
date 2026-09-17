@@ -49,8 +49,6 @@ void main() {
   // is −x, +y and −z — a positive z would put the lamp behind the viewer, which
   // is the one position that shows a relief no shadow at all.
   //
-  // It is nine degrees which is the only kind that shows a relief at all.
-  //
   // The elevation is not a free choice; it was set by measurement, and it is
   // low because this layer composites alpha-over. A lamp at 30° lights nearly
   // every up-facing part of the terrain, and a fifth of every idle frame is

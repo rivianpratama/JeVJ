@@ -436,9 +436,11 @@ describe('direct', () => {
     expect(once(mood({ arousal: 0 }), fast()).particleSpeed).toBeCloseTo(0.2, 6);
     expect(once(mood({ tension: 1 }), fast()).strandBend).toBeCloseTo(1.4, 6);
     expect(once(mood({ tension: 0 }), fast()).strandBend).toBeCloseTo(0.2, 6);
-    // Ribbons, not hairlines: the creative note's thickness range.
-    expect(once(mood({}), fast({ sub: 1 })).strandThickness).toBeCloseTo(0.035, 6);
-    expect(once(mood({}), fast({ sub: 0 })).strandThickness).toBeCloseTo(0.012, 6);
+    // Ribbons, not hairlines: the creative note's thickness range, widened
+    // again by 1.8 after the real-music pass — at 1440x900 the old range still
+    // read as scratches rather than as silk.
+    expect(once(mood({}), fast({ sub: 1 })).strandThickness).toBeCloseTo(0.06, 6);
+    expect(once(mood({}), fast({ sub: 0 })).strandThickness).toBeCloseTo(0.022, 6);
   });
 
   it('halves the particle motion and drops the dolly snap under reduced motion', () => {
@@ -602,5 +604,63 @@ describe('direct', () => {
     expect(p.mirrorFolds).toBe(0);
     expect(p.posterize).toBe(0);
     expect(p.exposure).toBeCloseTo(1, 6);
+  });
+
+  it('snaps the mirror all the way off rather than leaving a trace of it', () => {
+    // A mix of 1e-9 is a kaleidoscope nobody can see and a shader that runs
+    // anyway: the pass early-outs on exactly zero, and an exponential approach
+    // never gets there.
+    const state = createDirector();
+    let p: RenderParams | null = null;
+    const hypnotic = mood({ hypnotic: 1, tension: 1 });
+    for (let i = 0; i < 300; i++) p = direct(state, hypnotic, fast(), FRAME, p, false);
+    expect(p!.mirrorMix).toBeCloseTo(1, 6);
+
+    const plain = mood({ hypnotic: 0, tension: 0 });
+    for (let i = 0; i < 600; i++) p = direct(state, plain, fast(), FRAME, p, false);
+    expect(p!.mirrorMix).toBe(0);
+    expect(state.mirrorMix).toBe(0);
+  });
+
+  it('does not flip posterize on and off around the safety threshold', () => {
+    // `spoken` arrives as a step every few seconds and the safety slews through
+    // it, so a bare threshold puts the banding on and off at about 1 Hz while
+    // the reading crosses. The clamp engages at 0.6 and lets go at 0.4, and
+    // between the two it holds whatever it was doing.
+    const state = createDirector();
+    const acid = { synthetic: 1, arousal: 1 };
+    const talking = mood({ ...acid, spoken: 0.9 });
+    const music = mood({ ...acid, spoken: 0 });
+    let p: RenderParams | null = null;
+    const seen: { safety: number; posterize: number }[] = [];
+
+    for (let i = 0; i < 900; i++) {
+      p = direct(state, i < 300 || i >= 600 ? music : talking, fast(), FRAME, p, false);
+      seen.push({ safety: state.safety, posterize: p.posterize });
+    }
+
+    for (const f of seen) {
+      if (f.safety > 0.6) expect(f.posterize).toBe(0);
+      if (f.safety < 0.4) expect(f.posterize).toBe(6);
+    }
+    // And inside the band it never changes its mind.
+    for (let i = 1; i < seen.length; i++) {
+      const a = seen[i - 1]!;
+      const b = seen[i]!;
+      if (a.safety >= 0.4 && a.safety <= 0.6 && b.safety >= 0.4 && b.safety <= 0.6) {
+        expect(b.posterize).toBe(a.posterize);
+      }
+    }
+    // The whole excursion happened: both states were reached.
+    expect(seen.some((f) => f.posterize === 0)).toBe(true);
+    expect(seen.some((f) => f.posterize === 6)).toBe(true);
+  });
+
+  it('keeps the dust cool on metal, however warm the palette is', () => {
+    // Terrain, embers and warm dust on one frame is a monochrome orange field:
+    // the one genre that gets terrain for its own sake keeps the complement in
+    // its dust for contrast.
+    expect(once(mood({ warmth: 1, genre: 'rock_metal' }), fast()).warmGrains).toBe(false);
+    expect(once(mood({ warmth: 1, genre: 'electronic_dance' }), fast()).warmGrains).toBe(true);
   });
 });

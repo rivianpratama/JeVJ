@@ -33,8 +33,11 @@
 //  - **breath** *replaces*. It runs over a talking voice and the whole point of
 //    it is that nothing else is on screen; mixed in, the dust and silk it is
 //    meant to clear away would show through it. It crossfades in over the first
-//    half of its weight and is the entire frame from 0.5 up, which is where the
-//    director puts it whenever `spoken` is over the gate.
+//    half of its weight and is the entire frame from 0.5 up. The director does
+//    not switch it on at a threshold: the weight it hands over is
+//    `smoothstep(0.35, 0.65, spoken) · spoken`, a ramp, so the crossfade below
+//    is the second half of one continuous fade rather than the softening of a
+//    step.
 //
 // Then one global contrast term, in linear light and before the bloom: the
 // composite of five layers is brighter in its shadows than any one of them, and

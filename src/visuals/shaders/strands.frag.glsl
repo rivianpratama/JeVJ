@@ -39,12 +39,16 @@ const float BASE_EXPOSURE = 1.25;
  *
  * A strand is visible when its hash is under the weight, so the count on screen
  * is the weight times four hundred — and it arrives gradually over the last
- * 0.3 of the ramp rather than popping. At the idle weight of about 0.32 that is
- * roughly forty ribbons at full strength with a soft tail behind them, where the
- * previous window — centred *on* the weight rather than ending at it — lit half
- * as many again at half brightness and read as rain.
+ * stretch of the ramp rather than popping. At the idle weight of about 0.32
+ * that is a few dozen ribbons at full strength with a soft tail behind them,
+ * where a window centred *on* the weight rather than ending at it lit half as
+ * many again at half brightness and read as rain.
+ *
+ * Widened from 0.3 to 0.45 in the real-music pass, alongside the 1.8× thicker
+ * ribbons: a thicker strand carries more light, so more of them have to be
+ * arriving rather than arrived for the curtain to keep its depth.
  */
-const float VIS_RAMP = 0.3;
+const float VIS_RAMP = 0.45;
 /** How hard the light is pulled into the ribbon's centreline. */
 const float CORE_POWER = 2.2;
 /**
@@ -60,17 +64,26 @@ const float CORE_POWER = 2.2;
  * strand's light well past the ribbon and lifts the floor faster than it
  * lifts the mean.
  *
- * Task 11 halved it again, and it was forced: a ribbon is now three times
- * thicker (`lerp(0.012, 0.035, sub)` rather than `lerp(0.004, 0.02, sub)`) and
- * carries a three-times-wider halo pass at 0.15 alpha on top, so the same
- * number gave each visible strand about four times the light it had before.
- * It is set to the largest value the idle floor will carry, and the floor is
- * quantised to 1/255 on the measured scale, so the search ends at a single
- * step: 0.30 reads mean 0.212 with its darkest fifth at 0.0588, and 0.32 tips
- * the floor to 0.0627 against a target of 0.06. Further up the curve, for the
- * record: 0.34 → 0.2175/0.0627, 0.42 → 0.2277/0.0706, 0.55 → 0.24/0.078.
+ * Task 11 halved it, and it was forced: a ribbon is thicker and carries a
+ * three-times-wider halo pass at 0.15 alpha on top, so the same number gave
+ * each visible strand about four times the light it had before. Task 12's
+ * real-music pass thickened it again (×1.8) and widened the visibility window
+ * to 0.45, and both put light back into the *gaps* — which is where the budget
+ * is spent. Measured at 1440×900, DPR 1.5, on the settled idle composite:
+ *
+ *   emission   mean    darkest fifth
+ *   0.05      0.1828   0.0424   (the ink bed alone: the floor without silk)
+ *   0.16      0.1965   0.0586
+ *   0.23      0.2062   0.0681
+ *   0.30      0.2141   0.0746
+ *   0.45      0.2436   0.1105
+ *
+ * The floor is the binding constraint at 0.06, so 0.16 is where the search
+ * ends. The mean lands at 0.197 against a 0.22 target it cannot reach with a
+ * visible curtain: at the emission that would buy it, a fifth of the frame is
+ * a pale wash, which is the failure this whole number exists to prevent.
  */
-const float EMISSION = 0.30;
+const float EMISSION = 0.16;
 
 void main() {
   // Visible when the strand's hash falls under the layer's weight, so the

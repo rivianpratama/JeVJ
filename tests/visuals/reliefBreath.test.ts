@@ -141,8 +141,8 @@ describe('blend', () => {
 });
 
 describe('strands', () => {
-  it('uses the tightened visibility ramp below the weight', () => {
-    expect(strandsFrag).toContain('const float VIS_RAMP = 0.3;');
+  it('uses the visibility ramp below the weight, widened for thicker ribbons', () => {
+    expect(strandsFrag).toContain('const float VIS_RAMP = 0.45;');
     expect(strandsFrag).toContain('smoothstep(0.0, VIS_RAMP, uWeight - vHash)');
   });
 

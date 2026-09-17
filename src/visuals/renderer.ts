@@ -93,6 +93,12 @@ export interface Visuals {
   requestFrameTiming(seconds: number): void;
   /** The device pixel ratio actually in use, after the cap. */
   pixelRatio(): number;
+  /**
+   * Draw at no more than `cap` device pixels per CSS pixel from here on.
+   * Returns whether anything changed — resizing the chain is not free, and the
+   * frame cost it was decided on is not the frame cost afterwards.
+   */
+  setPixelRatioCap(cap: number): boolean;
   dispose(): void;
 }
 
@@ -102,7 +108,15 @@ export function createVisuals(canvas: HTMLCanvasElement): Visuals {
     antialias: false,
     powerPreference: 'high-performance',
   });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO));
+  /**
+   * The cap the governor has settled on; `MAX_PIXEL_RATIO` until it says
+   * otherwise. It is a *cap*: a display that is not dense enough to reach it
+   * draws at its own ratio and nothing here upsamples.
+   */
+  let capRatio = MAX_PIXEL_RATIO;
+  const targetRatio = (): number => Math.min(window.devicePixelRatio || 1, capRatio);
+
+  renderer.setPixelRatio(targetRatio());
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.autoClear = true;
@@ -175,7 +189,7 @@ export function createVisuals(canvas: HTMLCanvasElement): Visuals {
   function resize(): void {
     const w = Math.max(1, canvas.clientWidth || window.innerWidth);
     const h = Math.max(1, canvas.clientHeight || window.innerHeight);
-    const dpr = Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
+    const dpr = targetRatio();
     if (w === width && h === height && dpr === pixelRatio) return;
     // Every buffer in the chain is about to change size; what a frame cost at
     // the old one is not what it will cost at the new one.
@@ -297,6 +311,14 @@ export function createVisuals(canvas: HTMLCanvasElement): Visuals {
     },
 
     pixelRatio: () => pixelRatio,
+
+    setPixelRatioCap(cap: number): boolean {
+      if (!Number.isFinite(cap) || cap <= 0 || cap === capRatio) return false;
+      const before = pixelRatio;
+      capRatio = cap;
+      resize();
+      return pixelRatio !== before;
+    },
 
     resize,
 
