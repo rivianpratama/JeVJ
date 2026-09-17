@@ -51,6 +51,7 @@ export const TRANSITION_PREAMBLE: Record<string, string> = {
   harshDelta: '-1..1 change in how abrasive it is',
   burst: 'what follows is a broadband unpitched noise burst with no beat — applause, laughter, a crowd, a room',
   beatless: 'the music after it has no beat the tracker believes in',
+  eligible: 'the gated kinds this moment qualifies for; only a kind whose criteria name it consults this',
 };
 
 /**
@@ -66,6 +67,14 @@ export const TRANSITION_PREAMBLE: Record<string, string> = {
  * — rather than asking it to imagine the sound. The extra keys are part of the
  * prompt: the model reads the whole criterion object, so this is a wording
  * change, not a comment.
+ *
+ * `scream_peak` is the other one that had to be told what it is not for, and
+ * for the mirror-image reason. Everything abrasive read as a scream: a supersaw
+ * lead and a sidechained pad are flat, bright, loud and step the harshness up
+ * at the seam, which is the signal list word for word. What separates them from
+ * a throat is not on the page at all, so the two readings that mean *a person*
+ * are checked before the question is asked and arrive as `eligible`. See
+ * `TransitionInput.eligible`.
  */
 const KIND_CRITERIA: Record<TransitionKind, Entry> = {
   drop: {
@@ -85,7 +94,8 @@ const KIND_CRITERIA: Record<TransitionKind, Entry> = {
   scream_peak: {
     what: 'harsh, screamed or distorted climax',
     signals: ['harsh at or above 0.6', 'harshDelta positive', 'noise high', 'very bright', 'loud'],
-    not_for: 'a bright synthetic lead or supersaw, which is loud and flat without being screamed',
+    not_for: 'a supersaw, distorted synth lead or sidechained pad — those are electronic, not a voice',
+    requires: '`scream_peak` present in eligible: a screamed climax needs a voice under the harshness',
     note: 'a track that screams continuously still has peaks: name the moments the harshness steps up, not only the one loudest instant',
     prefer_over:
       'tempo_change and key_change, when harsh is at or above 0.6 and harshDelta is positive — a screamed entry moves the harshness, not the pulse',

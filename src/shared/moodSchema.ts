@@ -23,6 +23,7 @@ import {
   type TempoMarking,
   type TrackAnalysis,
   type TransitionInput,
+  type TransitionKind,
   type TransitionVerdict,
   type Trend,
 } from './types';
@@ -288,6 +289,13 @@ export function validateTransitionInput(x: unknown): Valid<TransitionInput> | In
   if (!num(x['harshDelta'], -1, 1)) return bad('harshDelta', 'a finite number in -1..1');
   if (typeof x['burst'] !== 'boolean') return bad('burst', 'a boolean');
   if (typeof x['beatless'] !== 'boolean') return bad('beatless', 'a boolean');
+  const eligible = x['eligible'];
+  // Absent is empty rather than invalid: a cached record written before the
+  // hint existed is still a record, and "no gated kind qualifies" is what it
+  // was saying.
+  if (eligible !== undefined && !(Array.isArray(eligible) && eligible.every((k) => oneOf(k, TRANSITION_KINDS)))) {
+    return bad('eligible', `an array of ${TRANSITION_KINDS.join(', ')}`);
+  }
 
   const v = x as unknown as TransitionInput;
   return {
@@ -305,6 +313,7 @@ export function validateTransitionInput(x: unknown): Valid<TransitionInput> | In
       harshDelta: v.harshDelta,
       burst: v.burst,
       beatless: v.beatless,
+      eligible: Array.isArray(eligible) ? [...(eligible as TransitionKind[])] : [],
     },
   };
 }

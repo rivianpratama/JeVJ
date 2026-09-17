@@ -186,6 +186,26 @@ describe('analyzeTrack on the song fixture', () => {
     }
   }, 60_000);
 
+  it('offers scream_peak only where there is a voice under the harshness', async () => {
+    const { jev } = await run();
+    expect(jev.seen.length).toBeGreaterThan(0);
+
+    // The gate is a statement about the page after the moment, and it is the
+    // page the model is also shown — so every candidate's `eligible` can be
+    // read back off its own numbers, and nothing else is ever on the list.
+    for (const t of jev.seen) {
+      const qualifies = t.after.harsh >= 0.6 && t.after.vocal >= 0.4;
+      expect(t.eligible, `${t.at}: harsh ${t.after.harsh}, vocal ${t.after.vocal}`).toEqual(
+        qualifies ? ['scream_peak'] : [],
+      );
+    }
+
+    // And the exclusion has teeth: the drop at 24 s is the loudest, most
+    // abrasive seam in the fixture and it is a machine, so it is not offered.
+    const slam = jev.seen.find((t) => t.at === '0:24');
+    expect(slam?.eligible).toEqual([]);
+  }, 60_000);
+
   it('shows the model the music either side of each moment', async () => {
     const { jev } = await run();
     const slam = jev.seen.find((t) => t.at === '0:24');

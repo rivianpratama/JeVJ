@@ -180,6 +180,23 @@ describe('selectQuestionIds', () => {
   });
 });
 
+describe('the genre rubric', () => {
+  it('sends the two loud families away from each other by name', () => {
+    // Measured on six real tracks: *Duality* came back `electronic_dance` and a
+    // hard-house set came back `rock_metal`, and both exclusions were the
+    // reason. Each named a *symptom* — "synthetic leads over a steady
+    // four-on-the-floor, however loud", "anything with no beat at all" — which
+    // reads as a description of the other family's best moments. Naming the
+    // family instead is the whole fix.
+    const genre = MOOD_QUESTIONS['genre'];
+    if (genre?.type !== 'choice') throw new Error('genre must be a choice');
+    const rock = genre.criteria['rock_metal'] as { not_for?: string };
+    const edm = genre.criteria['electronic_dance'] as { not_for?: string };
+    expect(rock.not_for).toBe('electronic dance music with synth leads');
+    expect(edm.not_for).toBe('distorted guitars and screamed vocals');
+  });
+});
+
 describe('questionsFor', () => {
   it('hands back exactly the questions named, in the canonical order', () => {
     const picked = questionsFor(['motion', 'valence']);

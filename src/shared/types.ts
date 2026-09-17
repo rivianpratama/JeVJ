@@ -186,6 +186,24 @@ export interface TransitionInput {
    * their swells named as drops for want of this flag.
    */
   beatless: boolean;
+  /**
+   * The gated kinds whose measured preconditions this moment actually meets.
+   *
+   * A whitelist, and a narrow one: only a kind whose own criteria say they
+   * consult it looks here at all, and today that is `scream_peak` alone. The
+   * rest of the taxonomy is judged from the two pages as it always was, so an
+   * empty array is not a claim that nothing happened here.
+   *
+   * It exists because `scream_peak` is the one kind the model kept reaching
+   * for on evidence that was not there. A supersaw lead and a sidechained pad
+   * are abrasive by every number on the page — flat, bright, loud, a harshness
+   * that steps up at the seam — and nothing in a payload says "that is a
+   * machine, not a throat" except the voice detector. So the two readings that
+   * together mean *a person screaming* are checked here, once, against the page
+   * after the moment, and the model is told the answer rather than asked to
+   * infer it.
+   */
+  eligible: TransitionKind[];
 }
 
 /** What Jev says one candidate moment is, and how hard it lands. */

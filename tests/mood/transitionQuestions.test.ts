@@ -49,10 +49,15 @@ describe('transitionQuestions', () => {
       ],
       requires: 'a beat under what follows: beatless must be false',
     });
+    // The exclusion names the *sources* rather than the symptom: "loud and flat
+    // without being screamed" describes a sidechained pad as accurately as it
+    // describes a supersaw, and the model read it as a description of the
+    // instant rather than of the instrument.
     expect(kind.criteria['scream_peak']).toEqual({
       what: 'harsh, screamed or distorted climax',
       signals: ['harsh at or above 0.6', 'harshDelta positive', 'noise high', 'very bright', 'loud'],
-      not_for: 'a bright synthetic lead or supersaw, which is loud and flat without being screamed',
+      not_for: 'a supersaw, distorted synth lead or sidechained pad — those are electronic, not a voice',
+      requires: '`scream_peak` present in eligible: a screamed climax needs a voice under the harshness',
       note: 'a track that screams continuously still has peaks: name the moments the harshness steps up, not only the one loudest instant',
       prefer_over:
         'tempo_change and key_change, when harsh is at or above 0.6 and harshDelta is positive — a screamed entry moves the harshness, not the pulse',

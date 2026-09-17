@@ -190,13 +190,13 @@ export const MOOD_QUESTIONS: Record<string, Question> = {
       jazz: { what: 'swing, complex harmony, improvisation, brass/piano/upright bass' },
       electronic_dance: {
         what: 'four-on-the-floor or breakbeat, synthetic, 120-180 bpm, builds and drops',
-        not_for: 'distorted guitars and screamed vocals, or anything with no beat at all',
+        not_for: 'distorted guitars and screamed vocals',
       },
       hiphop_trap: { what: '70-100 bpm half-time feel, heavy sub 808s, sparse hats, rap vocals' },
       rock_metal: {
         what: 'distorted guitars, live drums, dense midrange, aggressive',
         signals: ['distorted guitars', 'live drums', 'harsh >= 0.6', 'dense midrange'],
-        not_for: 'synthetic leads over a steady four-on-the-floor, however loud; that is electronic_dance',
+        not_for: 'electronic dance music with synth leads',
       },
       ambient_drone: { what: 'beatless or nearly beatless, sustained textures, slow evolution' },
       pop: { what: 'compressed, vocal-led, verse-chorus, moderate tempo' },

@@ -61,6 +61,7 @@ export function exampleTransition(at = '2:04', over: Partial<TransitionInput> = 
     harshDelta: 0.3,
     burst: false,
     beatless: false,
+    eligible: [],
     ...over,
   };
 }

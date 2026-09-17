@@ -88,11 +88,23 @@ export function smokeLevel(density: number, knee: number, falloff: number): numb
  * The two gates together are the halving — 0.56 of the wash reaches the buffer
  * — and the falloff takes more again. Halving the *level* as well would have
  * put the idle frame at a mean of 0.06 against a binding window of 0.19–0.27,
- * which is not a dark picture, it is an empty one. So the level is solved for
- * the measurement rather than for the arithmetic, and it lands at 4: the idle
- * field reads a mean of 0.22 with its darkest fifth at 0 and its brightest
- * twentieth at 0.81, against v1's 0.27 / 0.00 / 0.81.
- * tests/visuals/inkMath.test.ts holds all of it.
+ * which is not a dark picture, it is an empty one.
+ *
+ * So the level is solved for the measurement rather than for the arithmetic,
+ * and the measurement has moved twice. It went 2 → 7 when the two gates were
+ * first accounted for, and 7 → 9 alongside `VEIN_LO` 0.52 → 0.54 when the vein
+ * gate gained a floor (`VEIN_FLOOR`) and the strands gained a gamma, both of
+ * which took light back out. At 9 the analytic model of the wash in
+ * `tests/helpers/smokeField.ts` — the injection alone, with no advection —
+ * reads a mean of 0.231, a darkest fifth at 0.042 and a brightest twentieth at
+ * 0.982.
+ *
+ * What none of those numbers are is a promise about the *screen*: the field
+ * there is the wash folded into itself by minutes of flow, and the model above
+ * is one frame of injection. It is the lever, not the reading. If the idle
+ * page looks washed out or looks dead, this is the number to move, and
+ * `tests/visuals/inkMath.test.ts` is what keeps it the fixed point of the loop
+ * at every decay while you move it.
  */
 export const AMBIENT_LEVEL = 9;
 

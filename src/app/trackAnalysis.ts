@@ -45,6 +45,7 @@ import type {
   TrackAnalysis,
   TokenUsage,
   TransitionInput,
+  TransitionKind,
   TransitionVerdict,
 } from '../shared/types';
 
@@ -109,6 +110,25 @@ const BEATLESS_ONSETS_PER_SEC = 3;
 const BURST_FLATNESS = 0.15;
 const BURST_HARSH = 0.45;
 const BURST_TRUST = 0.3;
+
+/**
+ * What a screamed climax needs before it is even offered as one.
+ *
+ * Harshness alone does not distinguish a throat from a machine. A supersaw
+ * lead, a distorted synth and a hard-sidechained pad are all abrasive,
+ * bright, flat and loud, and all of them step the harshness up at a seam —
+ * which is the `scream_peak` signal list word for word. What none of them have
+ * is a voice, and the voice detector is the one reading that says so. So the
+ * two are required together: the harshness says *abrasive*, the vocal reading
+ * says *a person*, and only a candidate with both is put on the table as
+ * scream-eligible. Everything else that is merely loud and nasty is left to be
+ * judged from the pages, where `drop` and `none` are both available.
+ *
+ * Read off the page after the moment, like `burst` and `beatless`, so a
+ * candidate the gate closes on is one whose own page says why.
+ */
+const SCREAM_HARSH = 0.6;
+const SCREAM_VOCAL = 0.4;
 
 export interface TrackAnalysisDeps {
   /** One passage. Pass 1 calls this once per segment. */
@@ -317,7 +337,21 @@ export function buildTransitionInput(
     harshDelta: round(meanAround(o.frames, o.harsh, t, half, 1) - meanAround(o.frames, o.harsh, t, half, -1), 2),
     burst: isBurst(after?.input ?? null),
     beatless: isBeatless(after?.input ?? null),
+    eligible: eligibleKinds(after?.input ?? null),
   };
+}
+
+/**
+ * The gated kinds this moment's measurements actually permit.
+ *
+ * One entry today. It is an array rather than a boolean because the gate is a
+ * statement about the taxonomy — *these kinds are on the table* — and the next
+ * kind that needs one should join the list rather than add a second flag with
+ * a name nobody can guess the polarity of.
+ */
+function eligibleKinds(page: MoodInput | null): TransitionKind[] {
+  if (page === null) return [];
+  return page.harsh >= SCREAM_HARSH && page.vocal >= SCREAM_VOCAL ? ['scream_peak'] : [];
 }
 
 /**

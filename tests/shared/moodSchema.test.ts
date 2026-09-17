@@ -141,6 +141,24 @@ describe('validateTransitionInput', () => {
       expect(r.ok, JSON.stringify(over)).toBe(false);
     }
   });
+
+  it('takes the eligibility hint as a list of kinds, and nothing else', () => {
+    const ok = validateTransitionInput({ ...exampleTransition(), eligible: ['scream_peak'] });
+    expect(ok.ok && ok.value.eligible).toEqual(['scream_peak']);
+
+    for (const over of [{ eligible: 'scream_peak' }, { eligible: ['shouty'] }, { eligible: [1] }]) {
+      expect(validateTransitionInput({ ...exampleTransition(), ...over }).ok, JSON.stringify(over)).toBe(false);
+    }
+  });
+
+  it('reads a candidate written before the hint existed as qualifying for nothing', () => {
+    // Analyses are cached on disk under a video id and read back months later.
+    // A record from before the gate is still a record, and "no gated kind
+    // qualifies" is exactly what it was saying.
+    const { eligible: _dropped, ...older } = exampleTransition();
+    const r = validateTransitionInput(older);
+    expect(r.ok && r.value.eligible).toEqual([]);
+  });
 });
 
 describe('validateTransitionVerdict', () => {
