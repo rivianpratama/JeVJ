@@ -18,8 +18,13 @@ function phaseAt(t: number): number {
  * The tracker as the analysis loop drives it: ticked every frame, told about
  * the onsets in `onsets` as their moment goes by.
  */
-function run(onsets: Array<{ t: number; strength: number }>, seconds: number): RhythmTracker {
+function run(
+  onsets: Array<{ t: number; strength: number }>,
+  seconds: number,
+  meterEvidence = true,
+): RhythmTracker {
   const tracker = new RhythmTracker();
+  tracker.setMeterEvidence(meterEvidence);
   const sorted = [...onsets].sort((a, b) => a.t - b.t);
   let next = 0;
 
@@ -101,6 +106,22 @@ describe('RhythmTracker meter', () => {
     );
 
     expect(tracker.meter()).toBe('duple');
+  });
+
+  it('counts no meter at all while the beat it is handed is not the real one', () => {
+    // The waltz of the test above, ticked against a beat the caller does not
+    // believe in — a grid free-running before the tempo is measured.
+    const tracker = run(
+      onBeats(36, (b) => (b % 3 === 0 ? 3 : 1)),
+      18,
+      false,
+    );
+
+    expect(tracker.meter()).toBe('unclear');
+    // The gate is on the meter alone; the groove is measured against times
+    // and phases that are no worse for the beat being a guess.
+    expect(tracker.regularity()).toBeGreaterThan(0.9);
+    expect(tracker.onsetsPerSec(17.5)).toBeGreaterThan(1.8);
   });
 
   it('will not guess from flat onsets, or from none', () => {

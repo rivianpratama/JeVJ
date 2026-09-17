@@ -84,6 +84,15 @@ export class RhythmTracker {
   private beats = 0;
   private prevPhase = -1;
 
+  /**
+   * Whether the phases coming in are worth counting a meter from. On by
+   * default — a tracker driven on its own has no reason to distrust its
+   * caller — and turned off by the analysis loop until the tempo is measured,
+   * because until then the grid is free-running on a default 120 BPM and its
+   * phase wraps are fiction.
+   */
+  private meterEvidence = true;
+
   /** The answer `meter()` gives, the one competing with it, and its run. */
   private published: Meter = 'unclear';
   private candidate: Meter = 'unclear';
@@ -115,6 +124,18 @@ export class RhythmTracker {
     this.advance(phase);
   }
 
+  /**
+   * Whether the beat these phases come from is real.
+   *
+   * Only the meter is gated. Syncopation, regularity and the onset counts keep
+   * working throughout: they are measured against phases and wall times that
+   * are no worse for the beat being a guess, whereas a bar counted off a
+   * free-running grid is an accent pattern read out of nothing.
+   */
+  setMeterEvidence(enabled: boolean): void {
+    this.meterEvidence = enabled;
+  }
+
   /** One onset, with the grid's phase at the moment it sounded. */
   pushOnset(t: number, strength: number, phase: number): void {
     this.advance(phase);
@@ -125,8 +146,10 @@ export class RhythmTracker {
     this.head = (this.head + 1) % CAPACITY;
     if (this.stored < CAPACITY) this.stored += 1;
 
-    this.acc3[this.beats % 3] = this.acc3[this.beats % 3]! + strength;
-    this.acc4[this.beats % 4] = this.acc4[this.beats % 4]! + strength;
+    if (this.meterEvidence) {
+      this.acc3[this.beats % 3] = this.acc3[this.beats % 3]! + strength;
+      this.acc4[this.beats % 4] = this.acc4[this.beats % 4]! + strength;
+    }
     this.onsets += 1;
   }
 
@@ -211,7 +234,7 @@ export class RhythmTracker {
   /** A phase that has gone backwards is a beat that has gone by. */
   private advance(phase: number): void {
     const p = wrap(phase);
-    if (this.prevPhase >= 0 && p < this.prevPhase) {
+    if (this.meterEvidence && this.prevPhase >= 0 && p < this.prevPhase) {
       this.beats += 1;
       for (let i = 0; i < 3; i++) this.acc3[i] = this.acc3[i]! * METER_DECAY;
       for (let i = 0; i < 4; i++) this.acc4[i] = this.acc4[i]! * METER_DECAY;

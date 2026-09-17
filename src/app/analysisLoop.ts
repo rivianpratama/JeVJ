@@ -38,6 +38,17 @@ const TEMPO_WINDOW = 6;
  * accumulator to nothing and smooth the timbre through a whole song.
  */
 const MAX_FRAME_GAP = 0.25;
+/**
+ * How sure of the tempo the loop has to be before the rhythm tracker is
+ * allowed to count a meter.
+ *
+ * Until a tempo has been measured the grid free-runs on its default 120 BPM,
+ * and the phase wraps the tracker counts beats from have nothing to do with
+ * the music. Accent evidence gathered against them is an accent pattern read
+ * out of nothing, and on a plain 4/4 click track it was enough to publish a
+ * spurious triple and leave the grid counting in three.
+ */
+const METER_EVIDENCE_CONFIDENCE = 0.3;
 
 export interface RhythmReading {
   sync: number;
@@ -195,7 +206,11 @@ export class AnalysisLoop {
     this.speech.push(features.rms, features.t, features);
 
     // The rhythm tracker counts beats from phase wraps, so it has to see every
-    // frame, not only the ones an onset landed on.
+    // frame, not only the ones an onset landed on — but those wraps are only
+    // the music's beats once the tempo is measured and believed.
+    this.rhythm.setMeterEvidence(
+      this.tempo !== null && this.tempo.confidence >= METER_EVIDENCE_CONFIDENCE,
+    );
     this.rhythm.tick(phase);
     if (onset > 0) this.rhythm.pushOnset(features.t, onset, phase);
 

@@ -144,9 +144,8 @@ describe('AnalysisLoop', () => {
   it('does not churn the grid over a steady four-four click track', () => {
     // Every reading the loop forwards costs the grid its downbeat evidence, so
     // a meter that flickers costs it repeatedly. Un-debounced this track drew
-    // two calls in twenty seconds — a spurious triple and the retraction of it;
-    // the tracker's first, un-debounced answer is the only one that should get
-    // through now.
+    // two calls in twenty seconds — a spurious triple and the retraction of it
+    // — and the spurious one left the grid counting in three.
     const spy = vi.spyOn(BeatGrid.prototype, 'setMeter');
     try {
       const loop = new AnalysisLoop();
@@ -154,11 +153,14 @@ describe('AnalysisLoop', () => {
       const lengths = new Set<number>();
       for (let i = 0; i < Math.floor((20 * FS) / 735); i++) {
         loop.step();
-        lengths.add(loop.latest()!.grid.barLength);
+        // Before the first tempo estimate the phase is fiction and no meter
+        // evidence is counted at all; from there on the bar stays four.
+        if (loop.latest()!.tempo !== null) lengths.add(loop.latest()!.grid.barLength);
       }
 
+      // A 4 → 4 call is a no-op inside the grid, so one is tolerated.
       expect(spy.mock.calls.length).toBeLessThanOrEqual(1);
-      expect(lengths.size).toBeLessThanOrEqual(2);
+      expect([...lengths]).toEqual([4]);
     } finally {
       spy.mockRestore();
     }
