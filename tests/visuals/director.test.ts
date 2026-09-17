@@ -29,6 +29,10 @@ function fast(over: Partial<FastFrame> = {}): FastFrame {
     downbeatPulse: 0,
     impact: 0,
     build: 0,
+    // No beat and no rhythm by default: a frame that has not said otherwise is
+    // a frame with nothing findable in it, and the rotation is driven by both.
+    beatConf: 0,
+    regular: 0,
     ...over,
   };
 }
@@ -217,6 +221,27 @@ describe('direct', () => {
       expect(f.posterize).toBe(0);
       expect(f.bloomStrength).toBeLessThanOrEqual(0.4);
       expect(f.exposure).toBeCloseTo(1, 6);
+    }
+  });
+
+  it('lets no flourish touch the smoke under a talking voice', () => {
+    // The safety used to be applied to the flourish *after* every smoke target
+    // had already been built from it, so over speech a drop still burst the
+    // field outward, a hole still froze the decay and a scream still doubled
+    // the grain. Everything a flourish can reach is checked against the same
+    // frame with no cue at all.
+    const talking = mood({ spoken: 1, arousal: 0.6, synthetic: 0.5 });
+    const keys = ['pushOut', 'flowAmt', 'decay', 'injectGain', 'grain'] as const;
+    for (const kind of ['drop', 'break_silence', 'quiet_fall', 'scream_peak'] as const) {
+      // 200 frames of speech first, so the safety has fully engaged before the
+      // cue lands; then the cue, then the whole of its window.
+      const quiet = run(260, talking, () => fast());
+      const fired = runWithCue(260, talking, [kind], 200);
+      for (let i = 200; i < 260; i++) {
+        for (const key of keys) {
+          expect(fired[i]![key]).toBeCloseTo(quiet[i]![key], 6);
+        }
+      }
     }
   });
 
@@ -571,9 +596,27 @@ describe('direct', () => {
     expect(rising.decay).toBeLessThan(1);
   });
 
-  it('turns posterize on only for hard synthetic peaks', () => {
-    expect(once(mood({ synthetic: 1, arousal: 1 }), fast()).posterize).toBe(6);
-    expect(once(mood({ synthetic: 1, arousal: 0.5 }), fast()).posterize).toBe(0);
+  it('turns posterize on for hypnotic machine music and for a seam, not for loudness', () => {
+    // The window narrowed in the v2.1 tuning pass. Hard colour steps sustained
+    // through a whole section read as banding rather than as a look, so "loud
+    // and synthetic" — which is most of a dance track — no longer qualifies on
+    // its own. What does: repetition that is the point, and the first second
+    // and a half of a drop or a scream.
+    expect(once(mood({ synthetic: 1, arousal: 1, hypnotic: 0.8 }), fast()).posterize).toBe(6);
+    expect(once(mood({ synthetic: 1, arousal: 1, hypnotic: 0.2 }), fast()).posterize).toBe(0);
+    expect(once(mood({ synthetic: 1, arousal: 0.5, hypnotic: 0.2 }), fast()).posterize).toBe(0);
+    // Acoustic music never gets it, however hypnotic.
+    expect(once(mood({ synthetic: 0.3, arousal: 1, hypnotic: 0.9 }), fast()).posterize).toBe(0);
+  });
+
+  it('posterizes for the window after a drop and then stops', () => {
+    const m = mood({ synthetic: 1, arousal: 1, hypnotic: 0.2 });
+    const seen = runWithCue(200, m, ['drop'], 5);
+    // The seam itself, and still a fraction of a second later.
+    expect(seen[5]!.posterize).toBe(6);
+    expect(seen[20]!.posterize).toBe(6);
+    // The drop flourish is 0.6 s long; once it is over the banding is gone.
+    expect(seen[150]!.posterize).toBe(0);
   });
 
   it('reads the grain from the noisiness proxy', () => {
@@ -635,7 +678,7 @@ describe('direct', () => {
     // the reading crosses. The clamp engages at 0.6 and lets go at 0.4, and
     // between the two it holds whatever it was doing.
     const state = createDirector();
-    const acid = { synthetic: 1, arousal: 1 };
+    const acid = { synthetic: 1, arousal: 1, hypnotic: 0.8 };
     const talking = mood({ ...acid, spoken: 0.9 });
     const music = mood({ ...acid, spoken: 0 });
     let p: RenderParams | null = null;
@@ -698,19 +741,44 @@ function runWithCue(
   return out;
 }
 
+/** A frame with a beat in it, which is what the rotation is driven by. */
+const METRED = { beatConf: 1, regular: 1 };
+
 describe('the smoke rotates', () => {
   it('turns at the rate the direction specifies, and faster the louder it is', () => {
-    const calm = run(60, mood({ arousal: 0 }), () => fast());
-    const loud = run(60, mood({ arousal: 1 }), () => fast());
-    expect(calm[59]!.spinRate).toBeCloseTo(spinBaseRate(0), 6);
-    expect(loud[59]!.spinRate).toBeCloseTo(spinBaseRate(1), 6);
+    const drive = (arousal: number): Parameters<typeof spinBaseRate>[0] => ({
+      arousal,
+      beatConf: 1,
+      regular: 1,
+      spoken: 0,
+      section: 'other',
+    });
+    const calm = run(60, mood({ arousal: 0, spoken: 0 }), () => fast(METRED));
+    const loud = run(60, mood({ arousal: 1, spoken: 0 }), () => fast(METRED));
+    expect(calm[59]!.spinRate).toBeCloseTo(spinBaseRate(drive(0)), 6);
+    expect(loud[59]!.spinRate).toBeCloseTo(spinBaseRate(drive(1)), 6);
     // And the angle is an integral of it, not a function of the frame index.
     expect(loud[59]!.spin).toBeGreaterThan(calm[59]!.spin);
-    expect(loud[59]!.spin).toBeCloseTo(spinBaseRate(1), 2);
+    expect(loud[59]!.spin).toBeCloseTo(spinBaseRate(drive(1)), 2);
+  });
+
+  it('barely turns at all under a talking voice', () => {
+    // The whole point of the v2.1 drive: a podcast is not a thing that spins.
+    const spoken = run(60, mood({ arousal: 0.6, spoken: 1 }), () => fast(METRED));
+    expect(Math.abs(spoken[59]!.spinRate)).toBeLessThanOrEqual(0.01);
+  });
+
+  it('barely turns on music with no findable beat', () => {
+    const beatless = run(60, mood({ arousal: 0.9 }), () => fast({ beatConf: 0, regular: 0 }));
+    expect(Math.abs(beatless[59]!.spinRate)).toBeLessThanOrEqual(0.01);
+    // And it is never exactly still: a frozen field reads as a screenshot.
+    expect(Math.abs(beatless[59]!.spinRate)).toBeGreaterThan(0);
   });
 
   it('kicks on an onset and lets the kick go', () => {
-    const hit = run(40, mood({ arousal: 0.5 }), (i) => fast({ onset: i === 10 ? 1 : 0 }));
+    const hit = run(40, mood({ arousal: 0.5, spoken: 0, motion: 'pulse' }), (i) =>
+      fast({ ...METRED, onset: i === 10 ? 1 : 0 }),
+    );
     const base = hit[9]!.spinRate;
     expect(hit[10]!.spinRate).toBeGreaterThan(base + 0.5);
     expect(hit[39]!.spinRate).toBeLessThan(hit[10]!.spinRate);
@@ -719,7 +787,9 @@ describe('the smoke rotates', () => {
 
   it('reverses on a drop and on a breakdown, over a second and a half', () => {
     for (const kind of ['drop', 'breakdown'] as const) {
-      const seen = runWithCue(200, mood({ arousal: 0.5 }), [kind], 5);
+      const seen = runWithCue(200, mood({ arousal: 0.5 }), [kind], 5, {
+        f: () => fast(METRED),
+      });
       expect(seen[4]!.spinRate).toBeGreaterThan(0);
       expect(seen[199]!.spinRate).toBeLessThan(0);
       // Through a standstill rather than between two frames.
@@ -728,18 +798,57 @@ describe('the smoke rotates', () => {
     }
   });
 
+  it('will not turn the field round more than once every four seconds', () => {
+    // The real-track pass: pass 2 on a talk named nine drops and five
+    // breakdowns in four minutes — applause reads as a slam — and the field
+    // spent the whole recording turning itself round. A reversal is the largest
+    // gesture the picture has and it needs a cooldown, not only a lock while
+    // one is in flight.
+    const state = createDirector();
+    let p: RenderParams | null = null;
+    const rates: number[] = [];
+    // A `drop` every second for twelve seconds.
+    for (let i = 0; i < 720; i++) {
+      p = direct(
+        state,
+        mood({ arousal: 0.5, spoken: 0 }),
+        fast(METRED),
+        FRAME,
+        p,
+        false,
+        i % 60 === 0 && i > 0 ? ['drop'] : [],
+      );
+      rates.push(p.spinRate);
+    }
+    // Twelve cues, at most three reversals: count the sign changes.
+    let flips = 0;
+    for (let i = 1; i < rates.length; i++) {
+      if (Math.sign(rates[i]!) !== Math.sign(rates[i - 1]!)) flips++;
+    }
+    expect(flips).toBeLessThanOrEqual(3);
+    expect(flips).toBeGreaterThan(0);
+  });
+
   it('does not reverse on the kinds that are not a seam in the flow', () => {
     for (const kind of ['vocal_entry', 'quiet_fall', 'build_start', 'none'] as const) {
-      const seen = runWithCue(200, mood({ arousal: 0.5 }), [kind], 5);
+      const seen = runWithCue(200, mood({ arousal: 0.5 }), [kind], 5, {
+        f: () => fast(METRED),
+      });
       expect(seen[199]!.spinRate).toBeGreaterThan(0);
     }
   });
 
   it('takes the kicks away under reduced motion but keeps turning', () => {
-    const seen = run(40, mood({ arousal: 0.5 }), (i) => fast({ onset: i === 10 ? 1 : 0 }), true);
+    const seen = run(
+      40,
+      mood({ arousal: 0.5 }),
+      (i) => fast({ ...METRED, onset: i === 10 ? 1 : 0 }),
+      true,
+    );
+    const full = spinBaseRate({ arousal: 0.5, beatConf: 1, regular: 1, spoken: 0 });
     for (const p of seen) {
       expect(p.spinRate).toBeGreaterThan(0);
-      expect(p.spinRate).toBeLessThanOrEqual(spinBaseRate(0.5));
+      expect(p.spinRate).toBeLessThanOrEqual(full);
     }
   });
 });

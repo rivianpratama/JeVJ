@@ -53,6 +53,17 @@ const float BASE_EXPOSURE = 1.25;
  * arriving rather than arrived for the curtain to keep its depth.
  */
 const float VIS_RAMP = 0.45;
+/**
+ * The gamma on the weight before it is used as a visibility threshold.
+ *
+ * The count on screen used to be the weight times four hundred, which at the
+ * idle weight of about 0.32 is a hundred and thirty ribbons — a curtain, on a
+ * page that has heard nothing, and the direction asks for twenty-five. A gamma
+ * rather than a cap, because the curtain still has to assemble when the mix
+ * actually hands this layer the frame: 0.32^2.5 is 0.058, twenty-three strands,
+ * and a weight of 1 is still all four hundred.
+ */
+const float VIS_GAMMA = 2.5;
 /** How hard the light is pulled into the ribbon's centreline. */
 const float CORE_POWER = 2.2;
 /**
@@ -108,7 +119,7 @@ void main() {
   // Visible when the strand's hash falls under the layer's weight, so the
   // number of ribbons on screen is the weight times four hundred, and fully lit
   // only once the weight has risen a further 0.3 past it.
-  float vis = smoothstep(0.0, VIS_RAMP, uWeight - vHash);
+  float vis = smoothstep(0.0, VIS_RAMP, pow(max(uWeight, 0.0), VIS_GAMMA) - vHash);
   if (vis <= 0.0) discard;
 
   float fade = smoothstep(0.0, FADE, vT) * smoothstep(1.0, 1.0 - FADE, vT);

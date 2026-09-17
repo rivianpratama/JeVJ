@@ -63,6 +63,20 @@ const float CONTRAST = 0.35;
 const float RELIEF_OPACITY = 1.6;
 /** The breath weight at which the frame is entirely the breath. */
 const float BREATH_FULL = 0.5;
+/**
+ * The ceiling on the mix, before the bloom.
+ *
+ * The buffers are HDR precisely so the highlights have somewhere to go, but
+ * "somewhere" is not "anywhere": at a drop the lobes, the impact shell and the
+ * exposure flare all land on the same pixels, and the sum ran to several times
+ * full scale. What the bloom then does with that is spread it — a bright pass
+ * at a 0.55 threshold over a value of four is a wide flat white region, which
+ * is what the climax frames measured as. 1.4 is enough headroom for a core to
+ * read as a core and to bloom like one, and not enough for a whole quarter of
+ * the frame to clip together. Taken per channel, so a hot red core stays red
+ * rather than being desaturated by a luminance clamp.
+ */
+const float PRE_BLOOM_MAX = 1.4;
 
 vec3 screen(vec3 a, vec3 b) {
   vec3 lo = 1.0 - (1.0 - min(a, 1.0)) * (1.0 - min(b, 1.0));
@@ -91,5 +105,5 @@ void main() {
   vec3 hi = max(col - 1.0, 0.0);
   col = mix(lo, lo * lo * (3.0 - 2.0 * lo), CONTRAST) + hi;
 
-  gl_FragColor = vec4(col, 1.0);
+  gl_FragColor = vec4(min(col, vec3(PRE_BLOOM_MAX)), 1.0);
 }

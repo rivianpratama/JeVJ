@@ -94,7 +94,7 @@ export function smokeLevel(density: number, knee: number, falloff: number): numb
  * twentieth at 0.81, against v1's 0.27 / 0.00 / 0.81.
  * tests/visuals/inkMath.test.ts holds all of it.
  */
-export const AMBIENT_LEVEL = 7;
+export const AMBIENT_LEVEL = 9;
 
 /**
  * The decay `ink_feedback.frag` substitutes for the director's under the

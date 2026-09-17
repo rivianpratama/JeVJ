@@ -136,6 +136,8 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
     downbeatPulse: 0,
     impact: 0,
     build: 0,
+    beatConf: 0,
+    regular: 0,
   };
   // The effective mood, rebuilt in place from the mood layer and the timeline
   // — one object for the life of the page, like the FastFrame.
@@ -197,6 +199,10 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
       fast.sub = f.sub;
       fast.onset = snap.onset;
       fast.beatPhase = snap.phase;
+      // What the rotation is driven by: how sure the grid is, and how even the
+      // onsets are. Both are the analysis's own readings rather than judgments.
+      fast.beatConf = snap.grid.confidence;
+      fast.regular = snap.rhythm.regular;
 
       for (const beat of snap.beats) {
         if (beat.downbeat && beat.t > lastDownbeatAt) lastDownbeatAt = beat.t;
@@ -290,6 +296,13 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
     fast.onset = beat % IDLE_ONSET_EVERY === 0 && intoBeat < 0.1 ? IDLE_ONSET : 0;
     fast.impact = 0;
     fast.build = 0;
+    // A page that has heard nothing has no beat and no rhythm, and says so:
+    // the 60 BPM clock above is a fiction for the lobes and the filaments, not
+    // evidence of a metre. With both at zero the rotation is `SPIN_DRIFT` —
+    // one turn in twenty-six minutes, which is the difference between a still
+    // picture and a living one and is not a picture that is spinning.
+    fast.beatConf = 0;
+    fast.regular = 0;
     const barPhase = beats / IDLE_BEATS_PER_BAR;
     fast.downbeatPulse = pulseAt((barPhase - Math.floor(barPhase)) * IDLE_BEATS_PER_BAR);
   }

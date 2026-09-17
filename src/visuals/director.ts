@@ -45,6 +45,7 @@ import {
   type FlourishState,
   type SpinState,
 } from './smokeMath';
+import { FLOURISH_SEC } from './smokeMath';
 import { GENRES, MOTIONS, SECTIONS } from '../shared/types';
 import type { Genre, Motion, MoodVector, Section, TransitionKind } from '../shared/types';
 
@@ -59,6 +60,18 @@ export interface FastFrame {
   downbeatPulse: number;
   impact: number;
   build: number;
+  /**
+   * How sure the beat grid is that it has found the beat, 0..1, and how even
+   * the onsets are.
+   *
+   * Both are facts about the rhythm rather than judgments about the music, so
+   * they come off the analysis snapshot rather than out of the mood vector —
+   * and they are here because the rotation is driven by them: a field that
+   * turns on music with no findable beat is turning for no reason. An idle
+   * page reports the two the idle clock deserves; see `visualLink`.
+   */
+  beatConf: number;
+  regular: number;
 }
 
 export interface RenderParams {
@@ -210,6 +223,34 @@ const COOL_GRAIN_GENRES: ReadonlySet<Genre> = new Set<Genre>(['rock_metal']);
  */
 const POSTERIZE_CLAMP_ON = 0.6;
 const POSTERIZE_CLAMP_OFF = 0.4;
+/**
+ * The chromatic aberration's ceilings.
+ *
+ * `CHROMA_BASE_MAX` is the standing fringe under the loudest machine music;
+ * everything above it belongs to `impact` and to the flourishes, which are
+ * events. `CHROMA_QUIET_MAX` is what a calm page may carry at all, and
+ * `CHROMA_QUIET_AT` is where "calm" starts — below it there is nothing for
+ * fringing to be about, and the afterimage smears whatever is there into a
+ * permanent coloured ghost.
+ */
+const CHROMA_BASE_MAX = 0.004;
+const CHROMA_QUIET_AT = 0.4;
+const CHROMA_QUIET_MAX = 0.002;
+/** How far into a drop or a scream the posterize window reaches. */
+const POSTERIZE_FLOURISH_SEC = 1.5;
+/** The kaleidoscope's ceiling through a climax, and the hypnotic that lifts it. */
+const CLIMAX_MIRROR_MAX = 0.6;
+const CLIMAX_MIRROR_FREE = 0.8;
+/**
+ * The hardest the frame may ever be printed.
+ *
+ * A slam is supposed to white the screen out for an instant and then decay; it
+ * is not supposed to clip to flat white and stay there. The flare is
+ * `1 + 0.25·impact` plus a drop flourish's own 0.35 on `(1 − t)²`, which tops
+ * out at 1.6 — this is the ceiling under it, measured so the brightest
+ * twentieth of the impact frame lands at 0.95 rather than at 1.
+ */
+const EXPOSURE_MAX = 1.6;
 /** The strobe cap: at most three luminance reversals a second. */
 const MIN_FLIP_SEC = 1 / 3;
 /** Exposure moves smaller than this do not count as a direction. */
@@ -221,6 +262,8 @@ const MIN_FOLDS = 2;
 const MAX_FOLDS = 6;
 /** How long a different fold count has to be wanted before it is taken. */
 const FOLD_HOLD_SEC = 0.5;
+/** The shortest gap between two reversals of the flow; see the use site. */
+const REVERSE_COOLDOWN_SEC = 4;
 
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
@@ -342,6 +385,8 @@ const BREAKDOWN_DECAY = 0.03;
 const BREAKDOWN_SPEED = 0.5;
 /** How hard a climax flares the bloom, and for how long after the hit. */
 const CLIMAX_BLOOM = 1.3;
+/** The lowest the bright pass may sit through a climax; see the use site. */
+const CLIMAX_BLOOM_THRESHOLD = 0.85;
 const CLIMAX_BLOOM_SEC = 1;
 /** How big a hit starts that second. */
 const CLIMAX_IMPACT_GATE = 0.5;
@@ -397,6 +442,8 @@ export interface DirectorState {
    * frame's `bloomStrength`, which is the flared number rather than the base.
    */
   lastClimaxAt: number;
+  /** When the flow last turned round, on the same clock. */
+  lastReverseAt: number;
   /**
    * The rotation's integrator: angle, rate, the decaying beat kick and where a
    * reversal has got to. It cannot be read back off the previous `RenderParams`
@@ -432,6 +479,7 @@ export function createDirector(): DirectorState {
     safety: 0,
     posterizeClamped: false,
     lastClimaxAt: Number.NEGATIVE_INFINITY,
+    lastReverseAt: Number.NEGATIVE_INFINITY,
     spin: createSpin(),
     flourishes: createFlourishes(),
     effect: neutralFlourish(),
@@ -507,6 +555,7 @@ export function direct(
     state.lastFlipAt = Number.NEGATIVE_INFINITY;
     state.lastDir = 0;
     state.lastClimaxAt = Number.NEGATIVE_INFINITY;
+    state.lastReverseAt = Number.NEGATIVE_INFINITY;
     resetFlourishes(state.flourishes);
   }
   state.clock += step;
@@ -528,85 +577,6 @@ export function direct(
   const aggression = clamp01(mood.aggression);
   const spoken = clamp01(mood.spoken);
   const section = mood.section;
-
-  // The seams. A `drop` or a `breakdown` turns the whole field the other way —
-  // over a second and a half, never between two frames — and anything Jev
-  // called dramatic also fires a one-shot. A reversal already in flight is not
-  // restarted: two cues 200 ms apart are one seam, and letting the second
-  // cancel the first would leave the smoke turning the way it started.
-  let reverse = false;
-  for (const kind of transitions) {
-    if (kind === 'drop' || kind === 'breakdown') reverse = true;
-    fireFlourish(state.flourishes, kind, state.clock);
-  }
-  if (state.spin.reverseLeft > 0) reverse = false;
-  stepSpin(state.spin, {
-    dt: step,
-    arousal,
-    onset: fast.onset,
-    reverse,
-    reducedMotion,
-  });
-
-  const firing = activeFlourish(state.flourishes, state.clock);
-  const effect = state.effect;
-  applyFlourish(effect, firing?.kind ?? null, firing?.t ?? 0);
-  // Reduced motion keeps half of a flourish — the picture still marks the
-  // moment, it just does not lunge — and the breath safety is applied further
-  // down, where the rest of the safety is, because it has not been computed
-  // yet at this point in the frame.
-  if (reducedMotion) temperFlourish(effect, 0.5);
-
-  // The brief's `grain = lerp(0.02, 0.12, noise)` wants the *noisiness* of the
-  // sound, which the mood vector does not carry as such: it is a fact about
-  // the spectrum, not a judgment. The nearest judgment is "gritty and not
-  // machine-made" — aggression, and the absence of synthetic — so that is what
-  // stands in for it, and it lands in the same 0..1 range.
-  const noise = clamp01(0.5 * aggression + 0.5 * (1 - synthetic));
-
-  // Ink, with the section's hand on it: a build holds the picture together for
-  // longer and pushes more ink in, a breakdown lets it dissolve.
-  let flowAmtTarget = lerp(0.15, 0.9, arousal);
-  let decayTarget = lerp(0.93, 0.985, clamp01(build * 0.6 + hypnotic * 0.4));
-  if (section === 'build') decayTarget += BUILD_DECAY;
-  if (section === 'breakdown') decayTarget -= BREAKDOWN_DECAY;
-  decayTarget = Math.min(MAX_DECAY, Math.max(MIN_DECAY, decayTarget));
-  const turbulenceTarget = lerp(0.1, 1.0, tension);
-  let injectGainTarget = lerp(0.6, 1.6, arousal);
-  if (section === 'build') injectGainTarget *= BUILD_INJECT;
-  // Impact-driven: a kick that has been slewed is not a kick.
-  let pushKick = clamp01(fast.sub) * 0.02 + impact * 0.08;
-  // The standing outward creep that fills the frame around the card, and the
-  // comb that combs the sheets. Both are instant: the push is what a hit
-  // *does*, and the striation frequency is a property of the material.
-  let pushOut = pushOutFor(arousal, impact) * effect.pushOutMul;
-  const striate = striateFor(synthetic);
-
-  // A flourish's overrides go onto the *targets*, not onto the results. The
-  // slew is the rule this whole file is built on — a decay that changes
-  // between two frames is a cut — so a hole's freeze arrives over half a
-  // second rather than instantly, which over a 1.5 s hole is the shape of the
-  // gesture anyway.
-  if (effect.flowAmt !== null) flowAmtTarget = effect.flowAmt;
-  if (effect.decay !== null) decayTarget = effect.decay;
-  injectGainTarget *= effect.injectGainMul;
-
-  // Post.
-  const bloomStrengthTarget = lerp(0.3, 1.4, arousal);
-  const bloomThresholdTarget = lerp(0.85, 0.55, valence);
-  const chromaBaseTarget = lerp(0, 0.012, synthetic * arousal);
-  if (prev === null) state.heldChromaBase = chromaBaseTarget;
-  else state.heldChromaBase += (chromaBaseTarget - state.heldChromaBase) * k;
-  let chroma = state.heldChromaBase + impact * 0.02 + effect.chromaAdd;
-  // The floor is 0.03 rather than 0.02 because below that the grain is not
-  // grain, it is a dither nobody can see — and an ungrained frame reads as
-  // computer graphics however good the ink is.
-  const grainTarget = lerp(0.03, 0.12, noise) * effect.grainMul;
-  const vignetteTarget = lerp(0.55, 0.2, space);
-
-  // The acid look is reserved for hard electronic peaks; everywhere else it
-  // would read as a bug.
-  let posterize = synthetic > 0.7 && arousal > 0.7 ? 6 : 0;
 
   // The mix.
   //
@@ -677,24 +647,180 @@ export function direct(
   state.safety += (safetyTarget - state.safety) * kMirror;
   const safety = state.safety;
 
+  // The seams. A `drop` or a `breakdown` turns the whole field the other way —
+  // over a second and a half, never between two frames — and anything Jev
+  // called dramatic also fires a one-shot. A reversal already in flight is not
+  // restarted: two cues 200 ms apart are one seam, and letting the second
+  // cancel the first would leave the smoke turning the way it started.
+  let reverse = false;
+  for (const kind of transitions) {
+    if (kind === 'drop' || kind === 'breakdown') reverse = true;
+    fireFlourish(state.flourishes, kind, state.clock);
+  }
+  if (state.spin.reverseLeft > 0) reverse = false;
+  // And a cooldown of its own, which the real-track pass made necessary.
+  //
+  // A reversal is the largest single gesture the picture has: every pixel of a
+  // rotating field changes velocity at once, over a second and a half. Pass 2
+  // on a spoken-word recording named nine `drop`s and five `breakdown`s in four
+  // minutes — applause and laughter read as slams — and without a hand on it
+  // the field spent the whole talk turning itself round. The flourishes each
+  // have a cooldown for exactly this reason; the reversal did not, because
+  // "one already in flight" is not a cooldown, it is a lock that lets go the
+  // instant the gesture ends.
+  if (reverse && state.clock - state.lastReverseAt < REVERSE_COOLDOWN_SEC) reverse = false;
+  if (reverse) state.lastReverseAt = state.clock;
+
+  // Which one-shot is running, read *before* the rotation is stepped: a
+  // `quiet_fall` is one of the two things that slow the base rate down, and a
+  // flourish that fires this frame is running this frame.
+  const firing = activeFlourish(state.flourishes, state.clock);
+  // The rotation is a *reaction*, not a rate: it is the product of energy, a
+  // beat the grid is confident about, a rhythm that is regular, and the absence
+  // of a talking voice — so a podcast and a beatless drone sit at the drift and
+  // an EDM track turns. See `spinBaseRate`.
+  stepSpin(state.spin, {
+    dt: step,
+    arousal,
+    beatConf: clamp01(fast.beatConf),
+    regular: clamp01(fast.regular),
+    spoken,
+    build,
+    section:
+      section === 'build'
+        ? 'build'
+        : section === 'breakdown'
+          ? 'breakdown'
+          : firing?.kind === 'quiet_fall'
+            ? 'quiet'
+            : 'other',
+    onset: fast.onset,
+    downbeatPulse: fast.downbeatPulse,
+    motion: mood.motion,
+    reverse,
+    reducedMotion,
+  });
+
+  const effect = state.effect;
+  applyFlourish(effect, firing?.kind ?? null, firing?.t ?? 0);
+  // Reduced motion keeps half of a flourish — the picture still marks the
+  // moment, it just does not lunge — and the breath safety pulls the whole
+  // thing toward doing nothing.
+  //
+  // Both are applied *here*, before a single target has been built from the
+  // effect. They used to be applied at opposite ends of the frame, and the
+  // later one was too late to matter: `pushOut`, the `flowAmt`/`decay`
+  // overrides, `injectGainMul` and `grainMul` had all been read out of the
+  // untempered effect by then, so over a talking voice a drop still burst the
+  // smoke outward and a hole still froze the field. The mix and the safety are
+  // computed above for exactly this reason.
+  if (reducedMotion) temperFlourish(effect, 0.5);
+  temperFlourish(effect, 1 - safety);
+
+  // The brief's `grain = lerp(0.02, 0.12, noise)` wants the *noisiness* of the
+  // sound, which the mood vector does not carry as such: it is a fact about
+  // the spectrum, not a judgment. The nearest judgment is "gritty and not
+  // machine-made" — aggression, and the absence of synthetic — so that is what
+  // stands in for it, and it lands in the same 0..1 range.
+  const noise = clamp01(0.5 * aggression + 0.5 * (1 - synthetic));
+
+  // Ink, with the section's hand on it: a build holds the picture together for
+  // longer and pushes more ink in, a breakdown lets it dissolve.
+  let flowAmtTarget = lerp(0.15, 0.9, arousal);
+  let decayTarget = lerp(0.93, 0.985, clamp01(build * 0.6 + hypnotic * 0.4));
+  if (section === 'build') decayTarget += BUILD_DECAY;
+  if (section === 'breakdown') decayTarget -= BREAKDOWN_DECAY;
+  decayTarget = Math.min(MAX_DECAY, Math.max(MIN_DECAY, decayTarget));
+  const turbulenceTarget = lerp(0.1, 1.0, tension);
+  let injectGainTarget = lerp(0.6, 1.6, arousal);
+  if (section === 'build') injectGainTarget *= BUILD_INJECT;
+  // Impact-driven: a kick that has been slewed is not a kick.
+  let pushKick = clamp01(fast.sub) * 0.02 + impact * 0.08;
+  // The standing outward creep that fills the frame around the card, and the
+  // comb that combs the sheets. Both are instant: the push is what a hit
+  // *does*, and the striation frequency is a property of the material.
+  let pushOut = pushOutFor(arousal, impact) * effect.pushOutMul;
+  const striate = striateFor(synthetic);
+
+  // A flourish's overrides go onto the *targets*, not onto the results. The
+  // slew is the rule this whole file is built on — a decay that changes
+  // between two frames is a cut — so a hole's freeze arrives over half a
+  // second rather than instantly, which over a 1.5 s hole is the shape of the
+  // gesture anyway.
+  if (effect.flowAmt !== null) flowAmtTarget = effect.flowAmt;
+  if (effect.decay !== null) decayTarget = effect.decay;
+  injectGainTarget *= effect.injectGainMul;
+
+  // Post.
+  const bloomStrengthTarget = lerp(0.3, 1.4, arousal);
+  let bloomThresholdTarget = lerp(0.85, 0.55, valence);
+  // A climax blooms its *cores*, not its mid-tones.
+  //
+  // The flare is a multiplier on the strength, and a strong bloom over a low
+  // threshold is a glow that fills the frame's darks: measured half a second
+  // after a drop, the darkest fifth of the frame sat at 0.39 and not one pixel
+  // was black. The bright pass is what decides which pixels are allowed to
+  // spread, so that is where the blacks are kept — the hot streaks still bloom
+  // as hard as before, and the field they sit in stays a field.
+  if (section === 'drop_climax') {
+    bloomThresholdTarget = Math.max(bloomThresholdTarget, CLIMAX_BLOOM_THRESHOLD);
+  }
+  // The baseline fringing, capped at `CHROMA_BASE_MAX`. It used to reach
+  // 0.012, which is visible as magenta and green edges on every filament in a
+  // still frame — fringing is supposed to be something a hit *does*, and the
+  // `+ impact·0.02` term is where that lives.
+  const chromaBaseTarget = Math.min(CHROMA_BASE_MAX, lerp(0, 0.012, synthetic * arousal));
+  if (prev === null) state.heldChromaBase = chromaBaseTarget;
+  else state.heldChromaBase += (chromaBaseTarget - state.heldChromaBase) * k;
+  let chroma = state.heldChromaBase + impact * 0.02 + effect.chromaAdd;
+  // And a hard ceiling on a calm page. At idle the impact term is zero and the
+  // afterimage holds the last frame at 0.9, so even a small standing fringe is
+  // smeared into a permanent coloured ghost on the filaments — measured as
+  // visible magenta/green at the idle arousal of 0.3. Below `CHROMA_QUIET_AT`
+  // there is nothing happening that fringing could be *about*.
+  if (arousal < CHROMA_QUIET_AT) chroma = Math.min(chroma, CHROMA_QUIET_MAX);
+  // The floor is 0.03 rather than 0.02 because below that the grain is not
+  // grain, it is a dither nobody can see — and an ungrained frame reads as
+  // computer graphics however good the ink is.
+  const grainTarget = lerp(0.03, 0.12, noise) * effect.grainMul;
+  const vignetteTarget = lerp(0.55, 0.2, space);
+
+  // The acid look, and it is a *moment* rather than a setting.
+  //
+  // Sustained through a whole section, hard colour steps read as banding — a
+  // broken gradient, not a style. So it is allowed in two places only: inside
+  // the first `POSTERIZE_FLOURISH_SEC` of a drop or a scream, which is where a
+  // hard-edged frame is the gesture; and under music that is both hypnotic and
+  // machine-made, where the repetition is the point. Plain "loud and
+  // synthetic" — which is most of a dance track — no longer qualifies.
+  const flourishing =
+    firing !== null &&
+    (firing.kind === 'drop' || firing.kind === 'scream_peak') &&
+    firing.t * FLOURISH_SEC[firing.kind] <= POSTERIZE_FLOURISH_SEC;
+  let posterize = flourishing || (hypnotic >= 0.6 && synthetic > 0.7) ? 6 : 0;
+
   // Hypnotic, or terrain that has taken the frame. Two to six folds: eight read
   // as sharp static spokes rather than as a figure, and repetitive dance music
   // that is not hypnotic is not asking to be kaleidoscoped at all. The terrain
   // is the other way round — a mirrored ridge is the reference image, so a
   // dominant relief gets a mirror line whatever the music is doing.
-  let foldTarget = hypnotic >= 0.6 ? Math.round(lerp(MIN_FOLDS, MAX_FOLDS, tension)) : 0;
-  if (weights.relief > RELIEF_MIRROR_OVER) foldTarget = Math.max(foldTarget, MIN_FOLDS);
-  // What the *music* asked for, kept aside: a flourish can open the mirror
-  // over a track that never wanted one, and when it does the figure comes in
-  // at the flourish's own strength rather than at full.
-  const musicFolds = foldTarget;
-  if (effect.mirrorMix > 0) foldTarget = Math.max(foldTarget, MIN_FOLDS);
+  let rawFolds = hypnotic >= 0.6 ? Math.round(lerp(MIN_FOLDS, MAX_FOLDS, tension)) : 0;
+  if (weights.relief > RELIEF_MIRROR_OVER) rawFolds = Math.max(rawFolds, MIN_FOLDS);
   // The half-second debounce exists so a wobbling `tension` cannot re-fold the
   // screen; a scream is not a wobble, and a 1 s flare cannot wait half of
   // itself for a fold count. Taking it immediately is free here, because the
   // mirror is off — a count may always change while nobody can see the figure.
   const snapFolds = prev === null || (effect.mirrorMix > 0 && state.folds === 0);
-  const wantedFolds = holdFolds(state, foldTarget, snapFolds);
+  // The *music's* own count, debounced. It is what the mirror's mix is gated
+  // on further down, and it has to be the held number rather than the raw one:
+  // gated on the raw count, a `hypnotic` that dipped under 0.6 for two frames
+  // faded the whole figure out and back, which is the flicker `holdFolds`
+  // exists to prevent and which it was not covering.
+  const musicFolds = holdFolds(state, rawFolds, snapFolds);
+  // A flourish can open the mirror over a track that never wanted one, and
+  // when it does the figure comes in at the flourish's own strength rather
+  // than at full. Not debounced: a one-shot is its own hold.
+  const wantedFolds = effect.mirrorMix > 0 ? Math.max(musicFolds, MIN_FOLDS) : musicFolds;
   if (snapFolds) state.folds = wantedFolds;
 
   // The mirror's mix, and the one rule that makes a fold count safe to change:
@@ -709,6 +835,13 @@ export function direct(
   // which the mix has to be going *down*.
   if (!changing) mirrorMixTarget = Math.max(mirrorMixTarget, effect.mirrorMix);
   if (reducedMotion) mirrorMixTarget = 0;
+  // Through a climax the smoke has to stay readable *under* the symmetry: at a
+  // full mix the kaleidoscope is the picture and the drop is a pattern. Capped
+  // unless the music is so hypnotic that the figure is what it is about. The
+  // fold axis keeps rotating either way — that is `MirrorPass`'s own business.
+  if (section === 'drop_climax' && hypnotic < CLIMAX_MIRROR_FREE) {
+    mirrorMixTarget = Math.min(mirrorMixTarget, CLIMAX_MIRROR_MAX);
+  }
   mirrorMixTarget = Math.min(mirrorMixTarget, 1 - safety);
   state.mirrorMix += (mirrorMixTarget - state.mirrorMix) * kMirror;
   // Off is off: see `MIRROR_OFF`. Only on the way down — on the way up the mix
@@ -773,12 +906,6 @@ export function direct(
   // owns it. An assignment after the limiter would be a cut with a safety
   // label on it, which is the failure mode this whole pass is about.
   chroma *= 1 - safety;
-  // And the flourishes, pulled back toward doing nothing by the same number.
-  // They are tempered *after* the targets have been built from them, which is
-  // deliberate: everything a flourish touches is either slewed or limited, so
-  // what the safety takes away leaves through the lag that owns it rather than
-  // being snatched mid-gesture.
-  temperFlourish(effect, 1 - safety);
   // The one clamp that is a switch rather than a mix, so it is the one clamp
   // that needs a hand on it: engaged at 0.6, released at 0.4, and holding
   // whatever it was doing in between.
@@ -804,7 +931,14 @@ export function direct(
   // Exposure is instant (it is impact-driven), flattened by the safety, capped,
   // and only then rate-limited in *direction* so it can never strobe. Nothing
   // touches it after the limiter.
-  let exposure = 1 + 0.25 * impact + 0.1 * clamp01(fast.downbeatPulse) * arousal + effect.exposureAdd;
+  //
+  // The arousal-driven lift is gone. `1 + 0.25·impact + 0.1·pulse·arousal` put
+  // a standing +0.1 under every loud section on top of a bloom that was already
+  // flaring, and the colour stage's knee saturates: measured at a drop, large
+  // flat regions of the frame clipped to beige-white with nothing graded in
+  // them. What is left is what a *hit* does, plus whatever the flourish asks
+  // for, capped so a slam can whiten the frame for two frames and not three.
+  let exposure = Math.min(EXPOSURE_MAX, 1 + 0.25 * impact + effect.exposureAdd);
   exposure = lerp(exposure, 1, safety);
   if (reducedMotion) exposure = Math.min(exposure, REDUCED_MAX_EXPOSURE);
   exposure = prev === null ? exposure : limitStrobe(state, exposure, prev.exposure);

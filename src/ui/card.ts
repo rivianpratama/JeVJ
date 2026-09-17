@@ -39,11 +39,23 @@ const MAX_CANVAS_PX = 1024;
  * The feather, as the alpha the *eraser* paints: the complement of the mask in
  * the design, over a radius of the box's half-diagonal, which is what
  * `radial-gradient(circle, …)` means by 100% on a square.
+ *
+ * The v2.1 curve melts further in and far more gradually. The old one held the
+ * picture at full opacity out to 0.4 of the radius and then took most of it
+ * away between 0.62 and 0.82, which against a dark frame reads as a soft-edged
+ * *rectangle* — the eye finds the corners, because the corners are where a
+ * square's own radius runs out last. Starting at 0.22 and spending the whole
+ * remaining range on the ramp leaves no distance at which the falloff is steep
+ * enough to be a boundary, and the picture dissolves into the smoke instead of
+ * sitting on it. What it costs is picture: about half the card's area is now
+ * partly transparent, which is the intent.
  */
 const FEATHER = [
-  [0.4, 0],
-  [0.62, 0.45],
-  [0.82, 0.85],
+  [0.22, 0],
+  [0.42, 0.2],
+  [0.6, 0.5],
+  [0.78, 0.82],
+  [0.9, 0.96],
   [1, 1],
 ] as const;
 const FEATHER_RADIUS = Math.SQRT1_2;

@@ -141,9 +141,25 @@ describe('blend', () => {
 });
 
 describe('strands', () => {
-  it('uses the visibility ramp below the weight, widened for thicker ribbons', () => {
+  it('uses the visibility ramp below the weight, gamma\'d so idle stays sparse', () => {
     expect(strandsFrag).toContain('const float VIS_RAMP = 0.45;');
-    expect(strandsFrag).toContain('smoothstep(0.0, VIS_RAMP, uWeight - vHash)');
+    expect(strandsFrag).toContain('const float VIS_GAMMA = 2.5;');
+    expect(strandsFrag).toContain(
+      'smoothstep(0.0, VIS_RAMP, pow(max(uWeight, 0.0), VIS_GAMMA) - vHash)',
+    );
+  });
+
+  it('keeps the idle curtain under the two dozen ribbons the direction asks for', () => {
+    // The hashes are spread over 0..1, so the count fully lit is the gamma'd
+    // weight times four hundred. At the idle weight of about 0.32 the linear
+    // threshold lit a hundred and thirty of them — a curtain, on a page that
+    // has heard nothing.
+    const gamma = Number(/const float VIS_GAMMA = ([0-9.]+);/.exec(strandsFrag)![1]);
+    const STRANDS = 400;
+    expect(STRANDS * 0.32 ** gamma).toBeLessThanOrEqual(25);
+    // And a layer the mood has actually handed the frame to is still a curtain.
+    expect(STRANDS * 1 ** gamma).toBe(STRANDS);
+    expect(STRANDS * 0.8 ** gamma).toBeGreaterThan(200);
   });
 
   it('scales width and alpha per pass, so a halo can be drawn around a core', () => {

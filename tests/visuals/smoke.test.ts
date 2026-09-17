@@ -142,6 +142,29 @@ describe('the smoke shaders and the scene agree', () => {
     ['smoke_carry', carryFrag],
   ];
 
+  it('measures its distances in the aspect-corrected space in both passes', () => {
+    // `annulusFor` hands over radii divided by the frame *height*, which is the
+    // aspect-corrected space. Both passes gate on those radii, so both have to
+    // build their distance in the same space — the feedback pass did not, and
+    // the far taper of its outward sweep was therefore never reached
+    // horizontally: the sweep ran at full strength over the whole width and
+    // drained the field over minutes.
+    for (const [name, src] of [
+      ['smoke_feedback', feedbackFrag],
+      ['smoke_inject', injectFrag],
+    ] as const) {
+      const body = code(src);
+      // The one line where the centre offset is taken, and it must carry the
+      // aspect on it.
+      const offset = /uCardCenter[^;]*vec2\(\s*uAspect\s*,\s*1\.0\s*\)/.exec(body);
+      expect(offset, `${name} must take its card offset in the aspect-corrected space`).not.toBeNull();
+      expect(declared(src).has('uAspect'), `${name} must declare uAspect`).toBe(true);
+    }
+    // And the scene has to actually feed it to both of them.
+    expect(smokeSource).toMatch(/feedbackMat\.uniforms\['uAspect'\]!\.value = width \/ height/);
+    expect(smokeSource).toMatch(/injectMat\.uniforms\['uAspect'\]!\.value = width \/ height/);
+  });
+
   it('declares every uniform its own source reads', () => {
     // The failure this catches is silent on every machine that has ever run
     // the app: an undeclared identifier is a compile error the driver reports
@@ -199,9 +222,13 @@ describe('the smoke shaders and the scene agree', () => {
     expect(feedbackFrag).toContain('const float W_FAR = 0.1;');
     expect(feedbackFrag).toContain('const float TAP_1 = 1.0;');
     expect(feedbackFrag).toContain('const float TAP_2 = 2.0;');
-    // Five taps, and every one of them offset along `dir` — an isotropic tap
-    // would be a `vec2(o.x, 0.0)` and there are none left.
-    expect((feedbackFrag.match(/texture2D\(uPrev, src/g) ?? []).length).toBe(5);
+    // Five taps along `dir`, plus the 4-tap isotropic cross that is mixed in at
+    // `ISOTROPIC` to soften a sheet's boundary — nine in all, and no more.
+    expect(feedbackFrag).toContain('const float ISOTROPIC = 0.3;');
+    expect((feedbackFrag.match(/texture2D\(uPrev, src/g) ?? []).length).toBe(9);
+    // The cross is a cross: two taps on each axis, at one texel.
+    expect((feedbackFrag.match(/src [+-] vec2\(uTexel\.x, 0\.0\)/g) ?? []).length).toBe(2);
+    expect((feedbackFrag.match(/src [+-] vec2\(0\.0, uTexel\.y\)/g) ?? []).length).toBe(2);
   });
 });
 
@@ -228,6 +255,8 @@ describe('Smoke filaments', () => {
       downbeatPulse: 0,
       impact: 0,
       build: 0,
+      beatConf: 0,
+      regular: 0,
       ...over,
     };
   }

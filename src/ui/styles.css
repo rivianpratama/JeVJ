@@ -279,7 +279,31 @@ body.is-dragging::after {
   transition: opacity 0.8s ease;
 }
 
+/*
+ * The scrim behind the button.
+ *
+ * Glass over a very bright patch of smoke is glass you cannot find: the fill is
+ * 35% of a near-black and the backdrop blur keeps the *brightness* of whatever
+ * is behind it. A soft dark ring under the button — 40% black at the middle,
+ * gone by the time it is half again as wide — gives it something to sit on
+ * without putting an edge anywhere. It is a gradient rather than a disc for the
+ * same reason the card has no rim.
+ */
+.transport::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 150px;
+  height: 150px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(0, 0, 0, 0.4) 38%, rgba(0, 0, 0, 0) 72%);
+  pointer-events: none;
+}
+
 .toggle {
+  position: relative;
   width: 64px;
   height: 64px;
   display: grid;

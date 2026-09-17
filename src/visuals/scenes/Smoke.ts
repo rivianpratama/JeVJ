@@ -55,6 +55,8 @@ export const FILAMENT_SLOTS = 3;
 const FILAMENT_MIN = 2;
 /** How fast a filament fades out of the injection, in seconds. */
 const FILAMENT_TAU = 0.35;
+/** Below this a filament is retired: see `stepFilaments`. */
+const FILAMENT_OFF = 1e-3;
 /** A filament's length in uv, and its width. */
 const FILAMENT_LEN_MIN = 0.25;
 const FILAMENT_LEN_MAX = 0.5;
@@ -174,6 +176,9 @@ export class Smoke implements Scene {
         uCardCenter: { value: new THREE.Vector2(0.5, 0.5) },
         uCardInner: { value: DEFAULT_ANNULUS.inner },
         uCardOuter: { value: DEFAULT_ANNULUS.outer },
+        // The annulus radii are in the aspect-corrected space; this pass has
+        // to measure its distances in the same one. See the shader.
+        uAspect: { value: 1 },
       },
     });
 
@@ -428,7 +433,15 @@ export class Smoke implements Scene {
     for (let s = 0; s < FILAMENT_SLOTS; s++) {
       const f = this.filaments[s]!;
       const alive = Number.isFinite(f.age);
-      const intensity = alive ? f.peak * Math.exp(-f.age / FILAMENT_TAU) : 0;
+      let intensity = alive ? f.peak * Math.exp(-f.age / FILAMENT_TAU) : 0;
+      // A faded filament is retired rather than left to decay forever. The
+      // shader skips a slot only on `intensity <= 0`, and an exponential never
+      // reaches zero: a slot seeded once went on costing thirteen Bézier
+      // samples a pixel for the life of the page, for a curve nobody can see.
+      if (alive && intensity < FILAMENT_OFF) {
+        f.age = Number.POSITIVE_INFINITY;
+        intensity = 0;
+      }
       a[s]!.set(f.p0.x, f.p0.y, f.p1.x, f.p1.y);
       b[s]!.set(f.p2.x, f.p2.y, intensity, FILAMENT_WIDTH);
     }
@@ -528,6 +541,8 @@ export class Smoke implements Scene {
     (this.feedbackMat.uniforms['uTexel']!.value as THREE.Vector2).set(1 / width, 1 / height);
     (this.colorMat.uniforms['uTexel']!.value as THREE.Vector2).set(1 / width, 1 / height);
     this.injectMat.uniforms['uAspect']!.value = width / height;
+    // Both passes work in the aspect-corrected space the annulus radii are in.
+    this.feedbackMat.uniforms['uAspect']!.value = width / height;
   }
 }
 

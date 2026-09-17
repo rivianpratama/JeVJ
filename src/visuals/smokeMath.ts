@@ -33,12 +33,37 @@ import type { TransitionKind } from '../shared/types';
 
 // ───────────────────────────────────────────────────────────── rotation
 
-/** The angular rate at arousal 0, and how much more the loudest music buys. */
-const SPIN_FLOOR = 0.4;
-export const SPIN_BASE = 0.18;
-/** How hard a beat shoves the rotation, and how fast the shove fades. */
+/**
+ * What the loudest, tightest, most confidently-metred music buys, in rad/s,
+ * and the drift under everything.
+ *
+ * v2.1 made the rotation a *reaction* rather than a rate. The old
+ * `0.18·(0.4 + arousal)` turned a podcast at 0.072 rad/s — a full revolution
+ * every minute and a half under a person talking, which is motion the music
+ * never asked for. Now the base is the product of four things that all have to
+ * be true before the field turns at all: the music is energetic, there is a
+ * beat, the beat is regular, and nobody is talking. Speech, beatless ambient
+ * and an unmetred rubato passage all land at essentially zero.
+ *
+ * `SPIN_DRIFT` is what is left when they are all zero, and it is deliberately
+ * barely perceptible: 0.004 rad/s is one revolution in twenty-six minutes. A
+ * field that is exactly still reads as a frozen screenshot rather than as
+ * smoke; a field turning this slowly reads as alive and cannot be watched
+ * turning.
+ */
+export const SPIN_BASE = 0.22;
+export const SPIN_DRIFT = 0.004;
+/** What a build multiplies the base by at full anticipation, and what a fall does. */
+export const SPIN_BUILD_GAIN = 1;
+export const SPIN_QUIET_GAIN = 0.3;
+/** How hard a beat shoves the rotation, what a downbeat adds, and how fast both fade. */
 export const SPIN_KICK = 0.9;
+export const SPIN_DOWNBEAT_KICK = 0.6;
 export const SPIN_KICK_TAU = 0.4;
+/** What the two motions that are supposed to glide keep of a kick. */
+export const SPIN_GLIDE_KICK = 0.5;
+/** How high the downbeat pulse has to climb to count as a new bar. */
+const DOWNBEAT_EDGE = 0.9;
 /**
  * The most the beat kicks may add to the rate, in rad/s.
  *
@@ -57,16 +82,45 @@ export const SPIN_REVERSE_SEC = 1.5;
 /** What reduced motion leaves of the base rate. The kicks it takes entirely. */
 const SPIN_REDUCED = 0.5;
 
+/** What the base rate is asked about: is this energetic, metred, sung music? */
+export interface SpinDrive {
+  arousal: number;
+  /** The beat grid's own confidence, 0..1. */
+  beatConf: number;
+  /** How even the onsets are, 0..1 — the rhythm tracker's `regular`. */
+  regular: number;
+  /** How much of this is someone talking, 0..1. */
+  spoken: number;
+  /** The anticipation ramp, 0..1; only a `build` section uses it. */
+  build?: number;
+  section?: 'build' | 'breakdown' | 'quiet' | 'other';
+}
+
 /**
  * The base angular rate, before direction and before the beat.
  *
- * `0.18·(0.4 + arousal)`: 0.072 rad/s on a silent page — a turn every 87 s,
- * which reads as "is that moving?" and is meant to — against 0.162 at mid
- * arousal, a turn every 39 s, and 0.252 at a climax, a turn every 25 s.
+ * `0.22·arousal²·beatConf·regular·(1 − spoken)`, plus `SPIN_DRIFT`.
+ *
+ * The square on arousal is what keeps a merely-present rhythm from turning the
+ * whole frame: at arousal 0.3 the square is 0.09, so a calm piece with a
+ * middling grid reads under 0.01 rad/s and the picture is, to the eye, still.
+ * At 0.75 with a locked grid it is 0.11 — a revolution a minute, which is the
+ * "slow majestic rolling" of the reference — and a climax at 1 is 0.22.
+ *
+ * The section scaling is a multiplier on the product rather than on the drift:
+ * the drift is the floor that exists so that nothing is ever frozen, and a
+ * breakdown is not supposed to freeze the picture, it is supposed to let it
+ * settle.
  */
-export function spinBaseRate(arousal: number): number {
-  const a = clamp01(arousal);
-  return SPIN_BASE * (SPIN_FLOOR + a);
+export function spinBaseRate(d: SpinDrive): number {
+  const a = clamp01(d.arousal);
+  const conf = clamp01(d.beatConf);
+  const reg = clamp01(d.regular);
+  const voiced = 1 - clamp01(d.spoken);
+  let base = SPIN_BASE * a * a * conf * reg * voiced;
+  if (d.section === 'build') base *= 1 + SPIN_BUILD_GAIN * clamp01(d.build ?? 0);
+  else if (d.section === 'breakdown' || d.section === 'quiet') base *= SPIN_QUIET_GAIN;
+  return base + SPIN_DRIFT;
 }
 
 /** Everything the rotation has to remember between frames. */
@@ -82,17 +136,31 @@ export interface SpinState {
   /** Where it is coming from, and how much of the 1.5 s is left. */
   from: number;
   reverseLeft: number;
+  /**
+   * How many downbeats have gone by, and the last pulse level seen.
+   *
+   * The bar count is what lets a `pulse` track *rock*: the kick's sign
+   * alternates bar by bar, so the field is shoved one way through one bar and
+   * the other way through the next instead of being wound up in one direction.
+   * The pulse is a decaying level rather than an event, so the count moves on
+   * its rising edge — see `DOWNBEAT_EDGE`.
+   */
+  bar: number;
+  lastPulse: number;
 }
 
 export function createSpin(): SpinState {
-  return { angle: 0, rate: 0, kick: 0, dir: 1, from: 1, reverseLeft: 0 };
+  return { angle: 0, rate: 0, kick: 0, dir: 1, from: 1, reverseLeft: 0, bar: 0, lastPulse: 0 };
 }
 
-export interface SpinStep {
+export interface SpinStep extends SpinDrive {
   dt: number;
-  arousal: number;
   /** This frame's onset, 0..1. */
   onset: number;
+  /** The downbeat pulse, 0..1; its rising edge is a bar line. */
+  downbeatPulse?: number;
+  /** Which motion the director picked; `pulse` rocks, `flow`/`drift` glide. */
+  motion?: string;
   /** A `drop` or `breakdown` transition just went by. */
   reverse: boolean;
   reducedMotion: boolean;
@@ -112,8 +180,13 @@ export interface SpinStep {
  */
 export function stepSpin(s: SpinState, o: SpinStep): number {
   const dt = Number.isFinite(o.dt) ? Math.max(0, Math.min(0.1, o.dt)) : 0;
-  const arousal = Number.isFinite(o.arousal) ? clamp01(o.arousal) : 0;
   const onset = Number.isFinite(o.onset) ? clamp01(o.onset) : 0;
+  const conf = Number.isFinite(o.beatConf) ? clamp01(o.beatConf) : 0;
+  const pulse = Number.isFinite(o.downbeatPulse ?? 0) ? clamp01(o.downbeatPulse ?? 0) : 0;
+  // A bar line is the rising edge of the pulse, not its level: the level is an
+  // exponential that spends most of a bar somewhere in the middle.
+  const bar = pulse >= DOWNBEAT_EDGE && s.lastPulse < DOWNBEAT_EDGE;
+  s.lastPulse = pulse;
 
   if (o.reverse) {
     // From wherever the last flip had got to, so two cues close together do
@@ -127,13 +200,27 @@ export function stepSpin(s: SpinState, o: SpinStep): number {
 
   const dir = direction(s);
   s.kick *= Math.exp(-dt / SPIN_KICK_TAU);
-  if (!o.reducedMotion && onset > 0) {
-    s.kick += SPIN_KICK * onset * (dir >= 0 ? 1 : -1);
+  // Every kick is scaled by the grid's confidence: a shove on a beat nobody
+  // found is a shove at a random instant, and a field that lurches on nothing
+  // reads as a bug rather than as rhythm.
+  //
+  // `pulse` rocks — the sign alternates bar by bar, so the smoke swings rather
+  // than winding up — and the two motions that are supposed to glide keep half
+  // a kick. Everything else is shoved the way it is already turning.
+  const rock = o.motion === 'pulse' && s.bar % 2 === 1 ? -1 : 1;
+  const glide = o.motion === 'flow' || o.motion === 'drift' ? SPIN_GLIDE_KICK : 1;
+  const sign = (dir >= 0 ? 1 : -1) * rock;
+  if (!o.reducedMotion) {
+    if (onset > 0) s.kick += SPIN_KICK * onset * conf * glide * sign;
+    if (bar) s.kick += SPIN_DOWNBEAT_KICK * conf * glide * sign;
   }
+  // Counted after the kick, so the *first* bar of a track shoves forward and
+  // the second shoves back rather than the other way round.
+  if (bar) s.bar += 1;
   if (o.reducedMotion) s.kick = 0;
   else s.kick = Math.max(-SPIN_KICK_MAX, Math.min(SPIN_KICK_MAX, s.kick));
 
-  const base = spinBaseRate(arousal) * (o.reducedMotion ? SPIN_REDUCED : 1);
+  const base = spinBaseRate(o) * (o.reducedMotion ? SPIN_REDUCED : 1);
   s.rate = base * dir + s.kick;
   s.angle = wrapAngle(s.angle + s.rate * dt);
   return s.angle;
@@ -286,12 +373,27 @@ export interface FlourishState {
   /** What is running now, if anything. */
   kind: TransitionKind | null;
   startedAt: number;
+  /**
+   * Where `activeFlourish` writes its answer.
+   *
+   * It is asked once per frame for the life of the page, and a fresh
+   * `{kind, t}` sixty times a second is sixty objects a second for the garbage
+   * collector to find — in the one loop in the app that is supposed to
+   * allocate nothing at all. One object, overwritten. Read it and do not keep
+   * it, like every other per-frame object here.
+   */
+  active: { kind: TransitionKind; t: number };
 }
 
 export function createFlourishes(): FlourishState {
   const firedAt = {} as Record<TransitionKind, number>;
   for (const k of TRANSITION_KINDS) firedAt[k] = Number.NEGATIVE_INFINITY;
-  return { firedAt, kind: null, startedAt: Number.NEGATIVE_INFINITY };
+  return {
+    firedAt,
+    kind: null,
+    startedAt: Number.NEGATIVE_INFINITY,
+    active: { kind: TRANSITION_KINDS[0]!, t: 0 },
+  };
 }
 
 /**
@@ -336,7 +438,10 @@ export function activeFlourish(
   const sec = FLOURISH_SEC[kind];
   const age = now - s.startedAt;
   if (!(age >= 0) || age >= sec) return null;
-  return { kind, t: sec > 0 ? age / sec : 1 };
+  // The state's own scratch object, overwritten; see `FlourishState.active`.
+  s.active.kind = kind;
+  s.active.t = sec > 0 ? age / sec : 1;
+  return s.active;
 }
 
 /** Everything a flourish is allowed to touch, as one frame's worth of numbers. */

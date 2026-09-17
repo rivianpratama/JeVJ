@@ -36,6 +36,7 @@ export function shaderConst(source: string, name: string): number {
 
 export const INJECT_RATE = shaderConst(smokeInjectFrag, 'INJECT_RATE');
 export const VEIN_LO = shaderConst(smokeInjectFrag, 'VEIN_LO');
+export const VEIN_FLOOR = shaderConst(smokeInjectFrag, 'VEIN_FLOOR');
 export const VEIN_HI = shaderConst(smokeInjectFrag, 'VEIN_HI');
 export const CARD_FLOOR = shaderConst(smokeInjectFrag, 'CARD_FLOOR');
 export const CARD_FADE_IN = shaderConst(smokeInjectFrag, 'CARD_FADE_IN');
@@ -205,7 +206,9 @@ export function idleAmbientLevels(f: IdleField, n = 96, o: FieldOptions = {}): n
         const u = ox + ux * 3;
         const v = oy + uy * 3;
         const q = fbm(u, v);
-        const gate = vein ? smoothstep(VEIN_LO, VEIN_HI, q) : 1;
+        // The gate never quite closes: the gaps keep `VEIN_FLOOR` of the wash,
+        // which is what stops the field converging onto the veins alone.
+        const gate = vein ? Math.max(smoothstep(VEIN_LO, VEIN_HI, q), VEIN_FLOOR) : 1;
         const shadow = carded ? cardGate(dist, annulus) : 1;
         const comb = STRIATE_MEAN + STRIATE_AMP * Math.sin(hash12(ix * 7 + 1, iy * 13 + 1) * 6.2832);
         const ambGain = 1 + (f.gain - 1) * AMBIENT_GAIN;

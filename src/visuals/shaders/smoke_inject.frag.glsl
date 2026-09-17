@@ -113,8 +113,26 @@ const float RING_WIDTH = 0.012;
  * sheet. Measured: at 0.9 the build frame came out at a mean of 0.51 with its
  * darkest fifth at 0.44, which is a white page.
  */
-const float VEIN_LO = 0.52;
+const float VEIN_LO = 0.54;
 const float VEIN_HI = 0.74;
+/**
+ * What the gaps between the veins keep, rather than nothing at all.
+ *
+ * The gate's equilibrium is the vein pattern itself: smoke is injected only
+ * where the gate passes and decays everywhere, so the field converges onto the
+ * veins and the gaps converge to black. Advection fights that, which is why it
+ * takes minutes rather than seconds — measured, the idle mean fell about a
+ * third between thirty seconds and two and a half, with the brightest twentieth
+ * unmoved and the whole loss coming out of the mid-tones. That is a picture
+ * that visibly dies while you watch it.
+ *
+ * A floor under the gate gives the gaps a standing level of their own, so the
+ * equilibrium the field is heading for is not far from where it starts. Three
+ * percent is deliberately below what the eye reads as lit: at the shipped
+ * ambient level it settles the gaps at about 0.07 of the palette ramp, which is
+ * the second-darkest stop and reads as black with something in it.
+ */
+const float VEIN_FLOOR = 0.03;
 /**
  * What the card's own square keeps of the ambient wash.
  *
@@ -153,6 +171,18 @@ const int FILAMENT_STEPS = 12;
  * 120 Hz display as on a 60 Hz one.
  */
 const float INJECT_RATE = 2.4;
+/**
+ * How hard an impact's shell is injected.
+ *
+ * Down from 1.5 in the v2.1 pass. The shell is added into all three smokes at
+ * once and then thrown outward by the drop flourish's sixfold push, so it is
+ * the single largest thing that ever enters the buffer — measured two seconds
+ * after a drop, the frame was still at a mean of 0.47 with its darkest fifth at
+ * 0.19, which is a climax that has lost its blacks rather than one that hit
+ * hard. The *flare* is exposure and bloom, which decay in half a second; this
+ * is density, which the feedback loop keeps for as long as the decay allows.
+ */
+const float IMPACT_GAIN = 1.0;
 /**
  * How deep the comb cuts: `0.75 + 0.25·sin(…)`, so the striations are a
  * quarter-amplitude modulation and never a set of gaps. Its mean is 0.75, and
@@ -225,7 +255,8 @@ void main() {
   // `AMBIENT_GAIN` is kept as the knob rather than deleted because it is the
   // thing that was wrong and the thing a future pass would reach for first.
   float ambGain = mix(1.0, uInjectGain, AMBIENT_GAIN);
-  float amb = (0.5 + 0.5 * vein) * smoothstep(VEIN_LO, VEIN_HI, vein) * ambGain * outside;
+  float gate = max(smoothstep(VEIN_LO, VEIN_HI, vein), VEIN_FLOOR);
+  float amb = (0.5 + 0.5 * vein) * gate * ambGain * outside;
   vec3 ambient = vec3(
     amb * (0.6 + 0.4 * uBands[2]),
     amb * 0.5 * (0.3 + uBands[4]),
@@ -293,7 +324,7 @@ void main() {
   // middle, so a hit throws the picture outward from behind the card instead
   // of lighting the card up.
   float s = (dist - mid) / (0.45 + band);
-  smoke += vec3(uImpact * exp(-s * s) * 1.5);
+  smoke += vec3(uImpact * exp(-s * s) * IMPACT_GAIN);
 
   // The comb. `perp(flow)` is the direction *across* the local motion, so the
   // phase advances fastest at right angles to the flow and the stripes lie

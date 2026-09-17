@@ -97,7 +97,9 @@ describe('the idle ambient field', () => {
     const levels = idleAmbientLevels(IDLE, 64);
     expect(mean(levels)).toBeGreaterThanOrEqual(0.19);
     expect(mean(levels)).toBeLessThanOrEqual(0.27);
-    expect(quantile(levels, 0.2)).toBeLessThan(0.06);
+    // v2.1 tightened the darks from 0.06: the creative direction after the
+    // Task 17 screenshots asks for a darker idle page with the cores kept.
+    expect(quantile(levels, 0.2)).toBeLessThan(0.05);
     // And the top of the frame reaches the stops the bloom is looking for,
     // before a single lobe or filament adds anything at all.
     expect(quantile(levels, 0.95)).toBeGreaterThan(0.55);
@@ -131,7 +133,12 @@ describe('the idle ambient field', () => {
     const flat = idleAmbientLevels(IDLE, 64, { vein: false, card: false });
     expect(mean(flat)).toBeGreaterThan(0.7);
     expect(quantile(flat, 0.95) - quantile(flat, 0.05)).toBeLessThan(0.3);
-    expect(quantile(veined, 0.2)).toBeLessThan(0.01);
+    // The gate has a floor under it since v2.1 — see `VEIN_FLOOR` — so the gaps
+    // are not literally nothing: they hold a level the eye reads as black with
+    // something in it, which is what stops the field converging onto the veins
+    // alone over the first couple of minutes. Still a fifth of the frame under
+    // 0.05, which is what "the darks come from the vein" means here.
+    expect(quantile(veined, 0.2)).toBeLessThan(0.05);
     expect(quantile(veined, 0.95) - quantile(veined, 0.05)).toBeGreaterThan(0.6);
   });
 

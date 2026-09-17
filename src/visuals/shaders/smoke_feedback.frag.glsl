@@ -49,6 +49,21 @@ uniform vec2 uTexel;
 uniform vec2 uCardCenter;
 uniform float uCardInner;
 uniform float uCardOuter;
+/**
+ * The frame's aspect, and it is not decoration.
+ *
+ * `annulusFor` hands both shaders radii in the *aspect-corrected* space — a
+ * card's half-diagonal is one number only there, since in raw uv a centred
+ * square is an ellipse. The inject pass has always worked in that space. This
+ * one did not: it built `dist` in raw uv, so every gate written in terms of
+ * `uCardInner`/`uCardOuter` was an ellipse, and on a 1.6 frame the far taper at
+ * `uCardOuter + SWEEP_FADE` was never reached horizontally at all. The outward
+ * sweep then ran at full strength over the whole width, which is a drain:
+ * measured, the idle field fell from a mean of 0.287 at thirty seconds to 0.199
+ * at a hundred and fifty. Everything below is in the corrected space, and
+ * `toUv` brings the resulting velocities back.
+ */
+uniform float uAspect;
 
 // How far a unit of flow moves the smoke in a second, in uv. Tuned against the
 // decay: smoke has to cross a good fraction of the frame before it fades, or
@@ -73,9 +88,25 @@ const float WARP_RANGE = 2.5;
  * reference, and a drop's ×6 burst reaches nearly five uv a second.
  */
 const float PUSH_SCALE = 6.0;
-/** What is left of the outward sweep well outside the annulus, and over what distance. */
-const float SWEEP_FAR = 0.25;
-const float SWEEP_FADE = 0.45;
+/**
+ * What is left of the outward sweep well outside the annulus, and over what
+ * distance it gets there.
+ *
+ * Both came down hard in the v2.1 pass, and the reason is that an outward
+ * velocity field has positive divergence: backward advection along it makes
+ * every pixel take its smoke from nearer the centre than itself, so the field
+ * loses density everywhere the sweep is running and the loss leaves the frame
+ * at the edge. The ambient wash is compensated for the *decay* and not for
+ * transport, so that loss has nothing balancing it — measured, the idle field
+ * fell 30% between thirty seconds and two and a half minutes.
+ *
+ * The creep only has a job inside and just outside the annulus: clear the
+ * card's own square, and carry what is born on the ring away from it. Past
+ * that it is a drain with no purpose, so it is taken down to a twentieth over
+ * a third of the frame rather than to a quarter over most of it.
+ */
+const float SWEEP_FAR = 0.05;
+const float SWEEP_FADE = 0.3;
 /**
  * How far the 5-tap blur reaches along the flow, in texels, and its weights.
  *
@@ -90,6 +121,21 @@ const float TAP_2 = 2.0;
 const float W_CENTER = 0.4;
 const float W_NEAR = 0.2;
 const float W_FAR = 0.1;
+/**
+ * How much of the blur is isotropic rather than along the flow.
+ *
+ * A strictly one-dimensional blur never averages anything *across* the flow, so
+ * every across-flow discontinuity — including the comb's own, whose phase is
+ * not a continuous function of position where the flow direction turns quickly
+ * — survives for the life of the page and is stretched into a hard ridge. The
+ * sheets came out with visible edges at their boundaries.
+ *
+ * A fifth of the blur is a 4-tap cross at one texel, mixed in on top. That is
+ * enough to soften a boundary and nowhere near enough to wash out the
+ * striations, which are a quarter-amplitude modulation at 380–600 cycles across
+ * the frame and are re-injected every frame besides.
+ */
+const float ISOTROPIC = 0.3;
 /**
  * Densities are clamped to this.
  *
@@ -116,10 +162,22 @@ void main() {
 
   // radial(uv): outward from the *card*, fading in away from it so a kick
   // pushes the field apart rather than tearing a hole at the exact centre.
-  vec2 fromCenter = uv - uCardCenter;
+  //
+  // In the aspect-corrected space, where the annulus radii live and where a
+  // circle is a circle. `toUv` maps a displacement back into uv, so a velocity
+  // that is isotropic on screen stays isotropic on screen.
+  vec2 fromCenter = (uv - uCardCenter) * vec2(uAspect, 1.0);
+  vec2 toUv = vec2(1.0 / max(uAspect, 1.0e-4), 1.0);
   float dist = length(fromCenter);
   vec2 outward = dist > 1e-5 ? fromCenter / dist : vec2(0.0);
-  vec2 radial = outward * smoothstep(0.0, 0.7, dist);
+  //
+  // The profile starts at the annulus rather than at the exact centre. The hot
+  // cores a hit throws are supposed to radiate from the ring the smoke is born
+  // on — the glowing rim around the picture — and not from a point behind it:
+  // with a ramp that began at zero, the brightest streaks converged on the
+  // middle of the card, which is the one part of the frame that is meant to be
+  // a pool of dark.
+  vec2 radial = outward * smoothstep(uCardInner * 0.5, uCardOuter, dist) * toUv;
   /**
    * The push-out's own profile, and it is not `radial`.
    *
@@ -142,9 +200,10 @@ void main() {
    */
   vec2 sweep = outward
     * smoothstep(0.0, uCardInner * 0.6, dist)
-    * mix(1.0, SWEEP_FAR, smoothstep(uCardOuter, uCardOuter + SWEEP_FADE, dist));
+    * mix(1.0, SWEEP_FAR, smoothstep(uCardOuter, uCardOuter + SWEEP_FADE, dist))
+    * toUv;
   // Perpendicular to it: the direction the global rotation carries a pixel.
-  vec2 tangent = vec2(-fromCenter.y, fromCenter.x);
+  vec2 tangent = vec2(-fromCenter.y, fromCenter.x) * toUv;
 
   // The noise domain turns with the smoke. Sampling a fixed field while the
   // smoke rotates through it would give sheets that change shape as they go
@@ -211,12 +270,22 @@ void main() {
   vec2 step1 = dir * uTexel * TAP_1 * (1.0 + 2.0 * clamp(uTurbulence, 0.0, 1.0));
   vec2 step2 = dir * uTexel * TAP_2 * (1.0 + 2.0 * clamp(uTurbulence, 0.0, 1.0));
 
-  vec4 smeared =
+  vec4 along =
       W_CENTER * texture2D(uPrev, src)
     + W_NEAR * texture2D(uPrev, src + step1)
     + W_NEAR * texture2D(uPrev, src - step1)
     + W_FAR * texture2D(uPrev, src + step2)
     + W_FAR * texture2D(uPrev, src - step2);
+
+  // The isotropic fifth: a 4-tap cross at one texel, which is what softens a
+  // sheet's boundary without touching what runs along it.
+  vec4 cross4 = 0.25 * (
+      texture2D(uPrev, src + vec2(uTexel.x, 0.0))
+    + texture2D(uPrev, src - vec2(uTexel.x, 0.0))
+    + texture2D(uPrev, src + vec2(0.0, uTexel.y))
+    + texture2D(uPrev, src - vec2(0.0, uTexel.y)));
+
+  vec4 smeared = mix(along, cross4, ISOTROPIC);
 
   vec4 prev = smeared * pow(decay, uDt * 60.0);
 

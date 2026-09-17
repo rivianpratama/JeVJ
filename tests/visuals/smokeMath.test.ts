@@ -3,8 +3,11 @@ import {
   ANNULUS_BAND,
   FLOURISH_COOLDOWN,
   FLOURISH_SEC,
+  SPIN_DRIFT,
+  SPIN_GLIDE_KICK,
   SPIN_KICK_MAX,
   SPIN_KICK_TAU,
+  SPIN_QUIET_GAIN,
   SPIN_REVERSE_SEC,
   VIRTUAL_CARD_MAX_PX,
   VIRTUAL_CARD_VW,
@@ -31,7 +34,17 @@ const FRAME = 1 / 60;
 /** Run `sec` seconds of spin at 60 Hz, returning the final state. */
 function spinFor(
   sec: number,
-  o: { arousal?: number; onset?: (t: number) => number; reverseAt?: number; reduced?: boolean } = {},
+  o: {
+    arousal?: number;
+    beatConf?: number;
+    regular?: number;
+    spoken?: number;
+    motion?: string;
+    downbeatPulse?: (t: number) => number;
+    onset?: (t: number) => number;
+    reverseAt?: number;
+    reduced?: boolean;
+  } = {},
 ): ReturnType<typeof createSpin> {
   const s = createSpin();
   const frames = Math.round(sec / FRAME);
@@ -39,7 +52,9 @@ function spinFor(
     const t = i * FRAME;
     stepSpin(s, {
       dt: FRAME,
-      arousal: o.arousal ?? 0.5,
+      ...drive(o),
+      motion: o.motion,
+      downbeatPulse: o.downbeatPulse?.(t) ?? 0,
       onset: o.onset?.(t) ?? 0,
       reverse: o.reverseAt !== undefined && t <= o.reverseAt && t + FRAME > o.reverseAt,
       reducedMotion: o.reduced === true,
@@ -48,39 +63,98 @@ function spinFor(
   return s;
 }
 
+/** The four things the rotation is driven by, defaulting to metred music. */
+function drive(o: {
+  arousal?: number;
+  beatConf?: number;
+  regular?: number;
+  spoken?: number;
+  build?: number;
+  section?: 'build' | 'breakdown' | 'quiet' | 'other';
+} = {}): {
+  arousal: number;
+  beatConf: number;
+  regular: number;
+  spoken: number;
+  build?: number;
+  section?: 'build' | 'breakdown' | 'quiet' | 'other';
+} {
+  return {
+    arousal: o.arousal ?? 0.5,
+    beatConf: o.beatConf ?? 1,
+    regular: o.regular ?? 1,
+    spoken: o.spoken ?? 0,
+    build: o.build,
+    section: o.section,
+  };
+}
+
 describe('spinBaseRate', () => {
-  it('is the direction: a full turn every ~35 s at mid arousal', () => {
-    // ω = 0.18·(0.4 + arousal). At arousal 0.5 that is 0.162 rad/s, and a turn
-    // is 2π/0.162 ≈ 38.8 s — the "~35 s" of the brief.
-    expect(spinBaseRate(0.5)).toBeCloseTo(0.18 * 0.9, 9);
-    const turnSec = (2 * Math.PI) / spinBaseRate(0.5);
-    expect(turnSec).toBeGreaterThan(30);
-    expect(turnSec).toBeLessThan(45);
+  it('is the product of energy, a beat, a regular rhythm and no voice', () => {
+    // v2.1: the rotation is a reaction, not a rate. 0.22·arousal²·beatConf·
+    // regular·(1 − spoken), plus the drift under everything.
+    expect(spinBaseRate(drive({ arousal: 0.75, beatConf: 0.9, regular: 1 }))).toBeCloseTo(
+      0.22 * 0.75 * 0.75 * 0.9 + SPIN_DRIFT,
+      9,
+    );
+    // An EDM track turns: a revolution in about a minute.
+    expect(spinBaseRate(drive({ arousal: 0.75, beatConf: 0.9, regular: 1 }))).toBeGreaterThanOrEqual(
+      0.11,
+    );
+  });
+
+  it('is essentially nothing under speech, and nothing without a beat', () => {
+    const spoken = spinBaseRate(drive({ arousal: 0.8, spoken: 1 }));
+    expect(spoken).toBeLessThanOrEqual(0.01);
+    expect(spinBaseRate(drive({ arousal: 0.9, beatConf: 0, regular: 0 }))).toBeLessThanOrEqual(0.01);
+    // And never exactly zero: a frozen field reads as a screenshot.
+    expect(spoken).toBeGreaterThan(0);
+    expect(spoken).toBeCloseTo(SPIN_DRIFT, 9);
+  });
+
+  it('leaves a calm classical piece to the eye as still', () => {
+    // arousal 0.3, a middling grid, a loosely regular rhythm. The square on
+    // arousal is what keeps this under a hundredth of a radian a second — a
+    // full turn takes twelve minutes.
+    const calm = spinBaseRate(drive({ arousal: 0.3, beatConf: 0.4, regular: 0.6 }));
+    expect(calm).toBeCloseTo(0.22 * 0.09 * 0.4 * 0.6 + SPIN_DRIFT, 9);
+    expect(calm).toBeLessThan(0.02);
+    expect(calm).toBeGreaterThan(SPIN_DRIFT);
+  });
+
+  it('scales with the section: a build winds up, a breakdown settles', () => {
+    const plain = spinBaseRate(drive({ arousal: 0.8 }));
+    const building = spinBaseRate(drive({ arousal: 0.8, section: 'build', build: 1 }));
+    const falling = spinBaseRate(drive({ arousal: 0.8, section: 'breakdown' }));
+    expect(building - SPIN_DRIFT).toBeCloseTo(2 * (plain - SPIN_DRIFT), 9);
+    expect(falling - SPIN_DRIFT).toBeCloseTo(SPIN_QUIET_GAIN * (plain - SPIN_DRIFT), 9);
   });
 
   it('turns faster the louder it gets, and never stops', () => {
-    expect(spinBaseRate(1)).toBeGreaterThan(spinBaseRate(0));
-    expect(spinBaseRate(0)).toBeGreaterThan(0);
+    expect(spinBaseRate(drive({ arousal: 1 }))).toBeGreaterThan(
+      spinBaseRate(drive({ arousal: 0 })),
+    );
+    expect(spinBaseRate(drive({ arousal: 0 }))).toBeGreaterThan(0);
   });
 });
 
 describe('stepSpin', () => {
   it('integrates the base rate: the angle after a second is the rate', () => {
     const s = spinFor(1, { arousal: 0.5 });
-    expect(s.angle).toBeCloseTo(spinBaseRate(0.5), 3);
-    expect(s.rate).toBeCloseTo(spinBaseRate(0.5), 6);
+    expect(s.angle).toBeCloseTo(spinBaseRate(drive({ arousal: 0.5 })), 3);
+    expect(s.rate).toBeCloseTo(spinBaseRate(drive({ arousal: 0.5 })), 6);
   });
 
   it('kicks on an onset and decays the kick with τ = 0.4 s', () => {
     const s = createSpin();
-    stepSpin(s, { dt: FRAME, arousal: 0.5, onset: 1, reverse: false, reducedMotion: false });
+    stepSpin(s, { dt: FRAME, ...drive({ arousal: 0.5 }), onset: 1, reverse: false, reducedMotion: false });
     // The whole kick, less one frame of decay.
     expect(s.kick).toBeGreaterThan(0.85);
     expect(s.kick).toBeLessThanOrEqual(0.9);
 
     const at0 = s.kick;
     for (let i = 0; i < Math.round(SPIN_KICK_TAU / FRAME); i++) {
-      stepSpin(s, { dt: FRAME, arousal: 0.5, onset: 0, reverse: false, reducedMotion: false });
+      stepSpin(s, { dt: FRAME, ...drive({ arousal: 0.5 }), onset: 0, reverse: false, reducedMotion: false });
     }
     expect(s.kick / at0).toBeCloseTo(Math.exp(-1), 2);
   });
@@ -91,29 +165,29 @@ describe('stepSpin', () => {
     // own kick against a 0.4 s decay. Unclamped that sums to about 22 rad/s.
     const s = createSpin();
     for (let i = 0; i < 300; i++) {
-      stepSpin(s, { dt: FRAME, arousal: 1, onset: 1, reverse: false, reducedMotion: false });
+      stepSpin(s, { dt: FRAME, ...drive({ arousal: 1 }), onset: 1, reverse: false, reducedMotion: false });
       expect(Math.abs(s.kick)).toBeLessThanOrEqual(SPIN_KICK_MAX + 1e-9);
     }
     expect(s.kick).toBeCloseTo(SPIN_KICK_MAX, 6);
     // And one hit on its own is nowhere near the cap, so the cap is a limit and
     // not the behaviour.
     const one = createSpin();
-    stepSpin(one, { dt: FRAME, arousal: 1, onset: 1, reverse: false, reducedMotion: false });
+    stepSpin(one, { dt: FRAME, ...drive({ arousal: 1 }), onset: 1, reverse: false, reducedMotion: false });
     expect(one.kick).toBeLessThan(SPIN_KICK_MAX);
   });
 
   it('kicks in the direction it is already turning', () => {
     const forward = createSpin();
-    stepSpin(forward, { dt: FRAME, arousal: 0.5, onset: 1, reverse: false, reducedMotion: false });
-    expect(forward.rate).toBeGreaterThan(spinBaseRate(0.5));
+    stepSpin(forward, { dt: FRAME, ...drive({ arousal: 0.5 }), onset: 1, reverse: false, reducedMotion: false });
+    expect(forward.rate).toBeGreaterThan(spinBaseRate(drive({ arousal: 0.5 })));
 
     // Reversed and settled, then hit: the kick goes the other way too, so a
     // beat never fights the direction the smoke is visibly turning.
     const back = spinFor(SPIN_REVERSE_SEC + 0.5, { reverseAt: 0.1 });
     expect(back.rate).toBeLessThan(0);
-    stepSpin(back, { dt: FRAME, arousal: 0.5, onset: 1, reverse: false, reducedMotion: false });
+    stepSpin(back, { dt: FRAME, ...drive({ arousal: 0.5 }), onset: 1, reverse: false, reducedMotion: false });
     expect(back.kick).toBeLessThan(0);
-    expect(back.rate).toBeLessThan(-spinBaseRate(0.5));
+    expect(back.rate).toBeLessThan(-spinBaseRate(drive({ arousal: 0.5 })));
   });
 
   it('reverses over 1.5 s, passing through a standstill halfway', () => {
@@ -123,7 +197,7 @@ describe('stepSpin', () => {
     for (let i = 0; i < frames; i++) {
       stepSpin(s, {
         dt: FRAME,
-        arousal: 0.5,
+        ...drive({ arousal: 0.5 }),
         onset: 0,
         reverse: i === 0,
         reducedMotion: false,
@@ -133,7 +207,7 @@ describe('stepSpin', () => {
     // It starts positive, ends fully negative, and crosses zero in the middle
     // rather than flipping between two frames.
     expect(rates[0]!).toBeGreaterThan(0);
-    expect(rates[rates.length - 1]!).toBeCloseTo(-spinBaseRate(0.5), 6);
+    expect(rates[rates.length - 1]!).toBeCloseTo(-spinBaseRate(drive({ arousal: 0.5 })), 6);
     const mid = rates[Math.round(SPIN_REVERSE_SEC / 2 / FRAME)]!;
     expect(Math.abs(mid)).toBeLessThan(0.02);
     // Monotone down: no frame of the flip is a cut.
@@ -145,19 +219,100 @@ describe('stepSpin', () => {
   it('reverses again on a second cue, from wherever it had got to', () => {
     const s = spinFor(SPIN_REVERSE_SEC + 1, { reverseAt: 0.1 });
     expect(s.rate).toBeLessThan(0);
-    stepSpin(s, { dt: FRAME, arousal: 0.5, onset: 0, reverse: true, reducedMotion: false });
+    stepSpin(s, { dt: FRAME, ...drive({ arousal: 0.5 }), onset: 0, reverse: true, reducedMotion: false });
     for (let i = 0; i < Math.round(SPIN_REVERSE_SEC / FRAME); i++) {
-      stepSpin(s, { dt: FRAME, arousal: 0.5, onset: 0, reverse: false, reducedMotion: false });
+      stepSpin(s, { dt: FRAME, ...drive({ arousal: 0.5 }), onset: 0, reverse: false, reducedMotion: false });
     }
     expect(s.rate).toBeGreaterThan(0);
   });
 
   it('keeps the slow turn under reduced motion but takes the kicks away', () => {
     const s = createSpin();
-    stepSpin(s, { dt: FRAME, arousal: 0.5, onset: 1, reverse: false, reducedMotion: true });
+    stepSpin(s, { dt: FRAME, ...drive({ arousal: 0.5 }), onset: 1, reverse: false, reducedMotion: true });
     expect(s.kick).toBe(0);
     expect(s.rate).toBeGreaterThan(0);
-    expect(s.rate).toBeLessThan(spinBaseRate(0.5));
+    expect(s.rate).toBeLessThan(spinBaseRate(drive({ arousal: 0.5 })));
+  });
+
+  it('adds a further kick on a downbeat, scaled by the grid\'s confidence', () => {
+    const sure = createSpin();
+    stepSpin(sure, {
+      dt: FRAME,
+      ...drive({ arousal: 0.75, beatConf: 0.9 }),
+      onset: 1,
+      downbeatPulse: 1,
+      reverse: false,
+      reducedMotion: false,
+    });
+    // 0.9·1·0.9 for the onset plus 0.6·0.9 for the bar line, less one frame of
+    // decay — and the instantaneous rate is well past the direction's 0.6.
+    expect(sure.kick).toBeGreaterThan(1.2);
+    expect(sure.rate).toBeGreaterThanOrEqual(0.6);
+
+    // The same beat with no grid behind it does nothing at all.
+    const unsure = createSpin();
+    stepSpin(unsure, {
+      dt: FRAME,
+      ...drive({ arousal: 0.75, beatConf: 0 }),
+      onset: 1,
+      downbeatPulse: 1,
+      reverse: false,
+      reducedMotion: false,
+    });
+    expect(unsure.kick).toBe(0);
+  });
+
+  it('rocks on a pulse: the kick alternates bar by bar', () => {
+    // A bar line is the *rising edge* of the downbeat pulse, so the pulse is
+    // driven up and down the way `visualLink` decays it.
+    const s = createSpin();
+    const kicks: number[] = [];
+    for (let bar = 0; bar < 4; bar++) {
+      stepSpin(s, {
+        dt: FRAME,
+        ...drive({ arousal: 0.75 }),
+        motion: 'pulse',
+        onset: 1,
+        downbeatPulse: 1,
+        reverse: false,
+        reducedMotion: false,
+      });
+      kicks.push(s.kick);
+      // Let the pulse fall and the kick decay before the next bar.
+      for (let i = 0; i < 60; i++) {
+        stepSpin(s, {
+          dt: FRAME,
+          ...drive({ arousal: 0.75 }),
+          motion: 'pulse',
+          onset: 0,
+          downbeatPulse: 0,
+          reverse: false,
+          reducedMotion: false,
+        });
+      }
+    }
+    // Bars 0 and 2 shove forward, bars 1 and 3 shove back.
+    expect(kicks[0]!).toBeGreaterThan(0);
+    expect(kicks[1]!).toBeLessThan(0);
+    expect(kicks[2]!).toBeGreaterThan(0);
+    expect(kicks[3]!).toBeLessThan(0);
+  });
+
+  it('halves the kick on the two motions that are supposed to glide', () => {
+    const shove = (motion: string): number => {
+      const s = createSpin();
+      stepSpin(s, {
+        dt: FRAME,
+        ...drive({ arousal: 0.75 }),
+        motion,
+        onset: 1,
+        reverse: false,
+        reducedMotion: false,
+      });
+      return s.kick;
+    };
+    expect(shove('flow')).toBeCloseTo(SPIN_GLIDE_KICK * shove('pulse'), 9);
+    expect(shove('drift')).toBeCloseTo(SPIN_GLIDE_KICK * shove('swarm'), 9);
   });
 
   it('keeps the angle bounded however long the page is open', () => {
@@ -168,8 +323,16 @@ describe('stepSpin', () => {
 
   it('survives a nonsense frame without poisoning the angle', () => {
     const s = createSpin();
-    stepSpin(s, { dt: Number.NaN, arousal: 0.5, onset: 0, reverse: false, reducedMotion: false });
-    stepSpin(s, { dt: -1, arousal: Number.NaN, onset: 0, reverse: false, reducedMotion: false });
+    stepSpin(s, { dt: Number.NaN, ...drive(), onset: 0, reverse: false, reducedMotion: false });
+    stepSpin(s, {
+      dt: -1,
+      ...drive(),
+      arousal: Number.NaN,
+      beatConf: Number.NaN,
+      onset: 0,
+      reverse: false,
+      reducedMotion: false,
+    });
     expect(Number.isFinite(s.angle)).toBe(true);
     expect(Number.isFinite(s.rate)).toBe(true);
   });
