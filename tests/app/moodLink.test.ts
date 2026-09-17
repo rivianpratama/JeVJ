@@ -118,6 +118,26 @@ describe('MoodLink', () => {
     // And the ramp starts where the question was asked, not where it landed.
     expect(tl.cues().filter((c) => c.build !== undefined)[0]!.t).toBeCloseTo(10, 6);
   });
+
+  it('asks nothing at all when it is not the live layer', () => {
+    // v2: the whole track was judged before it played, so the link still
+    // builds a payload for the HUD and still ticks the slew, but never calls.
+    let asked = 0;
+    const client = {
+      maybeRequest: () => {
+        asked += 1;
+        return null;
+      },
+      stats: () => ({ calls: 0, tokens: 0, lastLatencyMs: 0, errors: 0, backoffUntil: 0 }),
+      nextAllowedAt: () => 0,
+    } as unknown as MoodClient;
+
+    const link = new MoodLink({ feed: fakeFeed(), client, live: false });
+    for (const t of [10, 10.2, 10.4]) {
+      expect(link.update(snapshot(t), t, 200, true, true).reading).toBeDefined();
+    }
+    expect(asked).toBe(0);
+  });
 });
 
 describe('phraseBoundaryIn', () => {

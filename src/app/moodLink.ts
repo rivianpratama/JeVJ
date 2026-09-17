@@ -36,6 +36,16 @@ export interface MoodLinkOptions {
    * at, and only this file knows when that was.
    */
   onMood?: (mood: MoodVector, askedAt: number) => void;
+  /**
+   * Whether to actually ask anything. False in v2, where the whole track was
+   * judged before it started playing: the timeline holds one answer per
+   * section and `effectiveMood` gives them the last word anyway, so a live
+   * call could only ever contradict a better-informed one, on a page whose
+   * model budget has already been spent. Everything else here still runs —
+   * the feed's payload and novelty for the HUD, the section boundaries the
+   * grid counts phrases from, the slew that `fadeTo` drives.
+   */
+  live?: boolean;
 }
 
 export interface MoodTick {
@@ -51,6 +61,7 @@ export class MoodLink {
   private readonly client: MoodClient;
   private readonly state: MoodState;
   private readonly onMood: ((mood: MoodVector, askedAt: number) => void) | undefined;
+  private readonly live: boolean;
   /** The most recent audio time, which a late answer is applied at. */
   private now = 0;
 
@@ -59,6 +70,7 @@ export class MoodLink {
     this.client = o.client ?? new MoodClient();
     this.state = o.state ?? new MoodState();
     this.onMood = o.onMood;
+    this.live = o.live ?? true;
   }
 
   /** One HUD-rate frame: build the payload, maybe ask, advance the mood. */
@@ -73,17 +85,19 @@ export class MoodLink {
     this.now = now;
     const reading = this.feed.update(snap, positionSec, durationSec);
 
-    const pending = this.client.maybeRequest(
-      now,
-      reading.input,
-      reading.novelty,
-      reading.sectionChanged,
-      playing,
-      visible,
-      // Before a tempo has been measured the grid is free-running on its
-      // default, and a "boundary" off it would be a boundary in nothing.
-      snap.tempo === null ? null : phraseBoundaryIn(snap.grid, now),
-    );
+    const pending = this.live
+      ? this.client.maybeRequest(
+          now,
+          reading.input,
+          reading.novelty,
+          reading.sectionChanged,
+          playing,
+          visible,
+          // Before a tempo has been measured the grid is free-running on its
+          // default, and a "boundary" off it would be a boundary in nothing.
+          snap.tempo === null ? null : phraseBoundaryIn(snap.grid, now),
+        )
+      : null;
 
     if (pending !== null) {
       // Only now is this payload the one novelty is measured against.

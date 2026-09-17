@@ -1,22 +1,14 @@
 /**
- * How far behind the sound is by the time we measure it.
+ * The listener's own correction to the analysis clock, remembered per browser.
  *
- * Analysis happens after the audio has already gone through the capture
- * pipeline and the output device, so a cue derived from frame `t` belongs a
- * little earlier than `t` on the visual clock. The estimate below is the
- * browser's own two numbers plus a constant for the capture hop, and the HUD's
- * trim slider is the escape hatch for whatever the estimate misses — a
- * bluetooth speaker, say. The trim is remembered per browser.
+ * A cue derived from frame `t` belongs a little earlier than `t` on the visual
+ * clock, and `ONSET_REPORT_LAG_SEC` is the part of that we can compute. The
+ * rest is the user's own output path — a bluetooth speaker is a tenth of a
+ * second all by itself — which nothing in the browser will tell us, so the
+ * HUD has a slider and this remembers where they left it.
  */
 
 const TRIM_KEY = 'jevj.latencyTrimMs';
-/** The capture and analysis hop itself: roughly one 2048-sample frame. */
-const PIPELINE_S = 0.02;
-
-/** Seconds. */
-export function estimateCaptureLatency(ctx: AudioContext): number {
-  return (ctx.baseLatency ?? 0) + (ctx.outputLatency ?? 0) + PIPELINE_S;
-}
 
 /** Milliseconds; 0 when nothing is stored or storage is unavailable. */
 export function loadTrim(): number {
