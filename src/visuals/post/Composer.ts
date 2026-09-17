@@ -27,6 +27,7 @@ import type { FastFrame, RenderParams } from '../director';
 const BLOOM_RADIUS = 0.6;
 
 export class Composer {
+  private readonly renderer: THREE.WebGLRenderer;
   private readonly composer: EffectComposer;
   private readonly blend = new BlendPass();
   private readonly mirror = new MirrorPass();
@@ -37,6 +38,7 @@ export class Composer {
   private aspect = 1;
 
   constructor(renderer: THREE.WebGLRenderer, width: number, height: number) {
+    this.renderer = renderer;
     const halfFloat =
       renderer.extensions.has('EXT_color_buffer_half_float') ||
       renderer.extensions.has('EXT_color_buffer_float');
@@ -51,7 +53,6 @@ export class Composer {
     });
 
     this.composer = new EffectComposer(renderer, this.target);
-    this.composer.setPixelRatio(renderer.getPixelRatio());
 
     this.bloom = new UnrealBloomPass(new THREE.Vector2(width, height), 0.6, BLOOM_RADIUS, 0.8);
 
@@ -66,10 +67,18 @@ export class Composer {
     this.setSize(width, height);
   }
 
+  /**
+   * `width` and `height` are CSS pixels; the pixel ratio is read back off the
+   * renderer, which may have changed it — a window dragged onto a second
+   * display changes the device pixel ratio without changing the layout.
+   *
+   * The composer scales every pass it owns, the bloom included, so sizing the
+   * bloom again here would set it to the CSS size and undo that.
+   */
   setSize(width: number, height: number): void {
     this.aspect = width / Math.max(1, height);
+    this.composer.setPixelRatio(this.renderer.getPixelRatio());
     this.composer.setSize(width, height);
-    this.bloom.setSize(width, height);
   }
 
   /**
@@ -83,7 +92,7 @@ export class Composer {
     time: number,
   ): void {
     this.blend.setLayers(textures, weights);
-    this.mirror.set(p.mirrorFolds, this.aspect);
+    this.mirror.set(p.mirrorFolds, this.aspect, time);
     this.chroma.set(p.chroma, p.posterize, fast.beatPhase);
     this.bloom.strength = p.bloomStrength;
     this.bloom.threshold = p.bloomThreshold;

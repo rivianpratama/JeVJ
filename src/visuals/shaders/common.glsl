@@ -56,6 +56,39 @@ float warpedFbm(vec2 p) {
 }
 
 /**
+ * The two-level domain warp (iq's), and its curl.
+ *
+ * One warp folds bands into marbling; two folds the marbling into itself, and
+ * that is the difference between a field with structure at one scale and one
+ * with structure at every scale — sheets inside sheets, which is what paint
+ * under glass actually looks like. The second level also carries its own slow
+ * time offsets, so the *shape* of the flow drifts rather than the picture
+ * merely sliding along a fixed field.
+ *
+ * `curlWarp2` differences only the outer fbm, holding the warp vector `r`
+ * fixed at `p`. Differencing the whole construction would cost twenty fbm
+ * evaluations per pixel instead of eight; `r` varies over a scale thousands of
+ * times larger than the 0.002 offset, so the two agree to well under the
+ * noise's own precision and the field stays divergence-free where it matters.
+ */
+vec2 warp2Vector(vec2 p, float time) {
+  vec2 q = vec2(fbm(p), fbm(p + vec2(5.2, 1.3)));
+  return vec2(
+    fbm(p + 4.0 * q + vec2(1.7, 9.2) + 0.15 * time),
+    fbm(p + 4.0 * q + vec2(8.3, 2.8) + 0.126 * time));
+}
+
+vec2 curlWarp2(vec2 p, float warp, float time) {
+  const float e = 0.002;
+  vec2 r = warp2Vector(p, time);
+  vec2 o = warp * r;
+  float dx = fbm(p + vec2(e, 0.0) + o) - fbm(p - vec2(e, 0.0) + o);
+  float dy = fbm(p + vec2(0.0, e) + o) - fbm(p - vec2(0.0, e) + o);
+  vec2 g = vec2(dx, dy) / (2.0 * e);
+  return vec2(g.y, -g.x);
+}
+
+/**
  * Curl of a scalar field, by central differences: the gradient turned 90°.
  * Divergence-free by construction, which is why the ink swirls and folds
  * instead of piling up or draining away.

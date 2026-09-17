@@ -19,8 +19,11 @@
  *    more than three times a second however hard the music alternates. A
  *    frame-alternating impact would otherwise drive a 30 Hz flash.
  *
- * Pure: no three.js, no DOM. The only state it keeps is the strobe limiter's
- * clock, which restarts whenever it is called with `prev === null`.
+ * Pure: no three.js, no DOM. What state it does need — the strobe limiter's
+ * clock, the slewed chroma base, the held fold count — lives in a
+ * `DirectorState` the caller owns, so two directors on one page cannot tread
+ * on each other and a test cannot inherit the last test's clock. The state
+ * restarts whenever `direct` is called with `prev === null`.
  */
 
 import { paletteFor, type Palette } from './palette';
@@ -88,6 +91,11 @@ const MIN_FLIP_SEC = 1 / 3;
 const FLIP_EPS = 1e-4;
 /** Reduced motion never lets the screen get brighter than this. */
 const REDUCED_MAX_EXPOSURE = 1.1;
+/** The kaleidoscope's range, when it is on at all. */
+const MIN_FOLDS = 2;
+const MAX_FOLDS = 6;
+/** How long a different fold count has to be wanted before it is taken. */
+const FOLD_HOLD_SEC = 0.5;
 
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
@@ -111,9 +119,9 @@ function leaning<K extends string>(keys: readonly K[], chosen: K, p = 0.6): Reco
  */
 export const IDLE_MOOD: MoodVector = {
   valence: 0.55,
-  arousal: 0.25,
+  arousal: 0.3,
   tension: 0.3,
-  warmth: 0.45,
+  warmth: 0.15,
   synthetic: 0.5,
   space: 0.7,
   aggression: 0.1,
@@ -144,37 +152,88 @@ const ATTRACTOR: Record<Motion, RenderParams['attractor']> = {
   bloom: 'vortex',
 };
 
-// ---- strobe limiter state ------------------------------------------------
-// The limiter has to remember *when* the luminance last reversed, which no
-// argument carries. `prev === null` means a fresh start, which is also how the
-// tests get a clean limiter.
-let clock = 0;
-let lastFlipAt = Number.NEGATIVE_INFINITY;
-let lastDir = 0;
 /**
- * The slewed *base* of chroma, kept aside because `RenderParams.chroma` is the
- * base plus an instant impact term and the two cannot be told apart again
- * from the previous frame's total.
+ * Everything `direct` has to remember between frames and cannot read back off
+ * the previous `RenderParams`.
  */
-let heldChromaBase = 0;
+export interface DirectorState {
+  /** Seconds since this director started; the strobe limiter's only clock. */
+  clock: number;
+  lastFlipAt: number;
+  lastDir: number;
+  /**
+   * The slewed *base* of chroma, kept aside because `RenderParams.chroma` is
+   * the base plus an instant impact term and the two cannot be told apart
+   * again from the previous frame's total.
+   */
+  heldChromaBase: number;
+  /** The fold count actually in use, and the one waiting to replace it. */
+  folds: number;
+  pendingFolds: number;
+  pendingFoldsSince: number;
+}
+
+/** A director that has never run. One per renderer. */
+export function createDirector(): DirectorState {
+  return {
+    clock: 0,
+    lastFlipAt: Number.NEGATIVE_INFINITY,
+    lastDir: 0,
+    heldChromaBase: 0,
+    folds: 0,
+    pendingFolds: 0,
+    pendingFoldsSince: Number.NEGATIVE_INFINITY,
+  };
+}
 
 /**
  * Hold `desired` back when taking it would reverse the screen's luminance
  * sooner than `MIN_FLIP_SEC` after the last reversal.
  */
-function limitStrobe(desired: number, held: number): number {
+function limitStrobe(s: DirectorState, desired: number, held: number): number {
   const delta = desired - held;
   const dir = Math.abs(delta) < FLIP_EPS ? 0 : Math.sign(delta);
   if (dir === 0) return held;
-  if (lastDir !== 0 && dir !== lastDir && clock - lastFlipAt < MIN_FLIP_SEC) return held;
-  if (dir !== lastDir) {
-    lastFlipAt = clock;
-    lastDir = dir;
+  if (s.lastDir !== 0 && dir !== s.lastDir && s.clock - s.lastFlipAt < MIN_FLIP_SEC) return held;
+  if (dir !== s.lastDir) {
+    s.lastFlipAt = s.clock;
+    s.lastDir = dir;
   }
   return desired;
 }
 
+/**
+ * The fold count, with a hand on it.
+ *
+ * `tension` wobbling across a rounding boundary would re-fold the entire
+ * screen several times a second, which is the one thing a kaleidoscope must
+ * not do — the figure is the point, and a figure that keeps changing its
+ * symmetry is noise. A different count has to be wanted continuously for half
+ * a second before it is taken.
+ */
+function holdFolds(s: DirectorState, target: number, fresh: boolean): number {
+  if (fresh) {
+    s.folds = target;
+    s.pendingFolds = target;
+    s.pendingFoldsSince = s.clock;
+    return s.folds;
+  }
+  if (Math.abs(target - s.folds) < 1) {
+    s.pendingFolds = s.folds;
+    s.pendingFoldsSince = s.clock;
+    return s.folds;
+  }
+  if (target !== s.pendingFolds) {
+    s.pendingFolds = target;
+    s.pendingFoldsSince = s.clock;
+  } else if (s.clock - s.pendingFoldsSince >= FOLD_HOLD_SEC) {
+    s.folds = target;
+  }
+  return s.folds;
+}
+
 export function direct(
+  state: DirectorState,
   mood: MoodVector,
   fast: FastFrame,
   dt: number,
@@ -183,11 +242,11 @@ export function direct(
 ): RenderParams {
   const step = Math.max(0, Math.min(0.1, dt));
   if (prev === null) {
-    clock = 0;
-    lastFlipAt = Number.NEGATIVE_INFINITY;
-    lastDir = 0;
+    state.clock = 0;
+    state.lastFlipAt = Number.NEGATIVE_INFINITY;
+    state.lastDir = 0;
   }
-  clock += step;
+  state.clock += step;
 
   // One frame's worth of a first-order lag. With prev === null there is
   // nothing to lag from, so the first frame is the target.
@@ -222,17 +281,23 @@ export function direct(
   const bloomStrengthTarget = lerp(0.3, 1.4, arousal);
   const bloomThresholdTarget = lerp(0.85, 0.55, valence);
   const chromaBaseTarget = lerp(0, 0.012, synthetic * arousal);
-  if (prev === null) heldChromaBase = chromaBaseTarget;
-  else heldChromaBase += (chromaBaseTarget - heldChromaBase) * k;
-  let chroma = heldChromaBase + impact * 0.02;
-  const grainTarget = lerp(0.02, 0.12, noise);
+  if (prev === null) state.heldChromaBase = chromaBaseTarget;
+  else state.heldChromaBase += (chromaBaseTarget - state.heldChromaBase) * k;
+  let chroma = state.heldChromaBase + impact * 0.02;
+  // The floor is 0.03 rather than 0.02 because below that the grain is not
+  // grain, it is a dither nobody can see — and an ungrained frame reads as
+  // computer graphics however good the ink is.
+  const grainTarget = lerp(0.03, 0.12, noise);
   const vignetteTarget = lerp(0.55, 0.2, space);
 
   // The acid look is reserved for hard electronic peaks; everywhere else it
   // would read as a bug.
   const posterize = synthetic > 0.7 && arousal > 0.7 ? 6 : 0;
-  const mirrored = hypnotic >= 0.6 || (mood.genre === 'electronic_dance' && hypnotic >= 0.4);
-  let mirrorFolds = mirrored ? Math.round(lerp(0, 8, tension)) : 0;
+  // Hypnotic only, and two to six folds. Eight folds read as sharp static
+  // spokes rather than as a figure, and repetitive dance music that is not
+  // hypnotic is not asking to be kaleidoscoped at all.
+  const foldTarget = hypnotic >= 0.6 ? Math.round(lerp(MIN_FOLDS, MAX_FOLDS, tension)) : 0;
+  let mirrorFolds = holdFolds(state, foldTarget, prev === null);
 
   if (reducedMotion) {
     flowAmtTarget *= 0.5;
@@ -245,7 +310,7 @@ export function direct(
   // in *direction* so it can never strobe.
   let exposure = 1 + 0.25 * impact + 0.1 * clamp01(fast.downbeatPulse) * arousal;
   if (reducedMotion) exposure = Math.min(exposure, REDUCED_MAX_EXPOSURE);
-  exposure = prev === null ? exposure : limitStrobe(exposure, prev.exposure);
+  exposure = prev === null ? exposure : limitStrobe(state, exposure, prev.exposure);
 
   return {
     weights: { ink: 1, particles: 0, strands: 0, relief: 0, breath: 0 },

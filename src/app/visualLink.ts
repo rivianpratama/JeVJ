@@ -20,9 +20,17 @@
  * slow sines, and `IDLE_MOOD`. The page is never a dead black rectangle.
  */
 
-import { IDLE_MOOD, direct, type FastFrame, type RenderParams } from '../visuals/director';
+import {
+  IDLE_MOOD,
+  createDirector,
+  direct,
+  type FastFrame,
+  type RenderParams,
+} from '../visuals/director';
 import { InkFeedback } from '../visuals/scenes/InkFeedback';
+import { createFrameClock } from './frameClock';
 import { createVisuals, type Visuals } from '../visuals/renderer';
+import { mergeMood, type MoodSource } from './effectiveMood';
 import type { AnalysisLoop } from './analysisLoop';
 import type { CueReader } from './cueReader';
 import type { MoodVector } from '../shared/types';
@@ -32,6 +40,13 @@ const DOWNBEAT_TAU = 0.3;
 /** The idle clock: one beat a second, four to the bar. */
 const IDLE_BPM = 60;
 const IDLE_BEATS_PER_BAR = 4;
+/**
+ * The band energies the idle mode pretends to hear. They never reach zero:
+ * the ambient injection is scaled by them, and a field that breathes down to
+ * nothing is a field that empties.
+ */
+const IDLE_BAND_MID = 0.35;
+const IDLE_BAND_SWING = 0.15;
 
 export interface VisualLinkOptions {
   canvas: HTMLCanvasElement;
@@ -45,6 +60,13 @@ export interface VisualLink {
   start(): void;
   stop(): void;
   dispose(): void;
+  /**
+   * The mood the renderer is drawing with, live. The object is rebuilt in
+   * place every frame, so read it, print it, and do not keep it.
+   */
+  mood(): MoodVector;
+  /** Which layer that mood came from. */
+  moodSource(): MoodSource;
 }
 
 export function createVisualLink(o: VisualLinkOptions): VisualLink {
@@ -71,10 +93,15 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
   // The effective mood, rebuilt in place from the mood layer and the timeline
   // — one object for the life of the page, like the FastFrame.
   const mood: MoodVector = { ...IDLE_MOOD };
+  let moodSrc: MoodSource = 'idle';
+
+  const director = createDirector();
+  // The renderer's own clock. The audio clock jumps on a seek and stalls
+  // whenever the analyser has no new snapshot; `uTime` may do neither.
+  const clock = createFrameClock();
 
   let params: RenderParams | null = null;
   let handle = 0;
-  let lastTime = Number.NaN;
   /** Audio time of the last downbeat seen, so each one is counted once. */
   let lastDownbeatAt = Number.NEGATIVE_INFINITY;
 
@@ -83,20 +110,17 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
 
     const snap = o.loop.latest();
     const wall = performance.now() / 1000;
-    const time = snap === null ? wall : snap.features.t;
-
-    const dt = Number.isFinite(lastTime) ? time - lastTime : 1 / 60;
-    lastTime = time;
-    // A seek, a source change or a first frame can hand back anything.
-    const step_ = dt > 0 && dt < 1 ? dt : 1 / 60;
+    const audioTime = snap === null ? wall : snap.features.t;
+    const tick = clock.advance(audioTime, wall);
 
     if (snap === null) {
-      idleFrame(time);
+      idleFrame(tick.time);
       Object.assign(mood, IDLE_MOOD);
+      moodSrc = 'idle';
     } else {
       const f = snap.features;
       fast.rms = f.rms;
-      bands.set(f.bands.subarray(0, 8));
+      bands.set(f.bands);
       fast.sub = f.sub;
       fast.onset = snap.onset;
       fast.beatPhase = snap.phase;
@@ -104,20 +128,20 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
       for (const beat of snap.beats) {
         if (beat.downbeat && beat.t > lastDownbeatAt) lastDownbeatAt = beat.t;
       }
-      fast.downbeatPulse = pulseAt(time - lastDownbeatAt);
+      fast.downbeatPulse = pulseAt(audioTime - lastDownbeatAt);
 
       // The timeline is read at `now + latency`, so impact and build are what
       // the listener is hearing rather than what the analyser has reached.
-      const reading = o.cues.at(time);
+      const reading = o.cues.at(audioTime);
       fast.impact = reading.impact;
       fast.build = reading.build;
-      merge(mood, o.mood(), reading.mood);
+      moodSrc = mergeMood(mood, o.mood(), reading.mood);
 
       ink.setMeter(snap.grid.barLength);
     }
 
-    params = direct(mood, fast, step_, params, reduceQuery?.matches === true);
-    visuals.frame(step_, params, fast, time);
+    params = direct(director, mood, fast, tick.step, params, reduceQuery?.matches === true);
+    visuals.frame(tick.step, params, fast, tick.time);
   }
 
   /** What the page does before it has heard anything: breathe. */
@@ -126,7 +150,7 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
     fast.beatPhase = beats - Math.floor(beats);
     for (let i = 0; i < bands.length; i++) {
       // Slow sines at incommensurate rates, so the lobes never line up twice.
-      bands[i] = 0.18 + 0.16 * Math.sin(t * (0.11 + i * 0.037) + i * 1.7);
+      bands[i] = IDLE_BAND_MID + IDLE_BAND_SWING * Math.sin(t * (0.11 + i * 0.037) + i * 1.7);
     }
     fast.rms = 0.12 + 0.04 * Math.sin(t * 0.13);
     fast.sub = 0.1 + 0.05 * Math.sin(t * 0.09);
@@ -144,13 +168,14 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
     stop(): void {
       if (handle !== 0) cancelAnimationFrame(handle);
       handle = 0;
-      lastTime = Number.NaN;
     },
     dispose(): void {
       if (handle !== 0) cancelAnimationFrame(handle);
       handle = 0;
       visuals.dispose();
     },
+    mood: () => mood,
+    moodSource: () => moodSrc,
   };
 }
 
@@ -160,19 +185,3 @@ function pulseAt(since: number): number {
   return Math.exp(-since / DOWNBEAT_TAU);
 }
 
-/**
- * The mood the renderer draws with, written into `out`: the mood layer's, with
- * the timeline's overrides on top wherever it has one.
- *
- * The timeline wins because it is the later and better-informed answer — its
- * cues are latency-compensated, and for a dropped file they come from a pass
- * over the whole track that knew what was coming. Where it says nothing, the
- * live mood stands.
- */
-function merge(out: MoodVector, base: MoodVector, over: Partial<MoodVector>): void {
-  Object.assign(out, base);
-  for (const key of Object.keys(over) as (keyof MoodVector)[]) {
-    const v = over[key];
-    if (v !== undefined) (out as unknown as Record<string, unknown>)[key] = v;
-  }
-}

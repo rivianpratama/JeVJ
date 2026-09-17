@@ -104,3 +104,55 @@ describe('paletteFor', () => {
     expect(spread(paletteFor(mood({ tension: 1 })))).toBeGreaterThan(spread(paletteFor(mood({ tension: 0 }))) + 10);
   });
 });
+
+/** Rec.709 relative luminance — meaningful only because the stops are linear. */
+function lum(rgb: [number, number, number]): number {
+  return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+}
+
+describe('paletteFor is linear-light', () => {
+  it('hands the GPU linear RGB, not gamma-encoded sRGB', () => {
+    // The mid stop is asked for at Oklab L ≈ 0.45, which is a relative
+    // luminance of ~0.09. The gamma-encoded value of the same color is ~0.33:
+    // uploading that into a linear chain that encodes again at the OutputPass
+    // is what made every mid tone read three stops too bright.
+    expect(lum(paletteFor(mood({})).stops[2]!)).toBeCloseTo(0.09, 2);
+  });
+
+  it('keeps the background below the darkest stop in linear light too', () => {
+    const p = paletteFor(mood({}));
+    expect(lum(p.bg)).toBeLessThan(lum(p.stops[0]!));
+  });
+});
+
+describe('paletteFor hue interpolation', () => {
+  it('takes the short way round at warmth 0.5 — magenta, never green', () => {
+    // 265° → 35° the short way passes through magenta and crimson; the long
+    // way passes through teal and chartreuse, which are colors the direction
+    // never asks for. Green dominating the mid stop is the signature of the
+    // long way round.
+    const [r, g, b] = paletteFor(mood({ warmth: 0.5 })).stops[2]!;
+    expect(r).toBeGreaterThan(g);
+    expect(b).toBeGreaterThan(g);
+  });
+});
+
+describe('paletteFor memoization', () => {
+  it('hands back the same Palette when nothing it reads has moved', () => {
+    const a = paletteFor(mood({ valence: 0.42 }));
+    // A field the palette does not read must not invalidate it.
+    const b = paletteFor(mood({ valence: 0.42, spoken: 0.9, impact: 1 }));
+    expect(b).toBe(a);
+  });
+
+  it('rebuilds when a field it reads moves by more than 1e-4', () => {
+    const a = paletteFor(mood({ tension: 0.3 }));
+    expect(paletteFor(mood({ tension: 0.30005 }))).toBe(a);
+    expect(paletteFor(mood({ tension: 0.4 }))).not.toBe(a);
+  });
+
+  it('rebuilds when the genre changes', () => {
+    const a = paletteFor(mood({ genre: 'pop' }));
+    expect(paletteFor(mood({ genre: 'rock_metal' }))).not.toBe(a);
+  });
+});

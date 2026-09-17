@@ -30,7 +30,7 @@ import type { Scene } from './Scene';
 import type { FastFrame, RenderParams } from '../director';
 
 /** `uFlowStyle` is the index of the motion label in `MOTIONS`. */
-const FLOW_STYLE: Record<string, number> = Object.fromEntries(MOTIONS.map((m, i) => [m, i]));
+export const FLOW_STYLE: Record<string, number> = Object.fromEntries(MOTIONS.map((m, i) => [m, i]));
 
 function densityTarget(w: number, h: number, type: THREE.TextureDataType): THREE.WebGLRenderTarget {
   return new THREE.WebGLRenderTarget(w, h, {
@@ -165,7 +165,7 @@ export class InkFeedback implements Scene {
     i['uTime']!.value = time;
     i['uBeatPhase']!.value = fast.beatPhase;
     i['uSub']!.value = fast.sub;
-    (i['uBands']!.value as Float32Array).set(fast.bands.subarray(0, 8));
+    (i['uBands']!.value as Float32Array).set(fast.bands);
     i['uInjectGain']!.value = p.injectGain;
     i['uDownbeatPulse']!.value = fast.downbeatPulse;
     i['uImpact']!.value = fast.impact;

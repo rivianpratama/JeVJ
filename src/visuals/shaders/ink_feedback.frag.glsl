@@ -31,6 +31,22 @@ const float FLOW_SCALE = 2.0;
 // The turbulence displacement is a curl in units of 1/uv; this brings it into
 // the same range as the flow term.
 const float TURB_SCALE = 0.004;
+// How hard the second warp level is applied, calm → turbulent. Below ~2 the
+// two-level warp collapses back into a one-level one and the field reads as
+// bands again; past ~4.5 the sheets tear instead of folding.
+const float WARP_MIN = 2.0;
+const float WARP_RANGE = 2.5;
+/**
+ * Densities are clamped to this.
+ *
+ * Nothing in this loop ever clears the buffer: a single non-finite value
+ * written into it is advected across the frame and stays there for the life of
+ * the page. The clamp kills an infinity and the equality test above it kills a
+ * NaN, which no clamp can (every comparison against a NaN is false, so it
+ * would pass straight through `clamp`). Both are cheap insurance on a loop
+ * that has no other way back.
+ */
+const float MAX_DENSITY = 8.0;
 
 void main() {
   vec2 uv = vUv;
@@ -42,7 +58,9 @@ void main() {
   vec2 radial = (dist > 1e-5 ? fromCenter / dist : vec2(0.0)) * smoothstep(0.0, 0.7, dist);
 
   vec2 p = uv * 2.0 + uTime * 0.05;
-  vec2 flow = curlWarped(p);
+  // Two-level domain warp: the flow field itself has structure at every scale,
+  // which is what makes the ink fold into sheets rather than slide along.
+  vec2 flow = curlWarp2(p, WARP_MIN + WARP_RANGE * clamp(uTurbulence, 0.0, 1.0), uTime);
   // The brief's decay figures are per frame at 60 Hz; raised to dt·60 they
   // mean the same thing on any display.
   float decay = uDecay;
@@ -53,9 +71,14 @@ void main() {
   } else if (uFlowStyle == 1) {
     flow += radial * sin(TAU * uBeatPhase) * 0.01; // pulse: breathing on the beat
   } else if (uFlowStyle == 2) {
-    float seg = TAU / 8.0;                         // shatter: 8 directions only
-    float a = floor(atan(flow.y, flow.x) / seg + 0.5) * seg;
-    flow = vec2(cos(a), sin(a)) * length(flow);
+    // shatter: 8 directions only. atan(0, 0) is undefined, and a dead-still
+    // pixel in a curl field is not rare — it is every saddle point.
+    float speed = length(flow);
+    if (speed > 1e-8) {
+      float seg = TAU / 8.0;
+      float a = floor(atan(flow.y, flow.x) / seg + 0.5) * seg;
+      flow = vec2(cos(a), sin(a)) * speed;
+    }
   } else if (uFlowStyle == 3) {
     flow *= 0.4;                                   // drift: slow, and it lingers
     decay = 0.99;
@@ -88,5 +111,9 @@ void main() {
     + texture2D(uPrev, src - vec2(0.0, o.y)));
 
   vec4 prev = mix(center, blurred, clamp(uTurbulence, 0.0, 1.0) * 0.6) * pow(decay, uDt * 60.0);
-  gl_FragColor = vec4(max(prev.rgb, vec3(0.0)), 1.0);
+
+  // The scrub. `x == x` is false for a NaN and true for everything else,
+  // including an infinity — which the clamp below then handles.
+  if (!(prev == prev)) prev = vec4(0.0);
+  gl_FragColor = vec4(clamp(prev.rgb, vec3(0.0), vec3(MAX_DENSITY)), 1.0);
 }

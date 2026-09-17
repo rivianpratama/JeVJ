@@ -15,14 +15,16 @@ export class MirrorPass extends ShaderPass {
         tDiffuse: { value: null },
         uFolds: { value: 0 },
         uAspect: { value: 1 },
+        uTime: { value: 0 },
       },
       vertexShader: FULLSCREEN_VERT,
       fragmentShader: withCommon(mirrorFrag),
     });
   }
 
-  set(folds: number, aspect: number): void {
+  set(folds: number, aspect: number, time: number): void {
     this.uniforms['uFolds']!.value = folds;
     this.uniforms['uAspect']!.value = aspect;
+    this.uniforms['uTime']!.value = time;
   }
 }

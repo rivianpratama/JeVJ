@@ -53,6 +53,7 @@ export function createVisuals(canvas: HTMLCanvasElement): Visuals {
 
   let width = Math.max(1, canvas.clientWidth || window.innerWidth);
   let height = Math.max(1, canvas.clientHeight || window.innerHeight);
+  let pixelRatio = renderer.getPixelRatio();
   renderer.setSize(width, height, false);
 
   const composer = new Composer(renderer, width, height);
@@ -71,13 +72,21 @@ export function createVisuals(canvas: HTMLCanvasElement): Visuals {
     ];
   };
 
+  /**
+   * The CSS size is not the whole of it: dragging the window onto a display
+   * with a different device pixel ratio changes how many real pixels the same
+   * layout needs, and the `ResizeObserver` fires for that too. Comparing only
+   * the CSS size would leave every buffer in the chain at the old resolution.
+   */
   function resize(): void {
     const w = Math.max(1, canvas.clientWidth || window.innerWidth);
     const h = Math.max(1, canvas.clientHeight || window.innerHeight);
-    if (w === width && h === height) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
+    if (w === width && h === height && dpr === pixelRatio) return;
     width = w;
     height = h;
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO));
+    pixelRatio = dpr;
+    renderer.setPixelRatio(dpr);
     renderer.setSize(width, height, false);
     composer.setSize(width, height);
     const [sw, sh] = sceneSize();

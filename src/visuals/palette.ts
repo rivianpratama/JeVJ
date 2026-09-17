@@ -15,14 +15,24 @@
  *  - the hue rotates across the stops by ±40°·`tension`, which is what turns a
  *    calm monochrome ramp into a split-complement one when things get tense.
  *
+ * The colors are **linear light**, not gamma-encoded sRGB: they are uploaded
+ * as uniforms into a render chain that works in linear throughout and encodes
+ * once at the end. See `oklch.ts`.
+ *
+ * A palette is rebuilt only when one of the six things it reads has actually
+ * moved. The director calls this every frame and the mood behind it changes
+ * every few seconds, so all but a handful of those calls would otherwise spend
+ * seven chroma bisections producing the object they produced last frame — and
+ * returning the same object also lets a consumer compare palettes by identity.
+ *
  * Pure: no three.js, no DOM.
  */
 
-import { oklchToRgb } from './oklch';
+import { oklchToLinearRgb } from './oklch';
 import type { Genre, MoodVector } from '../shared/types';
 
 export interface Palette {
-  /** Five RGB stops, dark → light. */
+  /** Five linear-light RGB stops, dark → light. */
   stops: [number, number, number][];
   bg: [number, number, number];
   accent: [number, number, number];
@@ -89,7 +99,50 @@ const GENRE_NUDGE: Partial<Record<Genre, GenreNudge>> = {
   ambient_drone: { chroma: 0.7 },
 };
 
+/** Everything `build` reads. Anything not in here cannot change a palette. */
+interface PaletteKey {
+  warmth: number;
+  valence: number;
+  melancholy: number;
+  arousal: number;
+  tension: number;
+  genre: Genre;
+}
+
+/** Below this a scalar has not moved enough to be a different color. */
+const SAME = 1e-4;
+
+let cachedKey: PaletteKey | null = null;
+let cached: Palette | null = null;
+
 export function paletteFor(m: MoodVector): Palette {
+  const key: PaletteKey = {
+    warmth: clamp01(m.warmth),
+    valence: clamp01(m.valence),
+    melancholy: clamp01(m.melancholy),
+    arousal: clamp01(m.arousal),
+    tension: clamp01(m.tension),
+    genre: m.genre,
+  };
+  if (cached !== null && cachedKey !== null && same(cachedKey, key)) return cached;
+
+  cachedKey = key;
+  cached = build(key);
+  return cached;
+}
+
+function same(a: PaletteKey, b: PaletteKey): boolean {
+  return (
+    a.genre === b.genre &&
+    Math.abs(a.warmth - b.warmth) < SAME &&
+    Math.abs(a.valence - b.valence) < SAME &&
+    Math.abs(a.melancholy - b.melancholy) < SAME &&
+    Math.abs(a.arousal - b.arousal) < SAME &&
+    Math.abs(a.tension - b.tension) < SAME
+  );
+}
+
+function build(m: PaletteKey): Palette {
   const nudge = GENRE_NUDGE[m.genre] ?? {};
 
   let hue = lerpHue(HUE_COLD, HUE_WARM, clamp01(m.warmth)) + (nudge.hueOffset ?? 0);
@@ -108,13 +161,13 @@ export function paletteFor(m: MoodVector): Palette {
     // −swing at the darkest stop, +swing at the lightest: the ramp opens into
     // a split-complement as tension rises.
     const h = hue + ((i / (BASE_L.length - 1)) * 2 - 1) * swing;
-    return oklchToRgb(clamp01(L), chroma, h);
+    return oklchToLinearRgb(clamp01(L), chroma, h);
   });
 
   const darkest = stops[0]!;
   return {
     stops,
     bg: [darkest[0] * BG_DARKEN, darkest[1] * BG_DARKEN, darkest[2] * BG_DARKEN],
-    accent: oklchToRgb(ACCENT_L, ACCENT_C, hue + 180),
+    accent: oklchToLinearRgb(ACCENT_L, ACCENT_C, hue + 180),
   };
 }

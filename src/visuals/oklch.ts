@@ -1,5 +1,6 @@
 /**
- * Oklch → sRGB, the one color conversion the visuals need.
+ * Oklch → sRGB, the one color conversion the visuals need, in both the forms
+ * the app has a use for.
  *
  * The palette is written in Oklch because that is the only way the brief's
  * rules mean anything: "five stops at L = 0.08 … 0.9" is a promise about
@@ -14,6 +15,15 @@
  * into a washed-out magenta — whereas pulling chroma in keeps the hue and the
  * lightness and only gives up the saturation sRGB cannot show. That matters
  * most exactly where the director pushes hardest (high valence, neon genres).
+ *
+ * There are two exits because there are two consumers. The DOM wants
+ * gamma-encoded sRGB, which is what a CSS color is. The GPU wants *linear*
+ * light: the render chain works in linear throughout and its `OutputPass`
+ * applies the transfer function once, at the very end. Uploading an encoded
+ * color into that chain encodes it twice, which lifts every mid tone — a stop
+ * asked for at L 0.45, relative luminance 0.09, arrives on screen at 0.33 and
+ * the whole five-stop ramp collapses into its top two stops. Same color, same
+ * gamut clipping; only the transfer function differs.
  *
  * Pure: no three.js, no DOM. Vitest runs it in Node.
  */
@@ -52,12 +62,8 @@ function encode(x: number): number {
   return v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
 }
 
-/**
- * `L` 0..1 perceived lightness, `C` chroma (0 is gray, ~0.37 is the most sRGB
- * can ever show), `hDeg` hue in degrees. Returns encoded sRGB, every channel
- * inside 0..1.
- */
-export function oklchToRgb(L: number, C: number, hDeg: number): [number, number, number] {
+/** The in-gamut linear-light color, chroma pulled in as far as it had to be. */
+function clipped(L: number, C: number, hDeg: number): [number, number, number] {
   const lightness = Math.max(0, Math.min(1, L));
   const h = (hDeg * Math.PI) / 180;
   const ca = Math.cos(h);
@@ -66,7 +72,7 @@ export function oklchToRgb(L: number, C: number, hDeg: number): [number, number,
   let lo = 0;
   let hi = Math.max(0, C);
   // Gray is always in gamut, so the answer is somewhere in [0, C]: bisect for
-  // the largest chroma that still fits, then encode that.
+  // the largest chroma that still fits.
   if (!inGamut(oklabToLinear(lightness, hi * ca, hi * sa))) {
     for (let i = 0; i < CLIP_STEPS; i++) {
       const mid = (lo + hi) / 2;
@@ -77,6 +83,32 @@ export function oklchToRgb(L: number, C: number, hDeg: number): [number, number,
     lo = hi;
   }
 
-  const linear = oklabToLinear(lightness, lo * ca, lo * sa);
+  return oklabToLinear(lightness, lo * ca, lo * sa);
+}
+
+/**
+ * `L` 0..1 perceived lightness, `C` chroma (0 is gray, ~0.37 is the most sRGB
+ * can ever show), `hDeg` hue in degrees. Returns encoded sRGB, every channel
+ * inside 0..1 — the form a CSS color takes.
+ */
+export function oklchToRgb(L: number, C: number, hDeg: number): [number, number, number] {
+  const linear = clipped(L, C, hDeg);
   return [encode(linear[0]), encode(linear[1]), encode(linear[2])];
+}
+
+/**
+ * The same color as `oklchToRgb`, one transfer function earlier: linear-light
+ * sRGB primaries, every channel inside 0..1. This is what goes to the GPU.
+ *
+ * The bisection leaves the channels within `GAMUT_EPS` of the cube rather than
+ * exactly inside it, so they are clamped — a hundredth of a percent, which
+ * cannot move a hue, and it keeps a negative from ever reaching a shader.
+ */
+export function oklchToLinearRgb(L: number, C: number, hDeg: number): [number, number, number] {
+  const linear = clipped(L, C, hDeg);
+  return [clamp01(linear[0]), clamp01(linear[1]), clamp01(linear[2])];
+}
+
+function clamp01(x: number): number {
+  return x <= 0 ? 0 : x >= 1 ? 1 : x;
 }
