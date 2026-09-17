@@ -189,32 +189,36 @@ body.is-dragging::after {
 }
 
 /*
- * The halo: the same square, a third larger again, blurring whatever the
+ * The halo: the same square, half again as large, blurring whatever the
  * visualizer is drawing behind the picture so the picture has something to sit
- * in. Masked to nothing well inside its own box, so it has no edge either.
+ * in. Its mask is sized to the box rather than to the farthest corner, so the
+ * fill has reached nothing by the time the box ends in every direction — a
+ * mask that ran out at the corner would leave the edges at a third of their
+ * alpha, and a third of a backdrop blur is still a line.
  */
 .card-halo {
   position: absolute;
   inset: 0;
-  transform: scale(1.35);
-  border-radius: 14%;
+  transform: scale(1.5);
+  opacity: 0.6;
   background: rgba(255, 255, 255, 0.03);
-  backdrop-filter: blur(28px);
-  -webkit-backdrop-filter: blur(28px);
-  mask-image: radial-gradient(circle, #000 35%, transparent 100%);
-  -webkit-mask-image: radial-gradient(circle, #000 35%, transparent 100%);
+  backdrop-filter: blur(36px);
+  -webkit-backdrop-filter: blur(36px);
+  mask-image: radial-gradient(circle closest-side, #000 25%, transparent 100%);
+  -webkit-mask-image: radial-gradient(circle closest-side, #000 25%, transparent 100%);
 }
 
 /*
- * The picture. The feather is painted into the canvas rather than masked here
- * — see `card.ts` — so all this box does is hold it and round off whatever the
- * falloff has left, which on a full-frame picture is nothing.
+ * The picture's box, a quarter larger than the square it reads as, because the
+ * falloff needs room to finish in. Nothing is clipped here and nothing is
+ * rounded here: `overflow: hidden` and a `border-radius` would each cut the
+ * very edge the feather exists to dissolve, and a cut edge is the one thing
+ * the eye is guaranteed to find. The silhouette is the mask `card.ts` paints,
+ * and only that.
  */
 .card {
   position: absolute;
-  inset: 0;
-  overflow: hidden;
-  border-radius: 14%;
+  inset: -12.5%;
 }
 
 .card-canvas {
