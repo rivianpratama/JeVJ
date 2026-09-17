@@ -20,7 +20,7 @@
  * Pure: no DOM, no Web Audio. The caller supplies the number.
  */
 
-import type { Cue } from '../shared/types';
+import type { Cue, TransitionKind } from '../shared/types';
 import type { CueReading, CueTimeline } from '../timeline/timeline';
 
 export interface CueReader {
@@ -30,6 +30,13 @@ export interface CueReader {
   upcoming(now: number, horizon: number): Cue[];
   /** Audio time `now` as the timeline stamps it — for "how far off is this". */
   readTime(now: number): number;
+  /**
+   * The transition kinds of the cues whose instant fell between two audio
+   * times, appended to `out`. Both ends are moved onto the timeline's clock,
+   * so a seam fires when the listener hears it rather than when the analyser
+   * reaches it.
+   */
+  passed(from: number, to: number, out: TransitionKind[]): void;
 }
 
 /**
@@ -48,5 +55,9 @@ export function createCueReader(tl: CueTimeline, latencySec: () => number): CueR
     readTime,
     at: (now) => tl.at(readTime(now)),
     upcoming: (now, horizon) => tl.upcoming(readTime(now), horizon),
+    // Both ends through the same `readTime`, so a trim slider moved between
+    // two frames cannot open a gap that swallows a cue or a window that fires
+    // one twice.
+    passed: (from, to, out) => tl.transitionsIn(readTime(from), readTime(to), out),
   };
 }

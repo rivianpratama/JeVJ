@@ -1,14 +1,16 @@
 /**
- * The ink: a two-target feedback loop that behaves like paint under glass.
+ * The smoke: a two-target feedback loop that behaves like long-exposure vapour.
  *
  * The state of this scene is two half-resolution RGBA16F targets holding three
- * ink densities in R, G and B. A frame is three draws:
+ * smoke densities in R, G and B — and, since v2, the local flow angle in A. A
+ * frame is three draws:
  *
- *   1. advect and fade — read `prev`, write `next` (`ink_feedback.frag`);
- *   2. inject — add this frame's beat lobes, downbeat ring and impact splash
- *      on top of `next`, additively (`ink_inject.frag`);
+ *   1. advect, fade and smear — read `prev`, write `next`
+ *      (`smoke_feedback.frag`);
+ *   2. inject — add this frame's lobes, filaments, downbeat ring and impact
+ *      shell on top of `next`, additively (`smoke_inject.frag`);
  *   3. color — sample the densities through the mood's palette into a separate
- *      color target, which is what the Composer mixes (`ink_color.frag`).
+ *      color target, which is what the Composer mixes (`smoke_color.frag`).
  *
  * Then the two density targets swap. Nothing is ever cleared: the picture at
  * any instant is every injection of the last few seconds, folded into itself
@@ -18,6 +20,16 @@
  * source but itself comes back from black over seconds — and over tens of
  * seconds on a page the browser has throttled.
  *
+ * **What v2 changed.** The slot name is still `ink` and the ping-pong, the
+ * DPR-step resample and the ambient target-density mechanism are untouched.
+ * What moved is the *geometry*: smoke is born on an annulus around the card
+ * rather than at the middle of the frame, the whole field rotates, it is
+ * carried outward, and the blur that softens it is anisotropic — along the
+ * flow, so a sheet is combed into parallel striations instead of being washed
+ * flat. Onsets seed filaments: two or three thin bright Bézier curves on the
+ * annulus, tangent to the rotation, which the anisotropic blur smears into
+ * sheets over the following second.
+ *
  * Half-float matters here more than anywhere else in the app. The densities
  * are multiplied by ~0.96 sixty times a second; in 8 bits the tail of every
  * stroke would quantise into visible steps within half a second.
@@ -25,17 +37,35 @@
 
 import * as THREE from 'three';
 import { FULLSCREEN_VERT, withCommon } from '../shaders/glsl';
-import inkCarryFrag from '../shaders/ink_carry.frag.glsl?raw';
-import inkColorFrag from '../shaders/ink_color.frag.glsl?raw';
-import inkFeedbackFrag from '../shaders/ink_feedback.frag.glsl?raw';
-import inkInjectFrag from '../shaders/ink_inject.frag.glsl?raw';
+import smokeCarryFrag from '../shaders/smoke_carry.frag.glsl?raw';
+import smokeColorFrag from '../shaders/smoke_color.frag.glsl?raw';
+import smokeFeedbackFrag from '../shaders/smoke_feedback.frag.glsl?raw';
+import smokeInjectFrag from '../shaders/smoke_inject.frag.glsl?raw';
 import { AMBIENT_LEVEL, DRIFT_DECAY, ambientInjectPerFrame } from '../inkMath';
 import { MOTIONS } from '../../shared/types';
+import type { Annulus } from '../smokeMath';
 import type { Scene } from './Scene';
 import type { FastFrame, RenderParams } from '../director';
 
 /** `uFlowStyle` is the index of the motion label in `MOTIONS`. */
 export const FLOW_STYLE: Record<string, number> = Object.fromEntries(MOTIONS.map((m, i) => [m, i]));
+
+/** How many filaments can be alight at once, and how many an onset seeds. */
+export const FILAMENT_SLOTS = 3;
+const FILAMENT_MIN = 2;
+/** How fast a filament fades out of the injection, in seconds. */
+const FILAMENT_TAU = 0.35;
+/** A filament's length in uv, and its width. */
+const FILAMENT_LEN_MIN = 0.25;
+const FILAMENT_LEN_MAX = 0.5;
+const FILAMENT_WIDTH = 0.004;
+/** How far a filament bows away from its own tangent, as a fraction of its length. */
+const FILAMENT_BOW = 0.35;
+/** The onset that seeds filaments, and the shortest gap between two seedings. */
+const ONSET_GATE = 0.35;
+const FILAMENT_GAP_SEC = 0.12;
+/** What the annulus is before anything has measured a card: a centred frame. */
+const DEFAULT_ANNULUS: Annulus = { cx: 0.5, cy: 0.5, inner: 0.24, outer: 0.42 };
 
 function densityTarget(w: number, h: number, type: THREE.TextureDataType): THREE.WebGLRenderTarget {
   return new THREE.WebGLRenderTarget(w, h, {
@@ -43,7 +73,7 @@ function densityTarget(w: number, h: number, type: THREE.TextureDataType): THREE
     format: THREE.RGBAFormat,
     minFilter: THREE.LinearFilter,
     magFilter: THREE.LinearFilter,
-    // Clamp, so ink pushed off the edge smears along it rather than wrapping
+    // Clamp, so smoke pushed off the edge smears along it rather than wrapping
     // around and reappearing on the other side.
     wrapS: THREE.ClampToEdgeWrapping,
     wrapT: THREE.ClampToEdgeWrapping,
@@ -52,7 +82,23 @@ function densityTarget(w: number, h: number, type: THREE.TextureDataType): THREE
   });
 }
 
-export class InkFeedback implements Scene {
+/** One live filament, kept in a fixed-size ring so a frame allocates nothing. */
+interface Filament {
+  /** Control points of the quadratic Bézier, in the aspect-corrected space. */
+  p0: THREE.Vector2;
+  p1: THREE.Vector2;
+  p2: THREE.Vector2;
+  /** Seconds since it was seeded; `Infinity` for an empty slot. */
+  age: number;
+  peak: number;
+}
+
+export class Smoke implements Scene {
+  /**
+   * Still `ink`. The slot name is the contract with the Composer and the
+   * director's weight map, and renaming a mix channel is a rename of every
+   * measurement taken through it.
+   */
   readonly name = 'ink' as const;
 
   private readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -84,11 +130,31 @@ export class InkFeedback implements Scene {
   private type: THREE.TextureDataType = THREE.HalfFloatType;
   /** Set from the beat grid: 3 for a triple meter, 4 for a duple one. */
   private lobes = 3;
+  private annulus: Annulus = DEFAULT_ANNULUS;
+
+  private readonly filaments: Filament[] = [];
+  /** Whether the onset was already over the gate last frame, so one hit seeds once. */
+  private onsetHeld = false;
+  private sinceFilament = Number.POSITIVE_INFINITY;
+  /** Where the next filament is written; the ring is three deep. */
+  private nextSlot = 0;
+  /** A counter, not a random: the look has to be the same every run. */
+  private seed = 0;
 
   constructor() {
+    for (let i = 0; i < FILAMENT_SLOTS; i++) {
+      this.filaments.push({
+        p0: new THREE.Vector2(),
+        p1: new THREE.Vector2(),
+        p2: new THREE.Vector2(),
+        age: Number.POSITIVE_INFINITY,
+        peak: 0,
+      });
+    }
+
     this.feedbackMat = new THREE.ShaderMaterial({
       vertexShader: FULLSCREEN_VERT,
-      fragmentShader: withCommon(inkFeedbackFrag),
+      fragmentShader: withCommon(smokeFeedbackFrag),
       depthTest: false,
       depthWrite: false,
       uniforms: {
@@ -97,22 +163,41 @@ export class InkFeedback implements Scene {
         uDecay: { value: 0.955 },
         uTurbulence: { value: 0.4 },
         uPushKick: { value: 0 },
+        uPushOut: { value: 0.012 },
+        uSpin: { value: 0 },
+        uSpinRate: { value: 0 },
         uTime: { value: 0 },
         uDt: { value: 1 / 60 },
         uBeatPhase: { value: 0 },
         uFlowStyle: { value: 0 },
         uTexel: { value: new THREE.Vector2(1, 1) },
+        uCardCenter: { value: new THREE.Vector2(0.5, 0.5) },
+        uCardInner: { value: DEFAULT_ANNULUS.inner },
+        uCardOuter: { value: DEFAULT_ANNULUS.outer },
       },
     });
 
     this.injectMat = new THREE.ShaderMaterial({
       vertexShader: FULLSCREEN_VERT,
-      fragmentShader: withCommon(inkInjectFrag),
+      fragmentShader: withCommon(smokeInjectFrag),
       depthTest: false,
       depthWrite: false,
-      // The one place new ink enters: added on top of what the feedback pass
+      // The one place new smoke enters: added on top of what the feedback pass
       // just wrote, never replacing it.
-      blending: THREE.AdditiveBlending,
+      //
+      // Custom rather than `AdditiveBlending`, for one reason: additive uses
+      // SRC_ALPHA as the colour's source factor and writes the source alpha
+      // into the target, and the alpha of this target is not padding any more —
+      // it is the flow angle the feedback pass wrote for the *inject* pass to
+      // comb across. So colour is a plain one-to-one add and alpha is left
+      // exactly as the feedback pass left it.
+      blending: THREE.CustomBlending,
+      blendEquation: THREE.AddEquation,
+      blendSrc: THREE.OneFactor,
+      blendDst: THREE.OneFactor,
+      blendEquationAlpha: THREE.AddEquation,
+      blendSrcAlpha: THREE.ZeroFactor,
+      blendDstAlpha: THREE.OneFactor,
       uniforms: {
         uTime: { value: 0 },
         uBeatPhase: { value: 0 },
@@ -125,26 +210,36 @@ export class InkFeedback implements Scene {
         uAspect: { value: 1 },
         uDt: { value: 1 / 60 },
         uAmbientAdd: { value: 0 },
+        uStriate: { value: 380 },
+        uSpin: { value: 0 },
+        uCardCenter: { value: new THREE.Vector2(0.5, 0.5) },
+        uCardInner: { value: DEFAULT_ANNULUS.inner },
+        uCardOuter: { value: DEFAULT_ANNULUS.outer },
+        uPrev: { value: null },
+        uFilA: { value: [0, 1, 2].map(() => new THREE.Vector4()) },
+        uFilB: { value: [0, 1, 2].map(() => new THREE.Vector4()) },
       },
     });
 
     this.colorMat = new THREE.ShaderMaterial({
       vertexShader: FULLSCREEN_VERT,
-      fragmentShader: withCommon(inkColorFrag),
+      fragmentShader: withCommon(smokeColorFrag),
       depthTest: false,
       depthWrite: false,
       uniforms: {
-        uInk: { value: null },
+        uSmoke: { value: null },
         uStops: { value: [0, 1, 2, 3, 4].map(() => new THREE.Vector3()) },
         uBg: { value: new THREE.Vector3() },
         uAccent: { value: new THREE.Vector3(1, 1, 1) },
         uExposure: { value: 1 },
+        uSpin: { value: 0 },
+        uTexel: { value: new THREE.Vector2(1, 1) },
       },
     });
 
     this.carryMat = new THREE.ShaderMaterial({
       vertexShader: FULLSCREEN_VERT,
-      fragmentShader: inkCarryFrag,
+      fragmentShader: smokeCarryFrag,
       depthTest: false,
       depthWrite: false,
       uniforms: { uPrev: { value: null } },
@@ -159,7 +254,7 @@ export class InkFeedback implements Scene {
   init(r: THREE.WebGLRenderer, w: number, h: number): void {
     this.renderer = r;
     // Rendering *to* a half-float target is an extension even on WebGL2; on a
-    // machine without it the ink still runs, it just bands in the tails.
+    // machine without it the smoke still runs, it just bands in the tails.
     const halfFloat =
       r.extensions.has('EXT_color_buffer_half_float') || r.extensions.has('EXT_color_buffer_float');
     this.type = halfFloat ? THREE.HalfFloatType : THREE.UnsignedByteType;
@@ -187,12 +282,34 @@ export class InkFeedback implements Scene {
     this.lobes = beatsPerBar === 3 ? 3 : 4;
   }
 
+  /**
+   * Where the card is, as the ring smoke is born on.
+   *
+   * Handed in rather than measured here: this file has no business reading the
+   * DOM, and the annulus has to be the same number the director's own
+   * measurements are taken against. See `annulusFor`.
+   */
+  setAnnulus(a: Annulus): void {
+    this.annulus = a;
+    const f = this.feedbackMat.uniforms;
+    (f['uCardCenter']!.value as THREE.Vector2).set(a.cx, a.cy);
+    f['uCardInner']!.value = a.inner;
+    f['uCardOuter']!.value = a.outer;
+    const i = this.injectMat.uniforms;
+    (i['uCardCenter']!.value as THREE.Vector2).set(a.cx, a.cy);
+    i['uCardInner']!.value = a.inner;
+    i['uCardOuter']!.value = a.outer;
+  }
+
   update(dt: number, p: RenderParams, fast: FastFrame, time: number): void {
     const f = this.feedbackMat.uniforms;
     f['uFlowAmt']!.value = p.flowAmt;
     f['uDecay']!.value = p.decay;
     f['uTurbulence']!.value = p.turbulence;
     f['uPushKick']!.value = p.pushKick;
+    f['uPushOut']!.value = p.pushOut;
+    f['uSpin']!.value = p.spin;
+    f['uSpinRate']!.value = p.spinRate;
     f['uTime']!.value = time;
     f['uDt']!.value = dt;
     f['uBeatPhase']!.value = fast.beatPhase;
@@ -208,6 +325,8 @@ export class InkFeedback implements Scene {
     i['uImpact']!.value = fast.impact;
     i['uLobes']!.value = this.lobes;
     i['uDt']!.value = dt;
+    i['uStriate']!.value = p.striate;
+    i['uSpin']!.value = p.spin;
     // The ambient wash is a standing level, not a rate: hand the shader exactly
     // what this frame lost, so the field settles in the same place whatever the
     // decay and however long the frame took. `drift` is the one motion whose
@@ -215,6 +334,8 @@ export class InkFeedback implements Scene {
     // to be worked out against the decay the loop will actually run at.
     const decay = p.flowStyle === 'drift' ? DRIFT_DECAY : p.decay;
     i['uAmbientAdd']!.value = ambientInjectPerFrame(AMBIENT_LEVEL, decay, dt);
+
+    this.stepFilaments(dt, fast, p);
 
     const c = this.colorMat.uniforms;
     const stops = c['uStops']!.value as THREE.Vector3[];
@@ -229,29 +350,34 @@ export class InkFeedback implements Scene {
       p.palette.accent[2],
     );
     c['uExposure']!.value = p.exposure;
+    c['uSpin']!.value = p.spin;
   }
 
   render(r: THREE.WebGLRenderer): THREE.Texture {
     const prev = this.ping;
     const next = this.pong;
     const color = this.color;
-    if (!prev || !next || !color) throw new Error('InkFeedback: render before init');
+    if (!prev || !next || !color) throw new Error('Smoke: render before init');
 
     const autoClear = r.autoClear;
 
-    // 1. advect and fade: prev → next.
+    // 1. advect, fade and smear: prev → next.
     this.feedbackMat.uniforms['uPrev']!.value = prev.texture;
     r.setRenderTarget(next);
     r.autoClear = true;
     r.render(this.feedbackScene, this.camera);
 
-    // 2. inject: additive, on top of what was just written.
+    // 2. inject: additive, on top of what was just written. It reads `prev`
+    // for the flow angle — the target it is drawing into cannot also be a
+    // source, and the direction the flow points moves by a fraction of a
+    // degree in a frame.
+    this.injectMat.uniforms['uPrev']!.value = prev.texture;
     r.autoClear = false;
     r.render(this.injectScene, this.camera);
     r.autoClear = autoClear;
 
     // 3. color: densities → palette, into the texture the Composer mixes.
-    this.colorMat.uniforms['uInk']!.value = next.texture;
+    this.colorMat.uniforms['uSmoke']!.value = next.texture;
     r.setRenderTarget(color);
     r.render(this.colorScene, this.camera);
     r.setRenderTarget(null);
@@ -271,6 +397,92 @@ export class InkFeedback implements Scene {
     this.colorMat.dispose();
     this.carryMat.dispose();
     this.quad.dispose();
+  }
+
+  /**
+   * Age the filaments, seed new ones on an onset, and write the three slots
+   * into the uniforms.
+   *
+   * The ring is three deep and the slots are reused in order, so a dense
+   * passage overwrites its own oldest filament rather than growing an array —
+   * this runs every frame and must not allocate.
+   */
+  private stepFilaments(dt: number, fast: FastFrame, p: RenderParams): void {
+    const step = Number.isFinite(dt) ? Math.max(0, dt) : 0;
+    this.sinceFilament += step;
+    for (const f of this.filaments) f.age += step;
+
+    const onset = Number.isFinite(fast.onset) ? fast.onset : 0;
+    const hot = onset >= ONSET_GATE;
+    if (hot && !this.onsetHeld && this.sinceFilament >= FILAMENT_GAP_SEC) {
+      this.sinceFilament = 0;
+      // Two or three, decided by the hit's own strength: a hard onset throws
+      // more of them.
+      const count = FILAMENT_MIN + (onset > 0.7 ? 1 : 0);
+      for (let n = 0; n < count; n++) this.seedFilament(onset, p);
+    }
+    this.onsetHeld = hot;
+
+    const a = this.injectMat.uniforms['uFilA']!.value as THREE.Vector4[];
+    const b = this.injectMat.uniforms['uFilB']!.value as THREE.Vector4[];
+    for (let s = 0; s < FILAMENT_SLOTS; s++) {
+      const f = this.filaments[s]!;
+      const alive = Number.isFinite(f.age);
+      const intensity = alive ? f.peak * Math.exp(-f.age / FILAMENT_TAU) : 0;
+      a[s]!.set(f.p0.x, f.p0.y, f.p1.x, f.p1.y);
+      b[s]!.set(f.p2.x, f.p2.y, intensity, FILAMENT_WIDTH);
+    }
+  }
+
+  /**
+   * One filament: a curve starting on the annulus and running along the flow.
+   *
+   * "Along the flow" is the *rotation*, not the curl: at the annulus the spin
+   * dominates everything else the field is doing, and it is the one component
+   * the CPU knows without evaluating eight octaves of noise per filament. The
+   * curve bows away from that tangent, which is what makes it read as the
+   * leading edge of a curl rather than as a drawn arc.
+   */
+  private seedFilament(onset: number, p: RenderParams): void {
+    const slot = this.filaments[this.nextSlot]!;
+    this.nextSlot = (this.nextSlot + 1) % FILAMENT_SLOTS;
+
+    // Three irrational steps on one counter: deterministic, decorrelated, and
+    // no allocation. A filament that landed in the same place every beat would
+    // read as a logo.
+    const s = ++this.seed;
+    const r1 = fract(s * 0.7548776662 + 0.31);
+    const r2 = fract(s * 0.5698402909 + 0.77);
+    const r3 = fract(s * 0.3819660113 + 0.19);
+
+    const a = this.annulus;
+    const angle = r1 * Math.PI * 2;
+    const radius = a.inner + (a.outer - a.inner) * (0.15 + 0.7 * r2);
+    const cx = (a.cx - 0.5) * this.aspect();
+    const cy = a.cy - 0.5;
+    const ox = Math.cos(angle);
+    const oy = Math.sin(angle);
+    slot.p0.set(cx + ox * radius, cy + oy * radius);
+
+    // The rotation's own direction at this point, signed by which way the
+    // field is turning, and the outward normal it bows into.
+    const sign = p.spinRate >= 0 ? 1 : -1;
+    const tx = -oy * sign;
+    const ty = ox * sign;
+    const len = FILAMENT_LEN_MIN + (FILAMENT_LEN_MAX - FILAMENT_LEN_MIN) * r3;
+    const bow = len * FILAMENT_BOW * (r3 < 0.5 ? 1 : -1);
+
+    slot.p1.set(
+      slot.p0.x + tx * len * 0.5 + ox * bow,
+      slot.p0.y + ty * len * 0.5 + oy * bow,
+    );
+    slot.p2.set(slot.p0.x + tx * len, slot.p0.y + ty * len);
+    slot.age = 0;
+    slot.peak = Math.min(1, onset) * 1.6;
+  }
+
+  private aspect(): number {
+    return this.injectMat.uniforms['uAspect']!.value as number;
   }
 
   private allocate(w: number, h: number): void {
@@ -314,6 +526,11 @@ export class InkFeedback implements Scene {
     this.color = color;
 
     (this.feedbackMat.uniforms['uTexel']!.value as THREE.Vector2).set(1 / width, 1 / height);
+    (this.colorMat.uniforms['uTexel']!.value as THREE.Vector2).set(1 / width, 1 / height);
     this.injectMat.uniforms['uAspect']!.value = width / height;
   }
+}
+
+function fract(x: number): number {
+  return x - Math.floor(x);
 }

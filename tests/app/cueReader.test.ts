@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createCueReader } from '../../src/app/cueReader';
 import { CueTimeline } from '../../src/timeline/timeline';
+import type { TransitionKind } from '../../src/shared/types';
 
 describe('createCueReader', () => {
   it('reads the timeline as far ahead as the analysis runs behind', () => {
@@ -34,5 +35,29 @@ describe('createCueReader', () => {
     expect(reader.at(9.8).impact).toBe(0);
     latency = 0.2;
     expect(reader.at(9.8).impact).toBeCloseTo(1, 6);
+  });
+});
+
+describe('passed', () => {
+  it('moves both ends of the window onto the timeline clock', () => {
+    // A seam has to fire when the listener hears it, like everything else the
+    // reader answers — and *both* ends have to move, or a trim adjusted between
+    // two frames would open a gap that swallows a cue or a window that fires
+    // one twice.
+    const tl = new CueTimeline();
+    tl.add({ t: 10, source: 'jev', transition: 'drop', impact: 1 });
+    const reader = createCueReader(tl, () => 0.5);
+
+    const early: TransitionKind[] = [];
+    reader.passed(9.0, 9.4, early);
+    expect(early).toEqual([]);
+
+    const onTime: TransitionKind[] = [];
+    reader.passed(9.4, 9.6, onTime);
+    expect(onTime).toEqual(['drop']);
+
+    const late: TransitionKind[] = [];
+    reader.passed(9.6, 10.5, late);
+    expect(late).toEqual([]);
   });
 });

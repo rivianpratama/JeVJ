@@ -27,8 +27,26 @@
  */
 
 import { paletteFor, type Palette } from './palette';
+import {
+  activeFlourish,
+  afterimageDamp,
+  applyFlourish,
+  createFlourishes,
+  createSpin,
+  fireFlourish,
+  neutralFlourish,
+  pushOutFor,
+  resetFlourishes,
+  stepSpin,
+  strandWaveFor,
+  striateFor,
+  temperFlourish,
+  type FlourishEffect,
+  type FlourishState,
+  type SpinState,
+} from './smokeMath';
 import { GENRES, MOTIONS, SECTIONS } from '../shared/types';
-import type { Genre, Motion, MoodVector, Section } from '../shared/types';
+import type { Genre, Motion, MoodVector, Section, TransitionKind } from '../shared/types';
 
 /** What the renderer needs to know about *this* frame of audio. */
 export interface FastFrame {
@@ -48,12 +66,24 @@ export interface RenderParams {
   weights: { ink: number; particles: number; strands: number; relief: number; breath: number };
   palette: Palette;
 
-  // ink
+  // smoke (the layer is still mixed under the name `ink`)
   flowAmt: number;
   decay: number;
   turbulence: number;
   injectGain: number;
   pushKick: number;
+  /**
+   * The global rotation of the flow field about the card, in radians. Advanced
+   * here rather than in the shader from `uTime`, because it has to survive beat
+   * kicks and a reversal that takes a second and a half — see `stepSpin`.
+   */
+  spin: number;
+  /** How fast that angle is moving this frame, signed. rad/s. */
+  spinRate: number;
+  /** How hard the smoke is carried away from the card, in uv per second. */
+  pushOut: number;
+  /** The spatial frequency of the striations across the flow. */
+  striate: number;
 
   // particles (Task 10)
   /** World units per second the dust travels at full tilt. */
@@ -70,9 +100,15 @@ export interface RenderParams {
   /** How far an impact snaps the camera out. 0 under reduced motion. */
   dollySnap: number;
 
-  // strands (Task 10)
+  // strands (Task 10, wavy since Task 17)
   strandBend: number;
   strandThickness: number;
+  /** The traveling wave: how far it throws a ribbon, how tight, how fast. */
+  strandWaveAmp: number;
+  strandWaveFreq: number;
+  strandWaveSpeed: number;
+  /** How much brighter a `vocal_entry` flourish is burning the silk, 0..1. */
+  strandGlow: number;
 
   // relief (Task 11)
   /** How far the terrain is displaced, in world units. */
@@ -110,6 +146,11 @@ export interface RenderParams {
   grain: number;
   vignette: number;
   exposure: number;
+  /**
+   * How much of the last frame the `AfterimagePass` keeps, 0..1. 0 is off,
+   * which is what reduced motion asks for.
+   */
+  afterimage: number;
 
   flowStyle: Motion;
 
@@ -356,6 +397,22 @@ export interface DirectorState {
    * frame's `bloomStrength`, which is the flared number rather than the base.
    */
   lastClimaxAt: number;
+  /**
+   * The rotation's integrator: angle, rate, the decaying beat kick and where a
+   * reversal has got to. It cannot be read back off the previous `RenderParams`
+   * — that carries the angle and the rate, and neither of them says which way
+   * the field is heading or how much of the flip is left.
+   */
+  spin: SpinState;
+  /** Which one-shot is running, and when each kind last fired. */
+  flourishes: FlourishState;
+  /**
+   * This frame's flourish, as numbers. One object for the life of the
+   * director: `applyFlourish` overwrites every field, so nothing survives from
+   * the last flourish to ratchet the picture up, and the render loop allocates
+   * nothing.
+   */
+  effect: FlourishEffect;
 }
 
 /** A director that has never run. One per renderer. */
@@ -375,6 +432,9 @@ export function createDirector(): DirectorState {
     safety: 0,
     posterizeClamped: false,
     lastClimaxAt: Number.NEGATIVE_INFINITY,
+    spin: createSpin(),
+    flourishes: createFlourishes(),
+    effect: neutralFlourish(),
   };
 }
 
@@ -426,6 +486,12 @@ function holdFolds(s: DirectorState, target: number, fresh: boolean): number {
   return s.wantedFolds;
 }
 
+/**
+ * `transitions` is the kinds of the timeline cues whose instant went by since
+ * the last frame — usually none, one on a seam. They are what fire the
+ * one-shot flourishes and the spin reversal; everything else the director
+ * reads is a level rather than an event.
+ */
 export function direct(
   state: DirectorState,
   mood: MoodVector,
@@ -433,6 +499,7 @@ export function direct(
   dt: number,
   prev: RenderParams | null,
   reducedMotion: boolean,
+  transitions: readonly TransitionKind[] = [],
 ): RenderParams {
   const step = Math.max(0, Math.min(0.1, dt));
   if (prev === null) {
@@ -440,6 +507,7 @@ export function direct(
     state.lastFlipAt = Number.NEGATIVE_INFINITY;
     state.lastDir = 0;
     state.lastClimaxAt = Number.NEGATIVE_INFINITY;
+    resetFlourishes(state.flourishes);
   }
   state.clock += step;
 
@@ -461,6 +529,34 @@ export function direct(
   const spoken = clamp01(mood.spoken);
   const section = mood.section;
 
+  // The seams. A `drop` or a `breakdown` turns the whole field the other way —
+  // over a second and a half, never between two frames — and anything Jev
+  // called dramatic also fires a one-shot. A reversal already in flight is not
+  // restarted: two cues 200 ms apart are one seam, and letting the second
+  // cancel the first would leave the smoke turning the way it started.
+  let reverse = false;
+  for (const kind of transitions) {
+    if (kind === 'drop' || kind === 'breakdown') reverse = true;
+    fireFlourish(state.flourishes, kind, state.clock);
+  }
+  if (state.spin.reverseLeft > 0) reverse = false;
+  stepSpin(state.spin, {
+    dt: step,
+    arousal,
+    onset: fast.onset,
+    reverse,
+    reducedMotion,
+  });
+
+  const firing = activeFlourish(state.flourishes, state.clock);
+  const effect = state.effect;
+  applyFlourish(effect, firing?.kind ?? null, firing?.t ?? 0);
+  // Reduced motion keeps half of a flourish — the picture still marks the
+  // moment, it just does not lunge — and the breath safety is applied further
+  // down, where the rest of the safety is, because it has not been computed
+  // yet at this point in the frame.
+  if (reducedMotion) temperFlourish(effect, 0.5);
+
   // The brief's `grain = lerp(0.02, 0.12, noise)` wants the *noisiness* of the
   // sound, which the mood vector does not carry as such: it is a fact about
   // the spectrum, not a judgment. The nearest judgment is "gritty and not
@@ -480,6 +576,20 @@ export function direct(
   if (section === 'build') injectGainTarget *= BUILD_INJECT;
   // Impact-driven: a kick that has been slewed is not a kick.
   let pushKick = clamp01(fast.sub) * 0.02 + impact * 0.08;
+  // The standing outward creep that fills the frame around the card, and the
+  // comb that combs the sheets. Both are instant: the push is what a hit
+  // *does*, and the striation frequency is a property of the material.
+  let pushOut = pushOutFor(arousal, impact) * effect.pushOutMul;
+  const striate = striateFor(synthetic);
+
+  // A flourish's overrides go onto the *targets*, not onto the results. The
+  // slew is the rule this whole file is built on — a decay that changes
+  // between two frames is a cut — so a hole's freeze arrives over half a
+  // second rather than instantly, which over a 1.5 s hole is the shape of the
+  // gesture anyway.
+  if (effect.flowAmt !== null) flowAmtTarget = effect.flowAmt;
+  if (effect.decay !== null) decayTarget = effect.decay;
+  injectGainTarget *= effect.injectGainMul;
 
   // Post.
   const bloomStrengthTarget = lerp(0.3, 1.4, arousal);
@@ -487,11 +597,11 @@ export function direct(
   const chromaBaseTarget = lerp(0, 0.012, synthetic * arousal);
   if (prev === null) state.heldChromaBase = chromaBaseTarget;
   else state.heldChromaBase += (chromaBaseTarget - state.heldChromaBase) * k;
-  let chroma = state.heldChromaBase + impact * 0.02;
+  let chroma = state.heldChromaBase + impact * 0.02 + effect.chromaAdd;
   // The floor is 0.03 rather than 0.02 because below that the grain is not
   // grain, it is a dither nobody can see — and an ungrained frame reads as
   // computer graphics however good the ink is.
-  const grainTarget = lerp(0.03, 0.12, noise);
+  const grainTarget = lerp(0.03, 0.12, noise) * effect.grainMul;
   const vignetteTarget = lerp(0.55, 0.2, space);
 
   // The acid look is reserved for hard electronic peaks; everywhere else it
@@ -574,8 +684,18 @@ export function direct(
   // dominant relief gets a mirror line whatever the music is doing.
   let foldTarget = hypnotic >= 0.6 ? Math.round(lerp(MIN_FOLDS, MAX_FOLDS, tension)) : 0;
   if (weights.relief > RELIEF_MIRROR_OVER) foldTarget = Math.max(foldTarget, MIN_FOLDS);
-  const wantedFolds = holdFolds(state, foldTarget, prev === null);
-  if (prev === null) state.folds = wantedFolds;
+  // What the *music* asked for, kept aside: a flourish can open the mirror
+  // over a track that never wanted one, and when it does the figure comes in
+  // at the flourish's own strength rather than at full.
+  const musicFolds = foldTarget;
+  if (effect.mirrorMix > 0) foldTarget = Math.max(foldTarget, MIN_FOLDS);
+  // The half-second debounce exists so a wobbling `tension` cannot re-fold the
+  // screen; a scream is not a wobble, and a 1 s flare cannot wait half of
+  // itself for a fold count. Taking it immediately is free here, because the
+  // mirror is off — a count may always change while nobody can see the figure.
+  const snapFolds = prev === null || (effect.mirrorMix > 0 && state.folds === 0);
+  const wantedFolds = holdFolds(state, foldTarget, snapFolds);
+  if (snapFolds) state.folds = wantedFolds;
 
   // The mirror's mix, and the one rule that makes a fold count safe to change:
   // while the count on screen is not the one the music wants, the figure fades
@@ -583,7 +703,11 @@ export function direct(
   // come back. Reduced motion and the speech clamp pull the same lever, so they
   // dim the kaleidoscope away rather than snatching it.
   const changing = state.folds !== wantedFolds;
-  let mirrorMixTarget = state.folds > 0 && !changing ? 1 : 0;
+  let mirrorMixTarget = state.folds > 0 && !changing && musicFolds > 0 ? 1 : 0;
+  // A scream's own figure, which is a fraction of a kaleidoscope rather than
+  // the whole thing. Never while the count is moving: that is the one state in
+  // which the mix has to be going *down*.
+  if (!changing) mirrorMixTarget = Math.max(mirrorMixTarget, effect.mirrorMix);
   if (reducedMotion) mirrorMixTarget = 0;
   mirrorMixTarget = Math.min(mirrorMixTarget, 1 - safety);
   state.mirrorMix += (mirrorMixTarget - state.mirrorMix) * kMirror;
@@ -616,8 +740,12 @@ export function direct(
   const pointSizeTarget = lerp(1.2, 3.0, synthetic) * (motion === 'shatter' ? 1.6 : 1);
   if (motion === 'shatter') chroma *= 2;
 
-  // Strands: how far the current bends the silk, and how fat each ribbon is.
+  // Strands: how far the current bends the silk, how fat each ribbon is, and
+  // — since v2 — the traveling wave that runs down it. `bands[3]` is the
+  // low-mid, which is where a kick's body and a bassline both live: the silk
+  // billows on the part of the spectrum that has weight in it.
   const strandBendTarget = lerp(0.2, 1.4, tension);
+  const strandWave = strandWaveFor(fast.bands[3] ?? 0, tension, arousal);
 
   // Relief: how far the terrain is displaced, and how hard the light falls off
   // across it. Grief and anger both raise the ridges — one reads as a slow
@@ -629,6 +757,7 @@ export function direct(
   if (reducedMotion) {
     flowAmtTarget *= 0.5;
     pushKick *= 0.5;
+    pushOut *= 0.5;
     chroma *= 0.5;
     particleSpeed *= 0.5;
     particleImpulse *= 0.5;
@@ -644,6 +773,12 @@ export function direct(
   // owns it. An assignment after the limiter would be a cut with a safety
   // label on it, which is the failure mode this whole pass is about.
   chroma *= 1 - safety;
+  // And the flourishes, pulled back toward doing nothing by the same number.
+  // They are tempered *after* the targets have been built from them, which is
+  // deliberate: everything a flourish touches is either slewed or limited, so
+  // what the safety takes away leaves through the lag that owns it rather than
+  // being snatched mid-gesture.
+  temperFlourish(effect, 1 - safety);
   // The one clamp that is a switch rather than a mix, so it is the one clamp
   // that needs a hand on it: engaged at 0.6, released at 0.4, and holding
   // whatever it was doing in between.
@@ -663,13 +798,13 @@ export function direct(
   // The flare is a multiplier on the slewed base, so the ceiling has to be
   // applied again after it — mixed in by the safety rather than switched, so a
   // climax that turns into speech dims out instead of being snapped down.
-  const flared = state.heldBloomBase * (flaring ? CLIMAX_BLOOM : 1);
+  const flared = state.heldBloomBase * (flaring ? CLIMAX_BLOOM : 1) * effect.bloomMul;
   const bloomStrength = lerp(flared, Math.min(flared, BREATH_MAX_BLOOM), safety);
 
   // Exposure is instant (it is impact-driven), flattened by the safety, capped,
   // and only then rate-limited in *direction* so it can never strobe. Nothing
   // touches it after the limiter.
-  let exposure = 1 + 0.25 * impact + 0.1 * clamp01(fast.downbeatPulse) * arousal;
+  let exposure = 1 + 0.25 * impact + 0.1 * clamp01(fast.downbeatPulse) * arousal + effect.exposureAdd;
   exposure = lerp(exposure, 1, safety);
   if (reducedMotion) exposure = Math.min(exposure, REDUCED_MAX_EXPOSURE);
   exposure = prev === null ? exposure : limitStrobe(state, exposure, prev.exposure);
@@ -683,6 +818,12 @@ export function direct(
     turbulence: slew(turbulenceTarget, prev?.turbulence ?? turbulenceTarget),
     injectGain: slew(injectGainTarget, prev?.injectGain ?? injectGainTarget),
     pushKick,
+    // Not slewed. The spin is its own integrator and the push is impact-driven;
+    // a burst that arrives 0.8 s after the drop is not a burst.
+    spin: state.spin.angle,
+    spinRate: state.spin.rate,
+    pushOut,
+    striate: slew(striate, prev?.striate ?? striate),
 
     particleSpeed: slew(particleSpeed, prev?.particleSpeed ?? particleSpeed),
     particleImpulse,
@@ -701,6 +842,14 @@ export function direct(
     // under two device pixels, which is a scratch however many of them there
     // are.
     strandThickness: lerp(0.022, 0.06, clamp01(fast.sub)),
+    // The traveling wave. Not slewed either — the amplitude *is* the low-mid
+    // band and silk that swells a second after the note is silk that is not
+    // listening — and the frequency and speed are read straight off tension and
+    // arousal, which the mood layer has already slewed on their way in.
+    strandWaveAmp: strandWave.amp,
+    strandWaveFreq: strandWave.freq,
+    strandWaveSpeed: strandWave.speed,
+    strandGlow: effect.strandGlow,
 
     reliefHeight: slew(reliefHeightTarget, prev?.reliefHeight ?? reliefHeightTarget),
     reliefContrast: slew(reliefContrastTarget, prev?.reliefContrast ?? reliefContrastTarget),
@@ -716,6 +865,7 @@ export function direct(
     grain: slew(grainTarget, prev?.grain ?? grainTarget),
     vignette: slew(vignetteTarget, prev?.vignette ?? vignetteTarget),
     exposure,
+    afterimage: afterimageDamp(hypnotic, motion === 'shatter', reducedMotion),
 
     flowStyle: mood.motion,
     warmGrains: clamp01(mood.warmth) >= WARM_GRAINS_AT && !COOL_GRAIN_GENRES.has(mood.genre),

@@ -1,4 +1,4 @@
-// The ink, carried from one pair of density targets to the next.
+// The smoke, carried from one pair of density targets to the next.
 //
 // The feedback loop has no source but itself: a fresh target is a black frame,
 // and the field takes seconds to build back out of the ambient wash — tens of
@@ -10,7 +10,9 @@
 //
 // A straight texture read, deliberately: the densities are linear physical
 // quantities, not colour, and anything that encodes or tone-maps on the way
-// through would change the field it is supposed to preserve.
+// through would change the field it is supposed to preserve. All four channels,
+// because the fourth is not padding — it is the flow angle the feedback pass
+// leaves for the inject pass to comb its striations across.
 
 varying vec2 vUv;
 

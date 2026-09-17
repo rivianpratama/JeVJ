@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CueTimeline } from '../../src/timeline/timeline';
 import { NEUTRAL_MOOD } from '../../src/shared/moodSchema';
-import type { Cue } from '../../src/shared/types';
+import type { Cue, TransitionKind } from '../../src/shared/types';
 
 function jevMood(t: number, valence: number): Cue {
   return { t, source: 'jev', mood: { ...NEUTRAL_MOOD, valence } };
@@ -306,5 +306,51 @@ describe('CueTimeline', () => {
 
   it('steps at 0.2 s', () => {
     expect(new CueTimeline().step).toBe(0.2);
+  });
+});
+
+describe('transitionsIn', () => {
+  const kinds = (tl: CueTimeline, from: number, to: number): TransitionKind[] => {
+    const out: TransitionKind[] = [];
+    tl.transitionsIn(from, to, out);
+    return out;
+  };
+
+  it('reports a seam to exactly one frame', () => {
+    // The whole point: a flourish is a one-shot, so a cue seen by two
+    // consecutive frames would fire it twice — and the second firing lands on
+    // top of the first, which is a cut with a flourish label on it.
+    const tl = new CueTimeline();
+    tl.add({ t: 10, source: 'jev', transition: 'drop', impact: 1 });
+    expect(kinds(tl, 9.98, 10)).toEqual(['drop']);
+    expect(kinds(tl, 10, 10.02)).toEqual([]);
+    expect(kinds(tl, 9.9, 10.1)).toEqual(['drop']);
+  });
+
+  it('reports every seam in a long frame, in order', () => {
+    // A page the browser has throttled hands the renderer a tenth of a second
+    // at a time, and a seam must not be lost because the frame that contained
+    // it was long.
+    const tl = new CueTimeline();
+    tl.add({ t: 10, source: 'jev', transition: 'build_start' });
+    tl.add({ t: 10.05, source: 'jev', transition: 'drop', impact: 1 });
+    expect(kinds(tl, 9.99, 10.1)).toEqual(['build_start', 'drop']);
+  });
+
+  it('ignores the cues that are not seams, and an empty or backwards window', () => {
+    const tl = new CueTimeline();
+    tl.add({ t: 10, source: 'grid', beat: true });
+    tl.add({ t: 10.5, source: 'jev', transition: 'scream_peak' });
+    expect(kinds(tl, 9, 10.2)).toEqual([]);
+    expect(kinds(tl, 11, 9)).toEqual([]);
+    expect(kinds(tl, 10.5, 10.5)).toEqual([]);
+  });
+
+  it('appends rather than replacing, so the caller can reuse one array', () => {
+    const tl = new CueTimeline();
+    tl.add({ t: 10, source: 'jev', transition: 'drop' });
+    const out: TransitionKind[] = ['none'];
+    tl.transitionsIn(9, 11, out);
+    expect(out).toEqual(['none', 'drop']);
   });
 });

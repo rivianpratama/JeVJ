@@ -5,18 +5,23 @@ import {
   ambientInjectPerFrame,
   inkEquilibriumDensity,
   inkLevel,
+  smokeLevel,
 } from '../../src/visuals/inkMath';
 import {
+  CARD_FLOOR,
+  FALLOFF,
   INJECT_RATE,
   KNEE,
+  STRIATE_AMP,
+  STRIATE_MEAN,
   VEIN_HI,
   VEIN_LO,
   idleAmbientLevels,
   mean,
   quantile,
   shaderConst,
-} from '../helpers/inkField';
-import inkFeedbackFrag from '../../src/visuals/shaders/ink_feedback.frag.glsl?raw';
+} from '../helpers/smokeField';
+import smokeFeedbackFrag from '../../src/visuals/shaders/smoke_feedback.frag.glsl?raw';
 
 /** What the director hands the ink at idle: drift decay, arousal 0.3. */
 const IDLE = {
@@ -81,31 +86,53 @@ describe('the idle ambient field', () => {
   // These are the shipped shader constants, read out of the .glsl, so a tuning
   // pass cannot move one and leave this test asserting the old value.
   it('settles in the exposure window the direction asks for', () => {
-    // A dark field with luminous marbling: the frame averages a quarter of the
-    // way up the ramp, and the darkest fifth of it is genuinely dark rather
-    // than a lifted floor. Both are properties of the *equilibrium*, not of
-    // AMBIENT_RATE — the rate is derived from these, by
-    // `inkEquilibriumDensity`, and not the other way round.
+    // Smoke on black: two thirds of the frame dark, the rest a long gradient
+    // with luminous sheets at the top of it. All three are properties of the
+    // *equilibrium*, not of an injection rate — the rate is derived from these,
+    // by `inkEquilibriumDensity`, and not the other way round.
+    //
+    // The window moved for v2 (it was 0.22–0.32 / < 0.08 / > 0.7), and it moved
+    // down: the reference images are darker than the v1 look, and the direction
+    // states the new numbers.
     const levels = idleAmbientLevels(IDLE, 64);
-    expect(mean(levels)).toBeGreaterThanOrEqual(0.22);
-    expect(mean(levels)).toBeLessThanOrEqual(0.32);
-    expect(quantile(levels, 0.2)).toBeLessThan(0.08);
+    expect(mean(levels)).toBeGreaterThanOrEqual(0.19);
+    expect(mean(levels)).toBeLessThanOrEqual(0.27);
+    expect(quantile(levels, 0.2)).toBeLessThan(0.06);
     // And the top of the frame reaches the stops the bloom is looking for,
-    // before the beat lobes add anything at all.
-    expect(quantile(levels, 0.95)).toBeGreaterThan(0.7);
+    // before a single lobe or filament adds anything at all.
+    expect(quantile(levels, 0.95)).toBeGreaterThan(0.55);
+  });
+
+  it('leaves the card in a pool of dark and puts the smoke outside it', () => {
+    // The v2 requirement the whole annulus exists for: the frame outside the
+    // card carries the picture and the card's own square is the darkest part of
+    // it. Measured as the direction specifies — the mean outside against the
+    // mean inside — with a wide margin, because the advection this model
+    // ignores carries smoke *inward* as well as out.
+    const inside = mean(idleAmbientLevels(IDLE, 64, { region: 'inside' }));
+    const outside = mean(idleAmbientLevels(IDLE, 64, { region: 'outside' }));
+    expect(outside).toBeGreaterThan(1.5 * inside);
+    // And it is the gate that does it, not an accident of where the noise fell.
+    const flat = idleAmbientLevels(IDLE, 64, { card: false });
+    expect(mean(idleAmbientLevels(IDLE, 64, { card: false, region: 'inside' }))).toBeGreaterThan(
+      1.5 * inside,
+    );
+    expect(mean(flat)).toBeGreaterThan(mean(idleAmbientLevels(IDLE, 64)));
+    expect(CARD_FLOOR).toBeLessThan(0.5);
   });
 
   it('is veined rather than flat, which is where the darks come from', () => {
-    // The same rate without the vein gate is a plane: it lands near two thirds
-    // of the way up the ramp with a spread of a few hundredths and no darks at
-    // all, which on screen is a wash of pale lavender. The gate is what makes
-    // the field a field.
+    // The same level without the vein gate is a plane: it lands near the top of
+    // the ramp with a spread of a few hundredths and no darks at all, which on
+    // screen is a wash of pale lavender. The gate is what makes the field a
+    // field. Compared against a flat field with the card gate off too, so the
+    // only difference between the two is the vein.
     const veined = idleAmbientLevels(IDLE, 64);
-    const flat = idleAmbientLevels(IDLE, 64, { vein: false });
+    const flat = idleAmbientLevels(IDLE, 64, { vein: false, card: false });
     expect(mean(flat)).toBeGreaterThan(0.7);
-    expect(quantile(flat, 0.95) - quantile(flat, 0.05)).toBeLessThan(0.2);
+    expect(quantile(flat, 0.95) - quantile(flat, 0.05)).toBeLessThan(0.3);
     expect(quantile(veined, 0.2)).toBeLessThan(0.01);
-    expect(quantile(veined, 0.95) - quantile(veined, 0.05)).toBeGreaterThan(0.7);
+    expect(quantile(veined, 0.95) - quantile(veined, 0.05)).toBeGreaterThan(0.6);
   });
 
   it('stands at the same level once there is music, rather than falling away', () => {
@@ -115,7 +142,7 @@ describe('the idle ambient field', () => {
     // 0.99 read under 0.06 at the 0.94 a climax asks for — the picture went
     // dark precisely when the music got big. The wash is a target density now,
     // so every decay the director can reach lands in the same window, and the
-    // frame is lit by the lobes *on top of* a floor rather than only by them.
+    // frame is lit by the sheets *on top of* a floor rather than only by them.
     const idle = mean(idleAmbientLevels(IDLE, 64));
     for (const decay of [0.93, 0.941, 0.955, 0.985, 0.99]) {
       const playing = mean(idleAmbientLevels({ ...IDLE, decay }, 64));
@@ -142,6 +169,28 @@ describe('the idle ambient field', () => {
     expect(INJECT_RATE).toBeGreaterThan(0);
     expect(KNEE).toBeGreaterThan(0);
     expect(VEIN_LO).toBeLessThan(VEIN_HI);
+    // The v2 falloff, and the comb whose mean the ambient target is solved with.
+    expect(FALLOFF).toBeGreaterThan(1);
+    expect(STRIATE_MEAN + STRIATE_AMP).toBeCloseTo(1, 9);
+  });
+});
+
+describe('smokeLevel', () => {
+  it('is the knee with the falloff on top of it', () => {
+    for (const d of [0, 0.2, 1, 4]) {
+      expect(smokeLevel(d, KNEE, FALLOFF)).toBeCloseTo(inkLevel(d, KNEE) ** FALLOFF, 9);
+    }
+  });
+
+  it('deepens the mids and leaves the cores, which is what "long falloff" means', () => {
+    // A power above 1 costs a mid-grey much more than it costs a highlight, in
+    // both absolute and relative terms. That is the whole mechanism of the
+    // reference images: bright soft cores fading long into black.
+    const midLoss = inkLevel(0.3, KNEE) - smokeLevel(0.3, KNEE, FALLOFF);
+    const coreLoss = inkLevel(3, KNEE) - smokeLevel(3, KNEE, FALLOFF);
+    expect(midLoss).toBeGreaterThan(coreLoss);
+    expect(smokeLevel(0, KNEE, FALLOFF)).toBe(0);
+    expect(smokeLevel(10, KNEE, FALLOFF)).toBeLessThan(1);
   });
 });
 
@@ -155,10 +204,18 @@ describe('ambientInjectPerFrame', () => {
     }
   });
 
-  it('keeps the idle field exactly where the tuning pass left it', () => {
-    // AMBIENT_LEVEL is defined as what the old fixed-rate constants produced
-    // at the idle decay, so the one case that was right before is untouched.
-    expect(inkEquilibriumDensity(0.5 * INJECT_RATE, DRIFT_DECAY)).toBeCloseTo(AMBIENT_LEVEL, 9);
+  it('is a target the look is solved for, not a rate inherited from v1', () => {
+    // v1 defined AMBIENT_LEVEL as whatever its own fixed rate happened to
+    // produce at the idle decay. v2 cannot: three things now stand between the
+    // level and the screen — the striation comb, the card's shadow and the
+    // color stage's new falloff — so the number is solved backwards from the
+    // measured window above instead. What has not changed is the *mechanism*:
+    // whatever the level is, it is the fixed point of the loop at every decay.
+    expect(AMBIENT_LEVEL).toBeGreaterThan(inkEquilibriumDensity(0.5 * INJECT_RATE, DRIFT_DECAY));
+    for (const decay of [0.9, 0.941, 0.99]) {
+      const add = ambientInjectPerFrame(AMBIENT_LEVEL, decay, 1 / 60);
+      expect(inkEquilibriumDensity(add * 60, decay)).toBeCloseTo(AMBIENT_LEVEL, 9);
+    }
   });
 
   it('adds nothing where there is nothing to add', () => {
@@ -170,6 +227,6 @@ describe('ambientInjectPerFrame', () => {
   it('agrees with the decay the drift flow style substitutes in the shader', () => {
     // `ink_feedback.frag` overrides the director's decay under `drift`, and the
     // compensation has to be computed against the decay the loop will run at.
-    expect(shaderConst(inkFeedbackFrag, 'DRIFT_DECAY')).toBe(DRIFT_DECAY);
+    expect(shaderConst(smokeFeedbackFrag, 'DRIFT_DECAY')).toBe(DRIFT_DECAY);
   });
 });

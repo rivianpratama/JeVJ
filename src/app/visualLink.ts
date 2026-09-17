@@ -28,17 +28,18 @@ import {
   type RenderParams,
 } from '../visuals/director';
 import { Breath } from '../visuals/scenes/Breath';
-import { InkFeedback } from '../visuals/scenes/InkFeedback';
+import { Smoke } from '../visuals/scenes/Smoke';
 import { ParticleField } from '../visuals/scenes/ParticleField';
 import { Relief } from '../visuals/scenes/Relief';
 import { Strands } from '../visuals/scenes/Strands';
 import { createFrameClock } from './frameClock';
 import { createDprState, stepDpr } from '../visuals/dprGovernor';
 import { PROBE_WINDOW_SEC, createVisuals, drawsAtWeight, type Visuals } from '../visuals/renderer';
+import { annulusFor } from '../visuals/smokeMath';
 import { mergeMood, type MoodSource } from './effectiveMood';
 import type { AnalysisLoop } from './analysisLoop';
 import type { CueReader } from './cueReader';
-import type { MoodVector } from '../shared/types';
+import type { MoodVector, TransitionKind } from '../shared/types';
 
 /** How fast a downbeat's flash fades, per the brief. */
 const DOWNBEAT_TAU = 0.3;
@@ -58,6 +59,18 @@ const IDLE_BEATS_PER_BAR = 4;
  */
 const IDLE_BAND_MID = 0.35;
 const IDLE_BAND_SWING = 0.15;
+/**
+ * The onset an idle beat reports, and how many beats apart they are.
+ *
+ * An idle page has no transients, so before v2 it reported none — and the
+ * smoke's filaments are seeded by onsets, which meant the one thing that makes
+ * the picture read as *smoke* rather than as a wash never happened on a page
+ * that had heard nothing. The direction asks for exactly this: "sparse
+ * filaments on the 60 BPM idle clock". Every other beat, so they are sparse:
+ * one filament burst every two seconds, each alight for about one.
+ */
+const IDLE_ONSET = 0.8;
+const IDLE_ONSET_EVERY = 2;
 
 export interface VisualLinkOptions {
   canvas: HTMLCanvasElement;
@@ -65,6 +78,15 @@ export interface VisualLinkOptions {
   cues: CueReader;
   /** The mood layer's current vector, before the timeline overrides it. */
   mood: () => MoodVector;
+  /**
+   * The square the smoke is born around: the card's own box.
+   *
+   * Optional, and absent is a supported answer rather than a missing one — an
+   * audio file plays with no card at all, and the annulus then goes round a
+   * virtual square of the same size at the middle of the frame. See
+   * `annulusFor`.
+   */
+  card?: () => HTMLElement | null;
 }
 
 export interface VisualLink {
@@ -88,12 +110,12 @@ export interface VisualLink {
 
 export function createVisualLink(o: VisualLinkOptions): VisualLink {
   const visuals: Visuals = createVisuals(o.canvas);
-  const ink = new InkFeedback();
+  const smoke = new Smoke();
   const particles = new ParticleField();
   // Slot order does not matter to the renderer — it matches scenes to weights
   // by name — but the ink is added first because it is the bed the others are
   // mixed over.
-  visuals.addScene(ink);
+  visuals.addScene(smoke);
   visuals.addScene(particles);
   visuals.addScene(new Strands());
   visuals.addScene(new Relief());
@@ -132,6 +154,17 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
 
   let params: RenderParams | null = null;
   let handle = 0;
+  /**
+   * The transition kinds that went by since the last frame. One array for the
+   * life of the page, emptied and refilled — the usual answer is nothing, and
+   * the render loop must not allocate.
+   */
+  const transitions: TransitionKind[] = [];
+  /** The audio time the last frame read the timeline at, so no cue is seen twice. */
+  let lastCueRead = Number.NaN;
+  /** The canvas size the card rectangle was last measured against. */
+  let annulusW = 0;
+  let annulusH = 0;
   /** Audio time of the last downbeat seen, so each one is counted once. */
   let lastDownbeatAt = Number.NEGATIVE_INFINITY;
   /** Whether the last frame had audio, so the start of it can be noticed. */
@@ -177,8 +210,21 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
       fast.build = reading.build;
       moodSrc = mergeMood(mood, o.mood(), reading.mood);
 
-      ink.setMeter(snap.grid.barLength);
+      smoke.setMeter(snap.grid.barLength);
     }
+
+    // The seams that went by since the last frame. In idle mode there is no
+    // timeline to read, and `lastCueRead` is NaN on the very first frame of
+    // audio — a frame with no previous instant has no interval to report.
+    transitions.length = 0;
+    if (snap !== null) {
+      if (Number.isFinite(lastCueRead)) o.cues.passed(lastCueRead, audioTime, transitions);
+      lastCueRead = audioTime;
+    } else {
+      lastCueRead = Number.NaN;
+    }
+
+    updateAnnulus();
 
     const reduced = reduceQuery?.matches === true;
     const playing = snap !== null;
@@ -204,8 +250,27 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
     const cap = stepDpr(dpr, { dt: tick.step, frameMs: visuals.frameMs(), playing });
     if (visuals.setPixelRatioCap(cap)) visuals.requestFrameTiming(PROBE_WINDOW_SEC);
 
-    params = direct(director, mood, fast, tick.step, params, reduced);
+    params = direct(director, mood, fast, tick.step, params, reduced, transitions);
     visuals.frame(tick.step, params, fast, tick.time);
+  }
+
+  /**
+   * Where the card is, in the shader's own coordinates.
+   *
+   * Measured on a resize rather than every frame: `getBoundingClientRect`
+   * allocates a `DOMRect` and forces layout, and the card does not move except
+   * when the page does. The canvas's own client size is the cheap proxy for
+   * "the page has moved" — it is the same box the `ResizeObserver` inside the
+   * renderer watches, and reading it costs nothing.
+   */
+  function updateAnnulus(): void {
+    const w = o.canvas.clientWidth || window.innerWidth;
+    const h = o.canvas.clientHeight || window.innerHeight;
+    if (w === annulusW && h === annulusH) return;
+    annulusW = w;
+    annulusH = h;
+    const el = o.card?.() ?? null;
+    smoke.setAnnulus(annulusFor(el === null ? null : el.getBoundingClientRect(), w, h));
   }
 
   /** What the page does before it has heard anything: breathe. */
@@ -218,7 +283,11 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
     }
     fast.rms = 0.12 + 0.04 * Math.sin(t * 0.13);
     fast.sub = 0.1 + 0.05 * Math.sin(t * 0.09);
-    fast.onset = 0;
+    // A transient on every other beat. The smoke reads it as a rising edge, so
+    // reporting it for the whole first tenth of the beat still seeds one burst.
+    const beat = Math.floor(beats);
+    const intoBeat = beats - beat;
+    fast.onset = beat % IDLE_ONSET_EVERY === 0 && intoBeat < 0.1 ? IDLE_ONSET : 0;
     fast.impact = 0;
     fast.build = 0;
     const barPhase = beats / IDLE_BEATS_PER_BAR;

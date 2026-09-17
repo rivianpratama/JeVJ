@@ -51,6 +51,17 @@ const FEATHER_RADIUS = Math.SQRT1_2;
 export interface Card {
   /** The element everything plays through, picture or no picture. */
   video: HTMLVideoElement;
+  /**
+   * The square itself, laid out whether or not it is shown.
+   *
+   * The visuals read its bounding rectangle to decide where the smoke is born
+   * — it is the hole the annulus goes round — and they read it even when the
+   * card is hidden, because the stage is hidden with `visibility` rather than
+   * `display` and the box is laid out either way. That is deliberate: an audio
+   * file wants the same dark square at the middle of the frame that a video
+   * would have occupied.
+   */
+  frame: HTMLElement;
   /** Show the square. A downloaded video has a picture; a file does not. */
   setVisible(on: boolean): void;
 }
@@ -151,6 +162,7 @@ export function createCard(root: HTMLElement): Card {
 
   return {
     video,
+    frame,
     setVisible(on: boolean): void {
       stage.classList.toggle('is-on', on);
       if (on === drawing) return;

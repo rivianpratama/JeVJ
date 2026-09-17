@@ -94,7 +94,13 @@ const moodLink = new MoodLink({ feed, live: false });
 // is never a dead black rectangle. Everything it needs to assemble a frame —
 // the fast features, the timeline's impact and build, the effective mood — it
 // reads from the pieces above.
-const visuals = createVisualLink({ canvas: bg, loop, cues, mood: () => moodLink.mood() });
+const visuals = createVisualLink({
+  canvas: bg,
+  loop,
+  cues,
+  mood: () => moodLink.mood(),
+  card: () => card.frame,
+});
 visuals.start();
 
 // The diagnostics tick: one interval for the life of the page, started here

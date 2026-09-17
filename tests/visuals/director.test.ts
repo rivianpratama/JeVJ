@@ -6,9 +6,16 @@ import {
   type FastFrame,
   type RenderParams,
 } from '../../src/visuals/director';
+import {
+  SPIN_REVERSE_SEC,
+  pushOutFor,
+  spinBaseRate,
+  strandWaveFor,
+  striateFor,
+} from '../../src/visuals/smokeMath';
 import { NEUTRAL_MOOD } from '../../src/shared/moodSchema';
 import { GENRES, MOTIONS, SECTIONS } from '../../src/shared/types';
-import type { MoodVector } from '../../src/shared/types';
+import type { MoodVector, TransitionKind } from '../../src/shared/types';
 
 const FRAME = 1 / 60;
 
@@ -662,5 +669,223 @@ describe('direct', () => {
     // its dust for contrast.
     expect(once(mood({ warmth: 1, genre: 'rock_metal' }), fast()).warmGrains).toBe(false);
     expect(once(mood({ warmth: 1, genre: 'electronic_dance' }), fast()).warmGrains).toBe(true);
+  });
+});
+
+/** Run `frames` frames, firing `transitions` on the frame at index `at`. */
+function runWithCue(
+  frames: number,
+  m: MoodVector,
+  kinds: readonly TransitionKind[],
+  at: number,
+  o: { reduced?: boolean; f?: (i: number) => FastFrame } = {},
+): RenderParams[] {
+  const out: RenderParams[] = [];
+  const state = createDirector();
+  let prev: RenderParams | null = null;
+  for (let i = 0; i < frames; i++) {
+    prev = direct(
+      state,
+      m,
+      o.f?.(i) ?? fast(),
+      FRAME,
+      prev,
+      o.reduced === true,
+      i === at ? kinds : [],
+    );
+    out.push(prev);
+  }
+  return out;
+}
+
+describe('the smoke rotates', () => {
+  it('turns at the rate the direction specifies, and faster the louder it is', () => {
+    const calm = run(60, mood({ arousal: 0 }), () => fast());
+    const loud = run(60, mood({ arousal: 1 }), () => fast());
+    expect(calm[59]!.spinRate).toBeCloseTo(spinBaseRate(0), 6);
+    expect(loud[59]!.spinRate).toBeCloseTo(spinBaseRate(1), 6);
+    // And the angle is an integral of it, not a function of the frame index.
+    expect(loud[59]!.spin).toBeGreaterThan(calm[59]!.spin);
+    expect(loud[59]!.spin).toBeCloseTo(spinBaseRate(1), 2);
+  });
+
+  it('kicks on an onset and lets the kick go', () => {
+    const hit = run(40, mood({ arousal: 0.5 }), (i) => fast({ onset: i === 10 ? 1 : 0 }));
+    const base = hit[9]!.spinRate;
+    expect(hit[10]!.spinRate).toBeGreaterThan(base + 0.5);
+    expect(hit[39]!.spinRate).toBeLessThan(hit[10]!.spinRate);
+    expect(hit[39]!.spinRate).toBeGreaterThan(base);
+  });
+
+  it('reverses on a drop and on a breakdown, over a second and a half', () => {
+    for (const kind of ['drop', 'breakdown'] as const) {
+      const seen = runWithCue(200, mood({ arousal: 0.5 }), [kind], 5);
+      expect(seen[4]!.spinRate).toBeGreaterThan(0);
+      expect(seen[199]!.spinRate).toBeLessThan(0);
+      // Through a standstill rather than between two frames.
+      const mid = seen[5 + Math.round(SPIN_REVERSE_SEC / 2 / FRAME)]!;
+      expect(Math.abs(mid.spinRate)).toBeLessThan(0.02);
+    }
+  });
+
+  it('does not reverse on the kinds that are not a seam in the flow', () => {
+    for (const kind of ['vocal_entry', 'quiet_fall', 'build_start', 'none'] as const) {
+      const seen = runWithCue(200, mood({ arousal: 0.5 }), [kind], 5);
+      expect(seen[199]!.spinRate).toBeGreaterThan(0);
+    }
+  });
+
+  it('takes the kicks away under reduced motion but keeps turning', () => {
+    const seen = run(40, mood({ arousal: 0.5 }), (i) => fast({ onset: i === 10 ? 1 : 0 }), true);
+    for (const p of seen) {
+      expect(p.spinRate).toBeGreaterThan(0);
+      expect(p.spinRate).toBeLessThanOrEqual(spinBaseRate(0.5));
+    }
+  });
+});
+
+describe('the smoke spreads', () => {
+  it('pushes outward always, harder when it is loud and hardest on a hit', () => {
+    expect(once(mood({ arousal: 0 }), fast()).pushOut).toBeCloseTo(pushOutFor(0, 0), 9);
+    expect(once(mood({ arousal: 1 }), fast()).pushOut).toBeGreaterThan(
+      once(mood({ arousal: 0 }), fast()).pushOut,
+    );
+    expect(once(mood({ arousal: 1 }), fast({ impact: 1 })).pushOut).toBeGreaterThan(
+      once(mood({ arousal: 1 }), fast()).pushOut,
+    );
+    // Never zero: a standing creep is what fills the frame outside the card.
+    for (const m of [IDLE_MOOD, mood({}), mood({ arousal: 0, spoken: 1 })]) {
+      expect(once(m, fast()).pushOut).toBeGreaterThan(0);
+    }
+  });
+
+  it('halves the push under reduced motion', () => {
+    const p = once(mood({ arousal: 1 }), fast({ impact: 1 }), true);
+    const q = once(mood({ arousal: 1 }), fast({ impact: 1 }));
+    expect(p.pushOut).toBeCloseTo(q.pushOut / 2, 9);
+  });
+
+  it('combs the sheets finer the more synthetic the music is', () => {
+    expect(once(mood({ synthetic: 0 }), fast()).striate).toBeCloseTo(striateFor(0), 6);
+    expect(once(mood({ synthetic: 1 }), fast()).striate).toBeCloseTo(striateFor(1), 6);
+  });
+});
+
+describe('flourishes', () => {
+  it('bursts on a drop: more push, more exposure, more fringing', () => {
+    const m = mood({ arousal: 0.5, synthetic: 0.8 });
+    const quiet = run(10, m, () => fast());
+    const burst = runWithCue(10, m, ['drop'], 5);
+    expect(burst[5]!.pushOut).toBeGreaterThan(4 * quiet[5]!.pushOut);
+    expect(burst[5]!.exposure).toBeGreaterThan(quiet[5]!.exposure + 0.2);
+    expect(burst[5]!.chroma).toBeGreaterThan(quiet[5]!.chroma);
+    // And it is over well inside a second.
+    const after = runWithCue(120, m, ['drop'], 5);
+    expect(after[119]!.pushOut).toBeCloseTo(quiet[9]!.pushOut, 3);
+  });
+
+  it('freezes the smoke in a hole and lets it fall away', () => {
+    const m = mood({ arousal: 0.6 });
+    const quiet = run(90, m, () => fast());
+    const hole = runWithCue(90, m, ['break_silence'], 5);
+    expect(hole[89]!.flowAmt).toBeLessThan(quiet[89]!.flowAmt);
+    expect(hole[89]!.decay).toBeLessThan(quiet[89]!.decay);
+  });
+
+  it('flares on a scream and opens a mirror over music that never wanted one', () => {
+    const m = mood({ arousal: 0.5, hypnotic: 0 });
+    const quiet = run(30, m, () => fast());
+    const scream = runWithCue(30, m, ['scream_peak'], 2);
+    expect(quiet[29]!.mirrorMix).toBe(0);
+    expect(scream[29]!.mirrorMix).toBeGreaterThan(0.2);
+    expect(scream[29]!.mirrorFolds).toBeGreaterThanOrEqual(2);
+    expect(scream[29]!.grain).toBeGreaterThan(quiet[29]!.grain);
+    // The flare itself is in the exposure, and the limiter still owns it.
+    expect(scream[2]!.exposure).toBeGreaterThan(quiet[2]!.exposure);
+  });
+
+  it('swells the bloom and the silk on a vocal entry', () => {
+    const m = mood({ arousal: 0.5 });
+    const quiet = run(40, m, () => fast());
+    const vocal = runWithCue(40, m, ['vocal_entry'], 0);
+    expect(vocal[30]!.bloomStrength).toBeGreaterThan(quiet[30]!.bloomStrength);
+    expect(vocal[30]!.strandGlow).toBeGreaterThan(0);
+    expect(quiet[30]!.strandGlow).toBe(0);
+  });
+
+  it('fades out slowly on a quiet fall', () => {
+    const m = mood({ arousal: 0.5 });
+    const quiet = run(90, m, () => fast());
+    const fall = runWithCue(90, m, ['quiet_fall'], 0);
+    expect(fall[89]!.injectGain).toBeLessThan(quiet[89]!.injectGain);
+    expect(fall[89]!.decay).toBeGreaterThan(quiet[89]!.decay);
+  });
+
+  it('never fires the same seam twice for one cue', () => {
+    // A re-anchored prediction and the detector's confirmation of it are two
+    // cues about one instant, and a cue on a frame boundary can be read twice.
+    const m = mood({ arousal: 0.5 });
+    const once_ = runWithCue(10, m, ['drop'], 2);
+    const twice = runWithCue(10, m, ['drop', 'drop'], 2);
+    expect(twice[5]!.pushOut).toBeCloseTo(once_[5]!.pushOut, 9);
+  });
+
+  it('holds back every flourish over a talking voice', () => {
+    // The breath safety takes the frame; a white flare over a person talking
+    // is exactly what it exists to prevent.
+    const m = mood({ spoken: 1, arousal: 0.5 });
+    const quiet = run(120, m, () => fast());
+    const scream = runWithCue(120, m, ['scream_peak'], 100);
+    expect(scream[100]!.exposure).toBeCloseTo(quiet[100]!.exposure, 3);
+    expect(scream[119]!.mirrorMix).toBeLessThan(0.05);
+  });
+
+  it('keeps half of a flourish under reduced motion', () => {
+    const m = mood({ arousal: 0.5 });
+    const full = runWithCue(10, m, ['drop'], 2);
+    const half = runWithCue(10, m, ['drop'], 2, { reduced: true });
+    const quiet = run(10, m, () => fast(), true);
+    expect(half[2]!.pushOut).toBeGreaterThan(quiet[2]!.pushOut);
+    expect(half[2]!.pushOut).toBeLessThan(full[2]!.pushOut);
+  });
+});
+
+describe('the afterimage', () => {
+  it('smears more the more hypnotic the music is', () => {
+    expect(once(mood({ hypnotic: 0, motion: 'flow' }), fast()).afterimage).toBeCloseTo(0.85, 6);
+    expect(once(mood({ hypnotic: 1, motion: 'flow' }), fast()).afterimage).toBeCloseTo(0.95, 6);
+  });
+
+  it('cuts it short when the motion shatters', () => {
+    expect(once(mood({ hypnotic: 1, motion: 'shatter' }), fast()).afterimage).toBeCloseTo(0.6, 6);
+  });
+
+  it('is off entirely under reduced motion', () => {
+    for (const motion of MOTIONS) {
+      for (const hypnotic of [0, 1]) {
+        expect(once(mood({ hypnotic, motion }), fast(), true).afterimage).toBe(0);
+      }
+    }
+  });
+});
+
+describe('the strands are wavy', () => {
+  it('reads its wave off the low-mid band, the tension and the arousal', () => {
+    const bands = new Float32Array(8);
+    bands[3] = 1;
+    const p = once(mood({ tension: 1, arousal: 1 }), fast({ bands }));
+    const want = strandWaveFor(1, 1, 1);
+    expect(p.strandWaveAmp).toBeCloseTo(want.amp, 9);
+    expect(p.strandWaveFreq).toBeCloseTo(want.freq, 9);
+    expect(p.strandWaveSpeed).toBeCloseTo(want.speed, 9);
+  });
+
+  it('never hands the silk a wave that stands still', () => {
+    for (const arousal of [0, 0.5, 1]) {
+      for (const tension of [0, 0.5, 1]) {
+        const p = once(mood({ arousal, tension }), fast());
+        expect(p.strandWaveAmp * p.strandWaveSpeed).toBeGreaterThan(0);
+      }
+    }
   });
 });

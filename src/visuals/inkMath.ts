@@ -41,7 +41,7 @@ export function inkEquilibriumDensity(rate: number, decay: number, dt = 1 / 60):
 }
 
 /**
- * The soft knee `ink_color.frag` samples the palette ramp through:
+ * The soft knee `smoke_color.frag` samples the palette ramp through:
  * `1 − e^(−knee·d)`, so a density of 0 is the darkest stop and the ramp
  * approaches the lightest without ever clipping to it.
  *
@@ -54,24 +54,47 @@ export function inkLevel(density: number, knee: number): number {
 }
 
 /**
- * The density the ambient wash is *meant* to stand at, before the vein gate,
- * the band split and the director's `injectGain`.
+ * The knee, and the falloff on top of it that v2 adds.
  *
- * It is the level the shipped look was tuned to and measured at — the idle
- * field's mean sits a quarter of the way up the ramp with two fifths of the
- * frame dark — and it is now a *target* rather than a by-product. Until this
- * task the wash was a fixed rate, and a fixed rate is only a level once you
- * also fix the decay: the equilibrium is `rate·dt / (1 − decay^(dt·60))`, so the
- * same rate that settles here at the idle decay of 0.99 settles six times lower
- * at the 0.94 a loud section asks for. The picture went dark exactly when the
- * music got big, and darker still when the page was hidden and `dt` grew.
- *
- * The value is what the old constants produced at idle — `AMBIENT_RATE` 0.5 ×
- * `INJECT_RATE` 2.4 × (1/60) ÷ (1 − 0.99) — so the idle field is unchanged to
- * the last decimal and every other decay now matches it instead of falling
- * away from it.
+ * `pow(level, 1.35)` is what turns a lit field into smoke. The knee alone puts
+ * most of a sheet into the mid greys, where it reads as a gradient; the power
+ * pushes the mids down and leaves the cores where they were, which is the
+ * reference image's "bright soft cores fading long into black". It is also the
+ * single biggest reason the v2 idle field measures darker than v1's at the same
+ * ambient level — see `AMBIENT_LEVEL`.
  */
-export const AMBIENT_LEVEL = 2;
+export function smokeLevel(density: number, knee: number, falloff: number): number {
+  const level = inkLevel(density, knee);
+  return level > 0 ? level ** falloff : 0;
+}
+
+/**
+ * The density the ambient veined wash is *meant* to stand at, before the vein
+ * gate, the card's shadow, the striation comb, the band split and the
+ * director's `injectGain`.
+ *
+ * It is a *target* rather than a by-product. A fixed rate is only a level once
+ * you also fix the decay: the equilibrium is `rate·dt / (1 − decay^(dt·60))`, so
+ * the same rate that settles here at the idle decay of 0.99 settles six times
+ * lower at the 0.94 a loud section asks for. The picture went dark exactly when
+ * the music got big, and darker still when the page was hidden and `dt` grew.
+ *
+ * **v2 re-solves it, and the direction's "ambient at half rate" is delivered
+ * somewhere else.** Three v2 changes stand between this number and the screen,
+ * and all three take light *out* of the wash: everything injected is multiplied
+ * by the striation comb, whose mean is 0.75; the wash is gated down to 0.15
+ * inside the card's own square, which is about 0.75 over the frame; and the
+ * color stage's knee softened from 2.4 to 2.0 with a 1.35 falloff on top of it.
+ * The two gates together are the halving — 0.56 of the wash reaches the buffer
+ * — and the falloff takes more again. Halving the *level* as well would have
+ * put the idle frame at a mean of 0.06 against a binding window of 0.19–0.27,
+ * which is not a dark picture, it is an empty one. So the level is solved for
+ * the measurement rather than for the arithmetic, and it lands at 4: the idle
+ * field reads a mean of 0.22 with its darkest fifth at 0 and its brightest
+ * twentieth at 0.81, against v1's 0.27 / 0.00 / 0.81.
+ * tests/visuals/inkMath.test.ts holds all of it.
+ */
+export const AMBIENT_LEVEL = 7;
 
 /**
  * The decay `ink_feedback.frag` substitutes for the director's under the

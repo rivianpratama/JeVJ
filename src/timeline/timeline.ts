@@ -41,7 +41,7 @@
  * Pure: no DOM, no Web Audio, no wall clock.
  */
 
-import type { Cue, CueSource, MoodVector, Section } from '../shared/types';
+import type { Cue, CueSource, MoodVector, Section, TransitionKind } from '../shared/types';
 
 /** The grid the ramps are written on: 200 ms, as the plan specifies. */
 const STEP = 0.2;
@@ -220,6 +220,33 @@ export class CueTimeline {
       out.push({ ...c });
     }
     return out;
+  }
+
+  /**
+   * The transition kinds of every cue whose instant falls in `(from, to]`,
+   * appended to `out`.
+   *
+   * This is how a *seam* reaches the visuals at all. Everything else the
+   * renderer reads off this timeline is a level — the mood is interpolated, the
+   * impact is decayed, the build is a ramp — and a level cannot say "a drop
+   * happened just now, once". The director's one-shot flourishes and its spin
+   * reversal need exactly that, so they are read as the half-open interval
+   * between the last frame's instant and this one's: every cue is seen once, by
+   * exactly one frame, however long the frames are.
+   *
+   * `out` is filled rather than returned, because this runs every frame and the
+   * usual answer is nothing at all.
+   */
+  transitionsIn(from: number, to: number, out: TransitionKind[]): void {
+    if (!(to > from)) return;
+    for (let i = this.insertionPoint(from); i < this.list.length; i++) {
+      const c = this.list[i]!;
+      if (c.t > to) break;
+      // Half-open: `insertionPoint` lands on the first cue at or after `from`,
+      // and a cue exactly at `from` was this interval's predecessor's.
+      if (c.t <= from) continue;
+      if (c.transition !== undefined) out.push(c.transition);
+    }
   }
 
   /**
