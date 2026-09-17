@@ -16,9 +16,9 @@
 import { TypeSafeClient, type EntryType, type Questions } from '@typesafe-ai/sdk';
 
 import { decodeAnswers } from '../src/mood/decode';
-import { MOOD_QUESTIONS, buildState } from '../src/mood/questions';
-import { validateMoodInput } from '../src/shared/moodSchema';
-import type { MoodResponse } from '../src/shared/types';
+import { buildState, questionsFor } from '../src/mood/questions';
+import { validateMoodInput, validateMoodVector } from '../src/shared/moodSchema';
+import type { MoodResponse, MoodVector } from '../src/shared/types';
 
 /** The model we ask. Pinned by name so a client default cannot move it. */
 export const MOOD_MODEL = 'jev-latest';
@@ -45,9 +45,26 @@ export interface MoodDeps {
 
 export type MoodResult = { status: number; json: MoodResponse | { error: string } };
 
+/**
+ * The questions the caller asked for, and the answer it is holding.
+ *
+ * Both are hints rather than instructions: the client decides what is worth
+ * asking this call (`mood/questions.ts`) and carries its last vector so that
+ * the questions it skipped can be filled in rather than reset. Neither is
+ * trusted — `questionsFor` drops names it does not know and falls back to the
+ * whole set, and a `prev` that is not a well-formed vector is simply not there.
+ */
+function askedFor(body: unknown): { ask: string[]; previous: MoodVector | null } {
+  const raw = typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {};
+  const ask = Array.isArray(raw['ask']) ? raw['ask'].filter((x): x is string => typeof x === 'string') : [];
+  const prev = validateMoodVector(raw['prev']);
+  return { ask, previous: prev.ok ? prev.value : null };
+}
+
 export async function handleMood(body: unknown, deps: MoodDeps): Promise<MoodResult> {
   const input = validateMoodInput(body);
   if (!input.ok) return { status: 400, json: { error: input.error } };
+  const { ask, previous } = askedFor(body);
 
   const now = deps.now ?? Date.now;
   const startedAt = now();
@@ -56,13 +73,13 @@ export async function handleMood(body: unknown, deps: MoodDeps): Promise<MoodRes
     // field, so anything extra a caller attached never reaches the model.
     const result = await deps.client.systemOne({
       state: buildState(input.value),
-      questions: MOOD_QUESTIONS,
+      questions: questionsFor(ask),
       model: MOOD_MODEL,
     });
     return {
       status: 200,
       json: {
-        mood: decodeAnswers(result.answers),
+        mood: decodeAnswers(result.answers, previous),
         usage: {
           input_tokens: result.usage?.input_tokens ?? 0,
           output_tokens: result.usage?.output_tokens ?? 0,

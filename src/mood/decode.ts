@@ -115,13 +115,32 @@ function decodeChoice<K extends string>(
  * The mood vector the answers describe. Always valid: if anything about the
  * decode went wrong badly enough that the schema rejects it, the neutral mood
  * goes out instead, and its `confidence: 0` says so.
+ *
+ * `previous` is Jev's last answer, and it is what an *unanswered* question
+ * falls back to. Since Task 12 a call only carries the questions worth asking
+ * — the nouls every other time, the predictions only into a build — so most
+ * calls come back with holes in them, and a hole means "nobody asked", not
+ * "the answer is 0.5". Falling back to the neutral mood there would drag the
+ * whole picture toward the middle twice a call.
+ *
+ * The predictions are the exception, and they are the exception on purpose: a
+ * prediction that was not restated is *withdrawn*, not still standing. Carried
+ * forward, a `drop_imminent: 0.9` from the bar before the hit would re-arm the
+ * anticipation ramp on every call for the rest of the track, because the thing
+ * that stops us asking is precisely the build being over.
  */
-export function decodeAnswers(answers: Record<string, unknown>): MoodVector {
+export function decodeAnswers(
+  answers: Record<string, unknown>,
+  previous: MoodVector | null = null,
+): MoodVector {
   const conf: Confidences = [];
+  // What a question nobody asked falls back to: the last answer for anything
+  // that describes the music, and "no prediction" for anything that predicts.
+  const held = previous ?? NEUTRAL_MOOD;
 
-  const genre = decodeChoice(answers['genre'], GENRES, NEUTRAL_MOOD.genre, NEUTRAL_MOOD.genreP, conf);
-  const section = decodeChoice(answers['section'], SECTIONS, NEUTRAL_MOOD.section, NEUTRAL_MOOD.sectionP, conf);
-  const motion = decodeChoice(answers['motion'], MOTIONS, NEUTRAL_MOOD.motion, NEUTRAL_MOOD.motionP, conf);
+  const genre = decodeChoice(answers['genre'], GENRES, held.genre, held.genreP, conf);
+  const section = decodeChoice(answers['section'], SECTIONS, held.section, held.sectionP, conf);
+  const motion = decodeChoice(answers['motion'], MOTIONS, held.motion, held.motionP, conf);
 
   // These two have no distribution in the vector, so only the label survives;
   // their confidences still count toward the average.
@@ -141,17 +160,17 @@ export function decodeAnswers(answers: Record<string, unknown>): MoodVector {
   );
 
   const mood: MoodVector = {
-    valence: decodeScore(answers['valence'], 'valence', NEUTRAL_MOOD.valence, conf),
-    arousal: decodeScore(answers['arousal'], 'arousal', NEUTRAL_MOOD.arousal, conf),
-    tension: decodeScore(answers['tension'], 'tension', NEUTRAL_MOOD.tension, conf),
-    warmth: decodeScore(answers['warmth'], 'warmth', NEUTRAL_MOOD.warmth, conf),
-    synthetic: decodeScore(answers['synthetic'], 'synthetic', NEUTRAL_MOOD.synthetic, conf),
-    space: decodeScore(answers['space'], 'space', NEUTRAL_MOOD.space, conf),
-    aggression: decodeNoul(answers['aggression'], NEUTRAL_MOOD.aggression),
-    melancholy: decodeNoul(answers['melancholy'], NEUTRAL_MOOD.melancholy),
-    hypnotic: decodeNoul(answers['hypnotic'], NEUTRAL_MOOD.hypnotic),
-    euphoricPeak: decodeNoul(answers['euphoric_peak'], NEUTRAL_MOOD.euphoricPeak),
-    spoken: decodeNoul(answers['spoken'], NEUTRAL_MOOD.spoken),
+    valence: decodeScore(answers['valence'], 'valence', held.valence, conf),
+    arousal: decodeScore(answers['arousal'], 'arousal', held.arousal, conf),
+    tension: decodeScore(answers['tension'], 'tension', held.tension, conf),
+    warmth: decodeScore(answers['warmth'], 'warmth', held.warmth, conf),
+    synthetic: decodeScore(answers['synthetic'], 'synthetic', held.synthetic, conf),
+    space: decodeScore(answers['space'], 'space', held.space, conf),
+    aggression: decodeNoul(answers['aggression'], held.aggression),
+    melancholy: decodeNoul(answers['melancholy'], held.melancholy),
+    hypnotic: decodeNoul(answers['hypnotic'], held.hypnotic),
+    euphoricPeak: decodeNoul(answers['euphoric_peak'], held.euphoricPeak),
+    spoken: decodeNoul(answers['spoken'], held.spoken),
     genre: genre.label,
     genreP: genre.p,
     section: section.label,
@@ -162,7 +181,7 @@ export function decodeAnswers(answers: Record<string, unknown>): MoodVector {
     beatsToChange: beats.label,
     impact: decodeScore(answers['impact'], 'impact', NEUTRAL_MOOD.impact, conf),
     preDropStyle: preDrop.label,
-    confidence: conf.length === 0 ? 0 : conf.reduce((a, b) => a + b, 0) / conf.length,
+    confidence: conf.length === 0 ? held.confidence : conf.reduce((a, b) => a + b, 0) / conf.length,
   };
 
   const checked = validateMoodVector(mood);

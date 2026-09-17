@@ -13,7 +13,7 @@
  * can hand them straight to `systemOne`.
  */
 
-import type { MoodInput } from '../shared/types';
+import type { MoodInput, MoodVector } from '../shared/types';
 
 /** A JSON value, as the API accepts for instructions, criteria and state. */
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
@@ -259,4 +259,106 @@ export const MOOD_QUESTIONS: Record<string, Question> = {
 /** The state one call carries: the payload, and what its field names mean. */
 export function buildState(input: MoodInput): { music: MoodInput; legend: Record<string, string> } {
   return { music: input, legend: MOOD_PREAMBLE };
+}
+
+/* ----------------------------------------------------------- what to ask */
+
+/**
+ * Not every question is worth asking every time.
+ *
+ * Measured on the live smoke: eighteen questions cost about 3.4k tokens and
+ * 1.1 s, and the questions themselves — the rubrics above — are nearly all of
+ * that. The payload is 150 tokens. So the cheapest thing this app can do is ask
+ * fewer questions, and the only honest way to choose is by how fast each answer
+ * goes stale.
+ *
+ * - **core**, every call: the six standing scores plus `spoken` and the three
+ *   labels the whole look is built on. These are what the director reads every
+ *   frame; a stale one is a wrong picture.
+ * - **nouls**, every other call: aggression, melancholy, hypnotic and the peak.
+ *   They move over bars rather than beats, and the mood state slews them over a
+ *   second anyway, so asking at half the rate costs nothing anyone can see.
+ * - **predictive**, only into a build: "is a drop coming, in how many beats,
+ *   how hard, what kind of build". Outside a build the answer is always "no",
+ *   and paying 900 tokens for it is paying for silence. The local drop detector
+ *   keeps the deadline in the meantime.
+ */
+export const CORE_IDS = [
+  'valence',
+  'arousal',
+  'tension',
+  'warmth',
+  'synthetic',
+  'space',
+  'spoken',
+  'genre',
+  'section',
+  'motion',
+] as const;
+
+export const NOUL_IDS = ['aggression', 'melancholy', 'hypnotic', 'euphoric_peak'] as const;
+
+export const PREDICTIVE_IDS = [
+  'drop_imminent',
+  'beats_to_change',
+  'impact',
+  'pre_drop_style',
+] as const;
+
+/** Loudness over the last 8 bars, in dB, that counts as a build. */
+const BUILD_SLOPE8_DB = 2;
+/** Note density against 8 bars ago that counts as one. */
+const BUILD_ONSET_RATIO = 1.3;
+/** From this bar of a 16-bar phrase on, a boundary is close enough to matter. */
+const BUILD_BAR_IN_PHRASE = 12;
+
+export interface QuestionChoice {
+  /** How many calls have gone out already; the nouls ride on its parity. */
+  callIndex: number;
+  input: MoodInput;
+  /** Jev's last answer, or null before there is one. */
+  previous: MoodVector | null;
+}
+
+/**
+ * Whether anything in front of us looks like a build.
+ *
+ * Three of the four cues are measurements — rising loudness, doubling density,
+ * the end of a phrase — and the fourth is Jev's own last word: once it has said
+ * `build`, the build is underway by definition and the predictions stay live
+ * until it says otherwise.
+ */
+export function buildAhead(o: QuestionChoice): boolean {
+  const i = o.input;
+  return (
+    i.slope8 > BUILD_SLOPE8_DB ||
+    i.onsetRatio > BUILD_ONSET_RATIO ||
+    i.barInPhrase >= BUILD_BAR_IN_PHRASE ||
+    o.previous?.section === 'build'
+  );
+}
+
+/** Which questions this call asks. */
+export function selectQuestionIds(o: QuestionChoice): string[] {
+  const ids: string[] = [...CORE_IDS];
+  if (o.callIndex % 2 === 0) ids.push(...NOUL_IDS);
+  if (buildAhead(o)) ids.push(...PREDICTIVE_IDS);
+  return ids;
+}
+
+/**
+ * The named questions, in the order `MOOD_QUESTIONS` declares them.
+ *
+ * Names it does not know are dropped rather than trusted: this runs on the
+ * server against whatever the request carried. An empty selection is not an
+ * instruction to ask nothing — it is a request that arrived without one — so it
+ * falls back to the whole set.
+ */
+export function questionsFor(ids: readonly string[]): Record<string, Question> {
+  const wanted = new Set(ids);
+  const out: Record<string, Question> = {};
+  for (const [id, q] of Object.entries(MOOD_QUESTIONS)) {
+    if (wanted.has(id)) out[id] = q;
+  }
+  return Object.keys(out).length === 0 ? MOOD_QUESTIONS : out;
 }

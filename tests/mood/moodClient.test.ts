@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { MoodClient } from '../../src/mood/moodClient';
 import { NEUTRAL_MOOD } from '../../src/shared/moodSchema';
-import type { MoodResponse } from '../../src/shared/types';
+import type { MoodInput, MoodResponse } from '../../src/shared/types';
 import { EXAMPLE_INPUT } from '../helpers/moodFixture';
 
 const OK_BODY: MoodResponse = {
@@ -79,7 +79,9 @@ describe('MoodClient cadence', () => {
     expect(res).not.toBe('idle');
     expect(calls.length).toBe(1);
     expect(calls[0]?.url).toBe('/api/mood');
-    expect(calls[0]?.body).toEqual(EXAMPLE_INPUT);
+    // The payload, plus the questions this call is worth asking.
+    expect(calls[0]?.body).toMatchObject(EXAMPLE_INPUT);
+    expect((calls[0]?.body as { ask: string[] }).ask).toContain('valence');
   });
 
   it('waits the full 8 s when nothing is changing', async () => {
@@ -204,5 +206,104 @@ describe('MoodClient cadence', () => {
     const { client } = primed([{ status: 200, body: { mood: { valence: 2 } } }]);
     expect(await frame(client, 1.5, { novelty: 1 })).toBeNull();
     expect(client.stats().errors).toBe(1);
+  });
+});
+
+/** A payload with nothing building under it: the predictions are not worth asking. */
+const CALM_INPUT: MoodInput = {
+  ...EXAMPLE_INPUT,
+  slope4: 0,
+  slope8: 0,
+  onsetRatio: 1,
+  centroidSlope: 0,
+  barInPhrase: 2,
+};
+
+/** One call, with the payload under the test's control. */
+async function ask(client: MoodClient, now: number, input: MoodInput): Promise<void> {
+  const p = client.maybeRequest(now, input, 1, true, true, true, null);
+  if (p !== null) await p;
+}
+
+describe('MoodClient question sets', () => {
+  it('asks the core ten every call and the nouls on alternate ones', async () => {
+    const fetchFn = fakeFetch();
+    const client = new MoodClient({ fetchFn: fetchFn.fn });
+    client.maybeRequest(0, CALM_INPUT, 0, false, true, true, null);
+
+    for (const at of [1.5, 4, 6.5, 9]) await ask(client, at, CALM_INPUT);
+
+    const asked = fetchFn.calls.map((c) => (c.body as { ask: string[] }).ask);
+    expect(asked.length).toBe(4);
+    for (const ids of asked) {
+      expect(ids).toContain('valence');
+      expect(ids).toContain('genre');
+      expect(ids).not.toContain('drop_imminent');
+    }
+    expect(asked.map((ids) => ids.includes('hypnotic'))).toEqual([true, false, true, false]);
+  });
+
+  it('asks the predictions once the payload is building', async () => {
+    const fetchFn = fakeFetch();
+    const client = new MoodClient({ fetchFn: fetchFn.fn });
+    client.maybeRequest(0, CALM_INPUT, 0, false, true, true, null);
+
+    await ask(client, 1.5, CALM_INPUT);
+    await ask(client, 4, EXAMPLE_INPUT);
+
+    const asked = fetchFn.calls.map((c) => (c.body as { ask: string[] }).ask);
+    expect(asked[0]).not.toContain('drop_imminent');
+    expect(asked[1]).toContain('drop_imminent');
+    expect(asked[1]).toContain('beats_to_change');
+  });
+
+  it('carries its last answer, so the server can fill in what it did not ask', async () => {
+    const fetchFn = fakeFetch();
+    const client = new MoodClient({ fetchFn: fetchFn.fn });
+    client.maybeRequest(0, CALM_INPUT, 0, false, true, true, null);
+
+    await ask(client, 1.5, CALM_INPUT);
+    await ask(client, 4, CALM_INPUT);
+
+    const bodies = fetchFn.calls.map((c) => c.body as { prev?: { valence: number } });
+    // Nothing to carry on the first call.
+    expect(bodies[0]?.prev).toBeUndefined();
+    expect(bodies[1]?.prev?.valence).toBe(0.8);
+  });
+
+  it('keeps the whole body inside the 2 KB the server will read', async () => {
+    const fetchFn = fakeFetch();
+    const client = new MoodClient({ fetchFn: fetchFn.fn });
+    client.maybeRequest(0, EXAMPLE_INPUT, 0, false, true, true, null);
+
+    for (const at of [1.5, 4, 6.5]) await ask(client, at, EXAMPLE_INPUT);
+
+    // The worst case: every question asked, and a whole vector carried with
+    // them — which is an even call, once there has been an answer to carry.
+    const body = fetchFn.calls[2]?.body;
+    expect((body as { ask: string[] }).ask.length).toBe(18);
+    expect((body as { prev?: unknown }).prev).toBeDefined();
+    expect(JSON.stringify(body).length).toBeLessThanOrEqual(2048);
+  });
+});
+
+describe('MoodClient backoff', () => {
+  it('counts the backoff from when the request failed, not from when it went out', async () => {
+    const fetchFn = fakeFetch([{ status: 500 }]);
+    const client = new MoodClient({ fetchFn: fetchFn.fn });
+    client.maybeRequest(0, EXAMPLE_INPUT, 0, false, true, true, null);
+
+    const pending = client.maybeRequest(10, EXAMPLE_INPUT, 1, false, true, true, null);
+    expect(pending).not.toBeNull();
+    // A 1.1 s round trip, as measured against the live model: the tick keeps
+    // running underneath it and keeps showing the client the audio clock.
+    for (const at of [10.5, 11.1]) {
+      expect(client.maybeRequest(at, EXAMPLE_INPUT, 1, false, true, true, null)).toBeNull();
+    }
+    await pending;
+
+    // 4 s from the failure at 11.1, not from the dispatch at 10.
+    expect(client.stats().backoffUntil).toBeCloseTo(15.1, 10);
+    expect(await frame(client, 15, { novelty: 1 })).toBe('idle');
   });
 });

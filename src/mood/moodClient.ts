@@ -21,8 +21,9 @@
  * `Date.now`: a paused track and a backgrounded tab must not age the cadence.
  */
 
-import { validateMoodVector } from '../shared/moodSchema';
-import type { MoodInput, MoodResponse } from '../shared/types';
+import { selectQuestionIds } from './questions';
+import { compactMoodVector, validateMoodVector } from '../shared/moodSchema';
+import type { MoodInput, MoodResponse, MoodVector } from '../shared/types';
 
 export interface MoodClientOptions {
   fetchFn?: typeof fetch;
@@ -73,6 +74,20 @@ export class MoodClient {
   private backoffUntil = -Infinity;
   private backoffSec = 0;
   private refusedLogged = false;
+  /**
+   * The latest audio time anyone has shown us, in-flight requests included.
+   *
+   * A backoff is a statement about the future, and the future starts when the
+   * request *failed*: an 8 s timeout counted from the dispatch is over almost
+   * as soon as it is set. The caller ticks this client every frame, so the last
+   * instant it was shown is the resolution instant to within a frame — and it
+   * is still the audio clock, so a paused track cannot age the backoff.
+   */
+  private seenNow = -Infinity;
+  /** How many requests have gone out; the noul tier rides on its parity. */
+  private callIndex = 0;
+  /** Jev's last answer, which fills in the questions the next call skips. */
+  private lastMood: MoodVector | null = null;
 
   private calls = 0;
   private tokens = 0;
@@ -104,6 +119,10 @@ export class MoodClient {
     nextPhraseBoundaryIn: number | null,
   ): Promise<MoodResponse | null> | null {
     if (Number.isNaN(this.startedAt)) this.startedAt = now;
+    // Before every early return below: a frame that decides *not* to ask is
+    // still a frame that says what time it is, which is what a request already
+    // in flight needs when it fails.
+    if (now > this.seenNow) this.seenNow = now;
     this.interval = this.intervalFor(novelty);
 
     if (!playing || !visible || this.inFlight) return null;
@@ -141,6 +160,7 @@ export class MoodClient {
    */
   ask(input: MoodInput, now: number): Promise<MoodResponse | null> {
     if (this.inFlight) return Promise.resolve(null);
+    if (now > this.seenNow) this.seenNow = now;
     this.inFlight = true;
     return this.send(input, now);
   }
@@ -169,12 +189,34 @@ export class MoodClient {
     return Math.max(this.minInterval, Math.min(this.maxInterval, raw));
   }
 
+  /**
+   * The body one call carries: the payload, the questions worth asking this
+   * time, and — once there is one — the last answer, so that the server can
+   * decode a partial reply without dragging the unasked half of the vector back
+   * to neutral. The vector is rounded to two decimals on the way out: it is a
+   * fallback, not a measurement, and the full float expansion of three
+   * probability maps is most of a kilobyte the server has said it will not read.
+   */
+  private body(input: MoodInput): Record<string, unknown> {
+    const ask = selectQuestionIds({
+      callIndex: this.callIndex,
+      input,
+      previous: this.lastMood,
+    });
+    this.callIndex += 1;
+    return {
+      ...input,
+      ask,
+      ...(this.lastMood === null ? {} : { prev: compactMoodVector(this.lastMood) }),
+    };
+  }
+
   private async send(input: MoodInput, now: number): Promise<MoodResponse | null> {
     try {
       const res = await this.fetchFn(this.endpoint, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(input),
+        body: JSON.stringify(this.body(input)),
       });
 
       if (!res.ok) {
@@ -192,6 +234,7 @@ export class MoodClient {
       }
 
       this.calls += 1;
+      this.lastMood = mood.value;
       this.tokens += (body.usage?.input_tokens ?? 0) + (body.usage?.output_tokens ?? 0);
       this.lastLatencyMs = body.latencyMs ?? 0;
       this.backoffSec = 0;
@@ -212,8 +255,10 @@ export class MoodClient {
    * the request itself being refused — retrying it changes nothing, so we go
    * quiet for a minute instead of hammering.
    */
-  private fail(now: number, status: number): void {
+  private fail(dispatchedAt: number, status: number): void {
     this.errors += 1;
+    // From the failure, not from the dispatch: see `seenNow`.
+    const now = Math.max(dispatchedAt, this.seenNow);
     const refused = status >= 400 && status < 500 && status !== 429 && status !== 408;
     if (refused) {
       if (!this.refusedLogged) {

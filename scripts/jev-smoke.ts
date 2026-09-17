@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { createJevClient, handleMood } from '../server/moodHandler';
+import { CORE_IDS, MOOD_QUESTIONS, NOUL_IDS, selectQuestionIds } from '../src/mood/questions';
 import type { MoodInput } from '../src/shared/types';
 
 /** The serialization example from Task 6: a build, 14 bars in, at 128 BPM. */
@@ -72,6 +73,34 @@ function readEnvFile(path: string): Record<string, string> {
   return out;
 }
 
+/** One live call with a named question set, printed. */
+async function run(
+  label: string,
+  ask: string[],
+  client: ReturnType<typeof createJevClient>,
+): Promise<{ tokens: number; latencyMs: number } | null> {
+  const result = await handleMood({ ...PAYLOAD, ask }, { client });
+  if (result.status !== 200 || !('mood' in result.json)) {
+    console.error(`${label}: status ${result.status}:`, result.json);
+    return null;
+  }
+  const { mood, usage, latencyMs } = result.json;
+  const tokens = usage.input_tokens + usage.output_tokens;
+  console.log(`\n${label} — ${ask.length} questions`);
+  console.log('mood   ', JSON.stringify(round(mood)));
+  console.log('usage  ', JSON.stringify(usage), `→ ${tokens} tokens`);
+  console.log('latency', `${latencyMs} ms`);
+  return { tokens, latencyMs };
+}
+
+/**
+ * Both question sets, one live call each.
+ *
+ * The point of the second call is the number at the bottom: the whole set
+ * against the set a typical call actually asks. The payload below is a build,
+ * so the client would ask everything about *it* — the "trimmed" run is the
+ * common case, an ordinary bar with no build under it and the nouls skipped.
+ */
 async function main(): Promise<void> {
   const env = readEnvFile(resolve(process.cwd(), '.env'));
   const apiKey = env['TYPESAFE_API_KEY'] ?? process.env['TYPESAFE_API_KEY'] ?? '';
@@ -81,17 +110,22 @@ async function main(): Promise<void> {
     return;
   }
 
-  const result = await handleMood(PAYLOAD, { client: createJevClient(apiKey) });
-  if (result.status !== 200 || !('mood' in result.json)) {
-    console.error(`status ${result.status}:`, result.json);
-    process.exitCode = 1;
-    return;
-  }
+  const client = createJevClient(apiKey);
+  const full = await run('every question', Object.keys(MOOD_QUESTIONS), client);
+  const trimmed = await run('an ordinary call', [...CORE_IDS], client);
+  const withNouls = await run('every other call', [...CORE_IDS, ...NOUL_IDS], client);
 
-  const { mood, usage, latencyMs } = result.json;
-  console.log('mood   ', JSON.stringify(round(mood)));
-  console.log('usage  ', JSON.stringify(usage));
-  console.log('latency', `${latencyMs} ms`);
+  // What the client would actually ask about this payload, for the record.
+  const chosen = selectQuestionIds({ callIndex: 0, input: PAYLOAD, previous: null });
+  console.log(`\nthis payload would be asked ${chosen.length} questions`);
+  if (full && trimmed && withNouls) {
+    console.log(
+      `tokens/call ${full.tokens} → ${trimmed.tokens} (core) / ${withNouls.tokens} (core + nouls)`,
+    );
+    console.log(`latency ${full.latencyMs} ms → ${trimmed.latencyMs} ms / ${withNouls.latencyMs} ms`);
+  } else {
+    process.exitCode = 1;
+  }
 }
 
 /** Two decimals on every number, so one line of output stays one line. */
