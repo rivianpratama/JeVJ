@@ -45,8 +45,28 @@ const ABSOLUTE_FLOOR = 0.01;
 /** How much detection function to keep, and at what rate it is handed out. */
 const ENVELOPE_SECONDS = 8;
 const ENVELOPE_RATE = 100;
-/** 8 s at 200 frames a second — more headroom than any real loop needs. */
+/**
+ * Room for 8 s even at 200 frames a second, which is the fastest display this
+ * could plausibly run on. At the 60 fps it actually runs at, that is ~26 s of
+ * history retained — harmless headroom (two `Float64Array`/`Float32Array`s of
+ * 1600 entries), and it means a slow frame or a display that briefly runs fast
+ * can never cost the tempo estimator its 6 s window.
+ */
 const CAPACITY = ENVELOPE_SECONDS * 200;
+
+/**
+ * How late this detector reports an onset, in seconds — subtract it to get the
+ * audio time the hit actually happened, which is what the cue timeline
+ * schedules against.
+ *
+ * An `AnalyserNode` window *ends* at `ctx.currentTime`, so a transient is only
+ * inside the window on the frame after it sounded; the flux peak lands one
+ * frame late. Measured on the 120 BPM click-track fixture (`tests/helpers/
+ * synth.ts`, same window geometry as the live graph): all 16 beats detected,
+ * lag 16.7 ms on every one of them (std 0 — one frame at 60 fps), rounded here
+ * to the nearest 5 ms. `tests/analysis/onset.test.ts` holds it to ±15 ms.
+ */
+export const ONSET_REPORT_LAG_SEC = 0.015;
 
 export class OnsetDetector {
   private readonly history: Ring;
@@ -160,11 +180,6 @@ export class OnsetDetector {
     return this.lastLow;
   }
 
-  /** Audio-clock time of the last onset, or -Infinity if there has been none. */
-  lastOnsetTime(): number {
-    return this.lastOnset;
-  }
-
   private record(t: number, v: number): void {
     this.ts[this.head] = t;
     this.vs[this.head] = v;
@@ -191,9 +206,9 @@ export class OnsetDetector {
     const n = this.history.length;
     if (n === 0) return 0;
     for (let i = 0; i < n; i++) this.scratch[i] = this.history.at(i);
-    const window = this.scratch.subarray(0, n);
-    window.sort();
+    const slice = this.scratch.subarray(0, n);
+    slice.sort();
     const mid = n >> 1;
-    return n % 2 === 1 ? window[mid]! : (window[mid - 1]! + window[mid]!) / 2;
+    return n % 2 === 1 ? slice[mid]! : (slice[mid - 1]! + slice[mid]!) / 2;
   }
 }

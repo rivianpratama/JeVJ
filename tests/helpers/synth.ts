@@ -31,16 +31,16 @@ const BEATS_PER_BAR = 4;
 /**
  * Where `t` sits inside its analysis window, as a fraction of the window.
  *
- * Not the obvious 0.5. A Hann-windowed transient contributes almost nothing
- * while it sits at the edge of the window and reaches full weight at the
- * centre, so spectral flux — which reacts to the *rise* — peaks about a
- * quarter of a window after the hit enters. Placing `t` three quarters of the
- * way through the window cancels that bias, and frame times then line up with
- * the audio events that caused them instead of trailing them by ~30 ms. The
- * live path has the same bias (its window ends at `now`, so it runs late) and
- * compensates for it with the HUD's latency trim.
+ * 1.0: the window *ends* at `t`. This is the live geometry and the only one
+ * worth testing against — `AudioGraph.readFrame()` stamps a frame with
+ * `ctx.currentTime`, and an `AnalyserNode` hands back the `fftSize` samples
+ * that arrived before that moment. A fixture that centred its windows, or put
+ * `t` three quarters of the way through, would cancel a latency the live
+ * pipeline actually has and the tests would certify a timing the app never
+ * achieves. The resulting lag is measured instead, and published as
+ * `ONSET_REPORT_LAG_SEC`.
  */
-const T_IN_WINDOW = 0.75;
+const T_IN_WINDOW = 1;
 
 /**
  * `seconds` of metronome at `bpm`: a 5 ms decaying noise burst on every beat,

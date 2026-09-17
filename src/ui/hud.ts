@@ -6,8 +6,9 @@
  */
 
 export interface HudData {
-  bpm?: number;
-  beatConf?: number;
+  /** A number once measured; a placeholder string before anything is known. */
+  bpm?: number | string;
+  beatConf?: number | string;
   key?: string;
   mode?: string;
   tempo?: string;
@@ -141,8 +142,11 @@ export function createHud(root: HTMLElement, onTrim: (ms: number) => void): Hud 
   };
 }
 
-function num(v: number | undefined, digits: number): string | undefined {
-  return v === undefined ? undefined : v.toFixed(digits);
+function num(v: number | string | undefined, digits: number): string | undefined {
+  if (v === undefined) return undefined;
+  // Already a string: a caller's placeholder for "no reading yet". Printed as
+  // it stands, so the row keeps its place instead of appearing out of nowhere.
+  return typeof v === 'string' ? v : v.toFixed(digits);
 }
 
 function isTyping(target: EventTarget | null): boolean {

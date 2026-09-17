@@ -13,6 +13,8 @@ import type { HudData } from '../ui/hud';
 const PHASE_CELLS = 10;
 /** Height of a band meter, in blocks. */
 const BAND_BLOCKS = 8;
+/** What a field reads before there is anything to read. */
+const UNMEASURED = '—';
 
 export function hudRows(snap: AnalysisSnapshot): HudData {
   const { features: f, grid } = snap;
@@ -27,7 +29,17 @@ export function hudRows(snap: AnalysisSnapshot): HudData {
     mood[`b${i}`] = '█'.repeat(Math.round((f.bands[i] ?? 0) * BAND_BLOCKS));
   }
 
-  return { bpm: grid.bpm, beatConf: grid.confidence, tempo: snap.tempo?.marking, mood };
+  // Before the first measurement the grid still holds its default 120 BPM at
+  // zero confidence. Printed, that reads as a reading; a dash says the truth,
+  // which is that nothing has been measured yet.
+  const measured = snap.tempo !== null;
+
+  return {
+    bpm: measured ? grid.bpm : UNMEASURED,
+    beatConf: measured ? grid.confidence : UNMEASURED,
+    tempo: snap.tempo?.marking,
+    mood,
+  };
 }
 
 /** Where we are in the beat, as a mark sliding along a ten-cell track. */

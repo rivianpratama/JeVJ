@@ -58,11 +58,22 @@ describe('estimateTempo', () => {
     expect(e.period).toBeGreaterThan(0);
   });
 
-  it('stays inside the 60-200 BPM search range', () => {
-    for (const bpm of [70, 100, 128, 150, 180]) {
-      const e = estimateTempo(envelopeAt(bpm));
-      expect(e.bpm).toBeGreaterThanOrEqual(60);
-      expect(e.bpm).toBeLessThanOrEqual(200);
+  it('reads each tempo across the range to within 5%', () => {
+    // `expected` is what the estimator should return, not always the tempo
+    // played. 180 BPM is the one the octave rule legitimately folds: an accent
+    // every four beats scores its two-beat lag nearly as high as its one-beat
+    // lag, and half of 180 clears the rule's 90 BPM floor, so it reads ~89.6.
+    // Half-time on a fast track is the documented behaviour, not a miss.
+    for (const { played, expected } of [
+      { played: 70, expected: 70 },
+      { played: 100, expected: 100 },
+      { played: 128, expected: 128 },
+      { played: 150, expected: 150 },
+      { played: 180, expected: 90 },
+    ]) {
+      const e = estimateTempo(envelopeAt(played));
+      expect(e.bpm, `${played} BPM read as ${e.bpm}`).toBeGreaterThanOrEqual(expected * 0.95);
+      expect(e.bpm, `${played} BPM read as ${e.bpm}`).toBeLessThanOrEqual(expected * 1.05);
     }
   });
 });

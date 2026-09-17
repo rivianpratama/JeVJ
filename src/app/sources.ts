@@ -72,6 +72,10 @@ export function createSourceSwitch(h: SourceHandlers): SourceSwitch {
       if (capture) return;
       const g = ensureGraph();
       const tab = await captureTabAudio(g.ctx);
+      // Only after the user has actually picked a tab: a cancelled picker
+      // throws above, and silencing their file for a share that never
+      // happened would be a worse bug than the one this prevents.
+      dropFile();
       // Analyser only: the captured tab is already playing to the speakers.
       g.connectSource(tab.node, false);
       tab.onEnded(() => {

@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { OnsetDetector } from '../../src/analysis/onset';
+import { ONSET_REPORT_LAG_SEC, OnsetDetector } from '../../src/analysis/onset';
 import { beatTimes, clickTrack, framesFrom } from '../helpers/synth';
 
 const FS = 44100;
-const TOLERANCE = 0.02; // 20 ms
+/** How far from a beat a detection may sit and still be *that* beat's. */
+const PAIRING_WINDOW = 0.12;
 
 /** Onset times of `frames`, in order. */
 function onsetsOf(frames: ReturnType<typeof framesFrom>, det = new OnsetDetector()): number[] {
@@ -12,30 +13,56 @@ function onsetsOf(frames: ReturnType<typeof framesFrom>, det = new OnsetDetector
   return out;
 }
 
-/** Greedy one-to-one match of detections to beats within `TOLERANCE`. */
-function matchBeats(onsets: number[], beats: number[]): { matched: number; extra: number } {
+/**
+ * Greedy one-to-one pairing of detections to beats, and the signed lag of each
+ * pair. Positive means the detection came *after* the beat that caused it.
+ */
+function lagsAgainst(onsets: number[], beats: number[]): { lags: number[]; extra: number } {
   const used = new Set<number>();
-  let matched = 0;
+  const lags: number[] = [];
   for (const beat of beats) {
-    const hit = onsets.findIndex((t, i) => !used.has(i) && Math.abs(t - beat) <= TOLERANCE);
-    if (hit >= 0) {
-      used.add(hit);
-      matched += 1;
-    }
+    const hit = onsets.findIndex((t, i) => !used.has(i) && Math.abs(t - beat) <= PAIRING_WINDOW);
+    if (hit < 0) continue;
+    used.add(hit);
+    lags.push(onsets[hit]! - beat);
   }
-  return { matched, extra: onsets.length - used.size };
+  return { lags, extra: onsets.length - used.size };
+}
+
+function stats(xs: number[]): { mean: number; std: number; min: number; max: number } {
+  const mean = xs.reduce((a, b) => a + b, 0) / xs.length;
+  const std = Math.sqrt(xs.reduce((a, b) => a + (b - mean) ** 2, 0) / xs.length);
+  return { mean, std, min: Math.min(...xs), max: Math.max(...xs) };
+}
+
+/** The 120 BPM fixture's detection lags — the basis of both lag tests. */
+function clickTrackLags(): { lags: number[]; extra: number; beats: number[] } {
+  const frames = framesFrom(clickTrack(120, 8, FS), FS);
+  const beats = beatTimes(120, 8);
+  return { ...lagsAgainst(onsetsOf(frames), beats), beats };
 }
 
 describe('OnsetDetector', () => {
-  it('finds the beats of a 120 BPM click track within 20 ms', () => {
-    const frames = framesFrom(clickTrack(120, 8, FS), FS);
-    const beats = beatTimes(120, 8);
+  it('reports every beat of a 120 BPM click track late, and by a steady amount', () => {
+    const { lags, extra, beats } = clickTrackLags();
     expect(beats.length).toBe(16);
+    expect(lags.length).toBe(beats.length);
+    expect(extra).toBe(0);
 
-    const { matched, extra } = matchBeats(onsetsOf(frames), beats);
+    const { std, min, max } = stats(lags);
+    // The analysis window ends at `t`, so a hit is only fully inside the window
+    // some frames after it sounded: detections are late, never early.
+    expect(min).toBeGreaterThanOrEqual(0);
+    expect(max).toBeLessThanOrEqual(0.06);
+    // A constant lag is a latency the cue timeline can subtract; jitter is not.
+    expect(std).toBeLessThan(0.012);
+  });
 
-    expect(matched).toBeGreaterThanOrEqual(14);
-    expect(extra).toBeLessThanOrEqual(2);
+  it('lags by the amount ONSET_REPORT_LAG_SEC promises', () => {
+    const { mean } = stats(clickTrackLags().lags);
+
+    expect(mean).toBeGreaterThan(ONSET_REPORT_LAG_SEC - 0.015);
+    expect(mean).toBeLessThan(ONSET_REPORT_LAG_SEC + 0.015);
   });
 
   it('stays quiet through silence', () => {
