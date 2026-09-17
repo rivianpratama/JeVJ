@@ -13,6 +13,10 @@ declare namespace YT {
     rel?: 0 | 1;
     playsinline?: 0 | 1;
     modestbranding?: 0 | 1;
+    /** 3 hides video annotations; there is no 0. */
+    iv_load_policy?: 1 | 3;
+    /** 0 leaves captions off unless the viewer's account turns them on. */
+    cc_load_policy?: 0 | 1;
     origin?: string;
     start?: number;
   }
