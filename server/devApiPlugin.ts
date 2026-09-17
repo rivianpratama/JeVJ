@@ -1,21 +1,25 @@
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { loadEnv, type Plugin } from 'vite';
 
-import { createJevClient, handleMood, type JevLike } from './moodHandler';
+import { createJevClient } from './moodHandler';
+import { createRoutes } from './routes';
+import { JobRunner } from './ytdlp/job';
+import { nodeSpawner } from './ytdlp/spawn';
 
 /**
- * `/api/mood` while running `vite dev`, standing in for the Vercel function.
+ * The whole API while running `vite dev`, which is the same router `npm start`
+ * serves.
  *
- * The body is read off the Node request by hand rather than with a body
- * parser: it is one small JSON object, and a dependency that only exists in
- * development is a dependency that can disagree with production.
+ * Mounting `createRoutes` rather than one handler is the point: a route that
+ * works in development works after `npm run build` because it is the same
+ * object, and the only thing this file adds is where the environment and the
+ * cache directory come from.
  *
- * The TypeSafe key is read from the Vite env here, on the server side, and
- * handed to the client. It never enters the module graph the browser loads.
+ * The TypeSafe key is read from the Vite env here, on the server side. It
+ * never enters the module graph the browser loads.
  */
-
-/** The biggest body we will read, matching the Vercel function's limit. */
-const MAX_BODY_BYTES = 2048;
-
 export function devApiPlugin(): Plugin {
   return {
     name: 'jevj-dev-api',
@@ -23,53 +27,17 @@ export function devApiPlugin(): Plugin {
     configureServer(server) {
       const env = loadEnv(server.config.mode, process.cwd(), '');
       const apiKey = env['TYPESAFE_API_KEY'] ?? '';
-      let client: JevLike | null = null;
+      const cacheDir = join(process.cwd(), 'cache');
+      mkdirSync(cacheDir, { recursive: true });
 
-      server.middlewares.use('/api/mood', (req, res) => {
-        const send = (status: number, json: unknown): void => {
-          res.statusCode = status;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify(json));
-        };
+      const router = createRoutes({
+        jev: apiKey === '' ? null : createJevClient(apiKey),
+        jobs: new JobRunner(cacheDir, nodeSpawner(), env['YT_DLP'] ?? 'yt-dlp'),
+        cacheDir,
+      });
 
-        if (req.method !== 'POST') {
-          res.setHeader('Allow', 'POST');
-          send(405, { error: 'method not allowed' });
-          return;
-        }
-        if (apiKey === '') {
-          send(500, { error: 'mood service is not configured' });
-          return;
-        }
-
-        let body = '';
-        let aborted = false;
-        req.on('data', (chunk: Buffer | string) => {
-          if (aborted) return;
-          body += chunk;
-          if (body.length > MAX_BODY_BYTES) {
-            aborted = true;
-            send(413, { error: 'payload too large' });
-            req.destroy();
-          }
-        });
-        req.on('end', () => {
-          if (aborted) return;
-          let parsed: unknown;
-          try {
-            parsed = JSON.parse(body === '' ? 'null' : body);
-          } catch {
-            send(400, { error: 'body is not JSON' });
-            return;
-          }
-          client ??= createJevClient(apiKey);
-          void handleMood(parsed, { client }).then(
-            (result) => send(result.status, result.json),
-            // `handleMood` already turns a client failure into a 502; this is
-            // the belt-and-braces case, and it says nothing either.
-            () => send(502, { error: 'mood service unavailable' }),
-          );
-        });
+      server.middlewares.use((req, res, next) => {
+        router.handle(req, res, next);
       });
     },
   };

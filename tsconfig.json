@@ -16,5 +16,5 @@
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src", "server", "api", "tests", "scripts", "vite.config.ts", "vitest.config.ts"]
+  "include": ["src", "server", "tests", "scripts", "vite.config.ts", "vitest.config.ts"]
 }

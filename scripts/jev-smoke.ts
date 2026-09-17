@@ -11,9 +11,9 @@
  * and never appears in the output.
  */
 
-import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+import { readEnvFile } from '../server/env';
 import { createJevClient, handleMood } from '../server/moodHandler';
 import { CORE_IDS, MOOD_QUESTIONS, NOUL_IDS, selectQuestionIds } from '../src/mood/questions';
 import type { MoodInput } from '../src/shared/types';
@@ -51,27 +51,6 @@ const PAYLOAD: MoodInput = {
   barsSinceChange: 14,
   barInPhrase: 14,
 };
-
-/** `KEY=value` lines, quotes stripped, `#` comments and blanks ignored. */
-function readEnvFile(path: string): Record<string, string> {
-  let text = '';
-  try {
-    text = readFileSync(path, 'utf8');
-  } catch {
-    return {};
-  }
-  const out: Record<string, string> = {};
-  for (const line of text.split('\n')) {
-    const trimmed = line.trim();
-    if (trimmed === '' || trimmed.startsWith('#')) continue;
-    const eq = trimmed.indexOf('=');
-    if (eq < 0) continue;
-    const key = trimmed.slice(0, eq).trim();
-    const value = trimmed.slice(eq + 1).trim().replace(/^['"]|['"]$/g, '');
-    if (key !== '') out[key] = value;
-  }
-  return out;
-}
 
 /** One live call with a named question set, printed. */
 async function run(
