@@ -42,30 +42,49 @@ export type AppEvent = (typeof APP_EVENTS)[number];
 /**
  * What every state does with the three events the user can raise anywhere:
  * a link that cued, a link that did not, and a file dropped on the page.
+ *
+ * `capture:started` belongs here too, and for a related reason: the share
+ * picker is open for as long as the user takes over it, and nothing else in the
+ * app is frozen meanwhile. They can paste a link that fails — which lands in
+ * `idle` — or drop a file — which lands in `analyzing` — and then pick a tab.
+ * The answer is a fact about the app whatever state it finds, and a `send` that
+ * threw there left the page capturing audio while the machine said it was doing
+ * nothing. `playing` overrides it below.
  */
 const ANYWHERE = {
   'url:cued': 'loaded',
   'url:failed': 'idle',
   'file:drop': 'analyzing',
+  'capture:started': 'capturing',
 } as const satisfies Partial<Record<AppEvent, AppState>>;
 
 /**
  * The moves. Anything missing from a row is an event that cannot happen there.
  *
- * `capture:started` is legal while already playing because the two arrive in
- * whichever order the browser feels like: pressing play on a cued video starts
- * the player and opens the share picker, and the player usually reports itself
- * playing while the picker is still up.
+ * `capture:started` is legal while already playing, and stays there, because
+ * the two arrive in whichever order the browser feels like: pressing play on a
+ * cued video starts the player and opens the share picker, and the player
+ * usually reports itself playing while the picker is still up.
+ *
+ * `capture:ended` is legal everywhere, because it is the browser's own bar and
+ * the user may press it at any moment — including after a link failed or a
+ * file was dropped, neither of which stops a share that is already running
+ * (only `playFile` does, and only for the file it is about to play). In `idle`
+ * and `analyzing` there is nothing for the app to fall back to, so it stays
+ * where it is; everywhere else a video is still cued and `loaded` is what is
+ * left. This is not a nicety: these events cross an `await` on a share picker
+ * the user can take half a minute over, and a throw in the handler that
+ * receives them leaves the page capturing audio nobody is analysing.
  */
 const TABLE: Record<AppState, Partial<Record<AppEvent, AppState>>> = {
-  idle: { ...ANYWHERE },
-  loaded: { ...ANYWHERE, 'capture:started': 'capturing', play: 'playing', pause: 'loaded' },
+  idle: { ...ANYWHERE, 'capture:ended': 'idle' },
+  loaded: { ...ANYWHERE, 'capture:ended': 'loaded', play: 'playing', pause: 'loaded' },
   // A file being swept can already be paused — the sweep runs before the first
   // sample, and the user may press play into it.
-  analyzing: { ...ANYWHERE, play: 'playing', pause: 'paused' },
-  capturing: { ...ANYWHERE, 'capture:started': 'capturing', 'capture:ended': 'loaded', play: 'playing', pause: 'paused' },
+  analyzing: { ...ANYWHERE, 'capture:ended': 'analyzing', play: 'playing', pause: 'paused' },
+  capturing: { ...ANYWHERE, 'capture:ended': 'loaded', play: 'playing', pause: 'paused' },
   playing: { ...ANYWHERE, 'capture:started': 'playing', 'capture:ended': 'loaded', play: 'playing', pause: 'paused' },
-  paused: { ...ANYWHERE, 'capture:started': 'capturing', 'capture:ended': 'loaded', play: 'playing', pause: 'paused' },
+  paused: { ...ANYWHERE, 'capture:ended': 'loaded', play: 'playing', pause: 'paused' },
 };
 
 /** Where `event` leads from `from`. Throws when it leads nowhere. */

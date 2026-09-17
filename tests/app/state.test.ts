@@ -40,13 +40,34 @@ describe('transition', () => {
     expect(transition('paused', 'capture:ended')).toBe('loaded');
   });
 
+  it('takes the share picker\'s answer from any state at all', () => {
+    // The picker is open for as long as the user takes over it, and everything
+    // else stays live underneath: they can paste a link that fails (→ idle) or
+    // drop a file (→ analyzing) while it is up. The answer still has to land.
+    // A `playing` machine is the one exception and it was already here: the
+    // player usually reports itself playing while the picker is still open.
+    for (const from of APP_STATES) {
+      expect(transition(from, 'capture:started')).toBe(from === 'playing' ? 'playing' : 'capturing');
+    }
+  });
+
+  it('takes the share ending from any state at all', () => {
+    // `capture:ended` comes from the browser's own bar and can arrive whenever
+    // the user presses it — including after a link failed (idle) or a file was
+    // dropped (analyzing), neither of which stops a share that is still
+    // running. Nothing is loaded in those two, so the machine stays where it
+    // is; everywhere else a video is still cued and the app falls back to it.
+    expect(transition('idle', 'capture:ended')).toBe('idle');
+    expect(transition('analyzing', 'capture:ended')).toBe('analyzing');
+    expect(transition('loaded', 'capture:ended')).toBe('loaded');
+    expect(transition('capturing', 'capture:ended')).toBe('loaded');
+    expect(transition('playing', 'capture:ended')).toBe('loaded');
+    expect(transition('paused', 'capture:ended')).toBe('loaded');
+  });
+
   it('throws on a transition that means nothing', () => {
     expect(() => transition('idle', 'play')).toThrow(/idle/);
     expect(() => transition('idle', 'pause')).toThrow(/pause/);
-    expect(() => transition('idle', 'capture:started')).toThrow();
-    expect(() => transition('idle', 'capture:ended')).toThrow();
-    expect(() => transition('loaded', 'capture:ended')).toThrow();
-    expect(() => transition('analyzing', 'capture:started')).toThrow();
   });
 
   it('is defined for every state and event it does not throw on', () => {
