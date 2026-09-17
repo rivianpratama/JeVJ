@@ -18,6 +18,7 @@ function input(over: Partial<TierInput> = {}): TierInput {
     frameMs: 6,
     maxTextureSize: BIG_GPU,
     playing: true,
+    drawn: true,
     reducedMotion: false,
     ...over,
   };
@@ -99,6 +100,44 @@ describe('stepTier', () => {
     expect(s.size).toBe(TIER_LARGE);
     // Only three seconds after the promotion, and it still gets out.
     expect(run(s, 3, { frameMs: 25 })).toBe(TIER_SMALL);
+  });
+
+  it('will not judge a frame the cloud was not drawn in', () => {
+    // A frame where the particles were below the draw threshold is a frame the
+    // cloud cost nothing: it is not evidence that the machine can afford twice
+    // as much of it, and it is not evidence that it cannot.
+    const s = createTierState();
+    expect(run(s, 30, { frameMs: 3, drawn: false })).toBe(TIER_SMALL);
+
+    run(s, 4, { frameMs: 3 });
+    expect(s.size).toBe(TIER_LARGE);
+    // A slow stretch with the cloud out of the mix is somebody else's cost.
+    expect(run(s, 10, { frameMs: 30, drawn: false })).toBe(TIER_LARGE);
+    expect(run(s, 3, { frameMs: 30 })).toBe(TIER_SMALL);
+  });
+
+  it('stays unseeded until it is given a real reading', () => {
+    // The probe reports NaN until it has measured something. Treating that as
+    // 0 ms would seed the average at "instantaneous" and promote every machine
+    // within three seconds of loading.
+    const s = createTierState();
+    expect(run(s, 30, { frameMs: Number.NaN })).toBe(TIER_SMALL);
+    expect(s.seeded).toBe(false);
+    expect(s.fastFor).toBe(0);
+
+    stepTier(s, input({ frameMs: 7 }));
+    expect(s.seeded).toBe(true);
+    expect(s.frameMs).toBeCloseTo(7, 6);
+  });
+
+  it('holds its average across a gap in the readings', () => {
+    // The fallback probe only runs while a decision is live; between windows
+    // `frameMs` is stale or missing, and the average must not drift for it.
+    const s = createTierState();
+    run(s, 1, { frameMs: 12 });
+    const held = s.frameMs;
+    run(s, 5, { frameMs: Number.NaN });
+    expect(s.frameMs).toBeCloseTo(held, 6);
   });
 
   it('smooths the frame time with a half-second time constant', () => {

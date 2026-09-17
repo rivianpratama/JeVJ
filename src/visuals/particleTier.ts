@@ -12,6 +12,10 @@
  * seconds *with music playing* — an idle page is not a measurement of what a
  * track will cost. It is demoted after two seconds it cannot afford.
  *
+ * Only frames that actually paid for the cloud count as evidence: with music
+ * playing, and with the particles above the weight the renderer bothers to draw
+ * them at. A frame that skipped the layer is not a measurement of it.
+ *
  * Three things keep that from becoming a flicker:
  *
  *  - the frame time is smoothed with a half-second time constant, so a single
@@ -72,6 +76,12 @@ export interface TierInput {
   maxTextureSize: number;
   /** Whether there is audio. An idle page does not earn a promotion. */
   playing: boolean;
+  /**
+   * Whether the cloud was actually drawn in the frame this reading came from.
+   * The renderer skips a layer that is out of the mix, and a frame that did not
+   * pay for the particles says nothing about whether they are affordable.
+   */
+  drawn: boolean;
   reducedMotion: boolean;
 }
 
@@ -98,23 +108,34 @@ export function tierLabel(size: number): string {
  */
 export function stepTier(s: TierState, i: TierInput): number {
   const dt = Math.max(0, Math.min(MAX_DT, i.dt));
+  s.sinceChange += dt;
 
-  // A missing or nonsense reading holds the average rather than poisoning it.
-  const sample = Number.isFinite(i.frameMs) && i.frameMs >= 0 ? i.frameMs : s.frameMs;
+  // A missing reading holds the average rather than poisoning it. The probe
+  // reports NaN before it has measured anything and between measurement
+  // windows, and there is no number to put in its place: treating it as 0 ms
+  // would seed the average at "instantaneous" and promote every machine there
+  // is within three seconds of loading.
+  const sample = Number.isFinite(i.frameMs) && i.frameMs >= 0 ? i.frameMs : null;
+  if (sample !== null) {
+    if (!s.seeded) {
+      s.frameMs = sample;
+      s.seeded = true;
+    } else {
+      s.frameMs += (sample - s.frameMs) * (1 - Math.exp(-dt / FRAME_MS_TAU));
+    }
+  }
   if (!s.seeded) {
-    // Seeded, not eased into from zero: an average climbing out of 0 ms reads
-    // as a comfortably fast machine for the first second on every machine.
-    s.frameMs = sample;
-    s.seeded = true;
-  } else {
-    s.frameMs += (sample - s.frameMs) * (1 - Math.exp(-dt / FRAME_MS_TAU));
+    s.fastFor = 0;
+    s.slowFor = 0;
+    return s.size;
   }
 
-  s.sinceChange += dt;
-  s.fastFor = s.frameMs < PROMOTE_MS ? s.fastFor + dt : 0;
-  s.slowFor = s.frameMs > DEMOTE_MS ? s.slowFor + dt : 0;
-  // Silence costs nothing to draw; time spent in it proves nothing.
-  if (!i.playing) s.fastFor = 0;
+  // Evidence only counts from frames that actually paid for the cloud. Silence
+  // costs nothing to draw, and a frame the renderer skipped the particles in
+  // is not a measurement of them in either direction.
+  const counts = i.playing && i.drawn;
+  s.fastFor = counts && s.frameMs < PROMOTE_MS ? s.fastFor + dt : 0;
+  s.slowFor = counts && s.frameMs > DEMOTE_MS ? s.slowFor + dt : 0;
 
   const canPromote =
     i.maxTextureSize >= LARGE_TEXTURE_SIZE &&

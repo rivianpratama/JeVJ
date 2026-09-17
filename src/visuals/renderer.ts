@@ -29,8 +29,13 @@ const MAX_PIXEL_RATIO = 1.5;
 const SCENE_SCALE = 0.5;
 /** The longest step the simulation will take; a backgrounded tab returns huge dt. */
 const MAX_DT = 0.1;
-/** How often a frame is measured with the GPU drained. See `Visuals.frameMs`. */
-const SYNC_EVERY = 30;
+/**
+ * How often the *fallback* probe drains, when it is running at all — every two
+ * seconds, and only inside a measurement window. See `Visuals.frameMs`.
+ */
+const SYNC_EVERY = 120;
+/** How long a measurement window stays open after something changes. */
+export const PROBE_WINDOW_SEC = 5;
 
 /** The slot order the Composer mixes in; matches `RenderParams.weights`. */
 const SLOTS: (keyof RenderParams['weights'])[] = ['ink', 'particles', 'strands', 'relief', 'breath'];
@@ -57,26 +62,35 @@ export interface Visuals {
   resize(): void;
   addScene(s: Scene): void;
   /**
-   * What a frame costs, in milliseconds, GPU included.
+   * What a frame costs on the GPU, in milliseconds, or `NaN` before anything
+   * has been measured.
    *
    * Timing `frame()` with `performance.now()` alone does not measure this:
-   * WebGL calls queue and return, so on this machine the whole chain "costs"
-   * about 2 ms of submission while the GPU is doing five times that. A tier
-   * decision taken on that number would promote every machine ever built,
-   * which is the bug this replaced.
+   * WebGL calls queue and return, so the whole chain "costs" about 2 ms of
+   * submission while the GPU is doing five times that. A tier decision taken on
+   * that number would promote every machine ever built.
    *
-   * So one frame in `SYNC_EVERY` is measured between two drains: the queue is
-   * emptied, the clock started, the frame drawn, the queue emptied again. What
-   * falls out is one frame's GPU cost with nothing else in the pipe. Draining
-   * only at the *end* would charge that frame for every frame still queued
-   * behind it — 250 ms, measured, when thirty frames are submitted back to
-   * back — so both drains matter.
+   * Where `EXT_disjoint_timer_query_webgl2` exists — every Chrome this app has
+   * been run on — the frame is wrapped in a `TIME_ELAPSED_EXT` query and the
+   * result is collected on a *later* frame, when the driver says it is ready.
+   * Nothing blocks, one query is in flight at a time, and a result the driver
+   * flags as disjoint (a clock change, a context switch mid-frame) is thrown
+   * away rather than believed.
    *
-   * The drain is a one-pixel `readPixels`, which cannot return until the GPU
-   * has produced the pixel. `finish()` is not enough: it returns here in a
-   * fifth of a millisecond with the queue plainly still full.
+   * Without the extension there is only one honest option left, and it is
+   * expensive: drain the pipe, start the clock, draw, drain again. Draining
+   * only at the end would charge one frame for every frame queued behind it —
+   * 250 ms, measured, with thirty frames in flight. That probe runs once every
+   * two seconds and only while a decision is actually live, so a settled page
+   * never pays for it at all.
    */
   frameMs(): number;
+  /**
+   * Open a measurement window for `seconds`: something changed and the frame
+   * cost is worth knowing again. Only the fallback probe consults it — a timer
+   * query is free enough to leave running.
+   */
+  requestFrameTiming(seconds: number): void;
   dispose(): void;
 }
 
@@ -104,11 +118,43 @@ export function createVisuals(canvas: HTMLCanvasElement): Visuals {
   const textures: (THREE.Texture | null)[] = [null, null, null, null, null];
   const weights: number[] = [0, 0, 0, 0, 0];
 
-  /** The last GPU-inclusive frame cost. Read by the particle tier, nothing else. */
-  let lastFrameMs = 0;
+  /**
+   * The last GPU frame cost. Read by the particle tier, nothing else. `NaN`
+   * until something has actually been measured — there is no sensible number
+   * to stand in, and a zero would read as an infinitely fast machine.
+   */
+  let lastFrameMs = Number.NaN;
   let sinceSync = 0;
-  /** The one pixel the frame-time probe reads back. Allocated once. */
+  /** Seconds of fallback probing left; see `requestFrameTiming`. */
+  let probeWindow = 0;
+  /** The one pixel the fallback probe reads back. Allocated once. */
   const syncPixel = new Uint8Array(4);
+  /** A 1×1 target of our own, so the probe never touches the presented frame. */
+  let probeTarget: THREE.WebGLRenderTarget | null = null;
+
+  // three has been WebGL2-only since r163, so the union the types still carry
+  // is not a case that can occur; the query calls below are all core WebGL2.
+  const gl = renderer.getContext() as WebGL2RenderingContext;
+  /**
+   * The GPU's own stopwatch, where the driver exposes one. `TIME_ELAPSED_EXT`
+   * and `GPU_DISJOINT_EXT` come from the extension object; everything else
+   * about queries is core WebGL2.
+   */
+  const timer =
+    typeof gl.createQuery === 'function'
+      ? (gl.getExtension('EXT_disjoint_timer_query_webgl2') as {
+          TIME_ELAPSED_EXT: number;
+          GPU_DISJOINT_EXT: number;
+        } | null)
+      : null;
+  /** The one query in flight, if any. */
+  let pending: WebGLQuery | null = null;
+
+  console.info(
+    timer !== null
+      ? 'JeVJ: GPU frame timing via EXT_disjoint_timer_query_webgl2'
+      : 'JeVJ: GPU frame timing via periodic readback (no timer query extension)',
+  );
 
   const sceneSize = (): [number, number] => {
     const pr = renderer.getPixelRatio();
@@ -129,6 +175,9 @@ export function createVisuals(canvas: HTMLCanvasElement): Visuals {
     const h = Math.max(1, canvas.clientHeight || window.innerHeight);
     const dpr = Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
     if (w === width && h === height && dpr === pixelRatio) return;
+    // Every buffer in the chain is about to change size; what a frame cost at
+    // the old one is not what it will cost at the new one.
+    probeWindow = Math.max(probeWindow, PROBE_WINDOW_SEC);
     width = w;
     height = h;
     pixelRatio = dpr;
@@ -139,10 +188,41 @@ export function createVisuals(canvas: HTMLCanvasElement): Visuals {
     for (const s of scenes) s.resize(sw, sh);
   }
 
-  /** Wait for the GPU to catch up, by asking it for something it must finish. */
+  /**
+   * Wait for the GPU to catch up, by asking it for something it must finish.
+   *
+   * The read comes off a 1×1 target of our own rather than the presented
+   * backbuffer: reading the frame the compositor is about to show drags the
+   * compositor into the stall as well.
+   */
   function drain(): void {
-    const gl = renderer.getContext();
-    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, syncPixel);
+    if (probeTarget === null) {
+      probeTarget = new THREE.WebGLRenderTarget(1, 1, {
+        depthBuffer: false,
+        stencilBuffer: false,
+      });
+      // Give three a reason to allocate it before anything reads it back.
+      renderer.setRenderTarget(probeTarget);
+      renderer.clear();
+      renderer.setRenderTarget(null);
+    }
+    renderer.readRenderTargetPixels(probeTarget, 0, 0, 1, 1, syncPixel);
+  }
+
+  /** Collect a finished timer query. Never blocks: it asks, it does not wait. */
+  function collectTimer(): void {
+    if (timer === null || pending === null) return;
+    // A disjoint means the GPU's clock was interrupted during *some* query, so
+    // whatever is in flight is not a measurement of anything.
+    if (gl.getParameter(timer.GPU_DISJOINT_EXT) === true) {
+      gl.deleteQuery(pending);
+      pending = null;
+      return;
+    }
+    if (gl.getQueryParameter(pending, gl.QUERY_RESULT_AVAILABLE) !== true) return;
+    lastFrameMs = (gl.getQueryParameter(pending, gl.QUERY_RESULT) as number) / 1e6;
+    gl.deleteQuery(pending);
+    pending = null;
   }
 
   const observer = new ResizeObserver(() => resize());
@@ -157,14 +237,26 @@ export function createVisuals(canvas: HTMLCanvasElement): Visuals {
 
     frame(dt: number, p: RenderParams, fast: FastFrame, time: number): void {
       const step = Math.max(0, Math.min(MAX_DT, dt));
+      probeWindow = Math.max(0, probeWindow - step);
 
-      // Twice a second, take a clean reading: see `Visuals.frameMs`.
-      const measure = ++sinceSync >= SYNC_EVERY;
-      if (measure) {
+      // Whatever the last query measured, if the driver has it ready by now.
+      collectTimer();
+
+      let query: WebGLQuery | null = null;
+      if (timer !== null && pending === null) {
+        query = gl.createQuery();
+        if (query !== null) gl.beginQuery(timer.TIME_ELAPSED_EXT, query);
+      }
+
+      // The fallback: drain, time, drain. Only without the extension, only
+      // inside a window, and only every other second even then.
+      sinceSync++;
+      const drained = timer === null && probeWindow > 0 && sinceSync >= SYNC_EVERY;
+      if (drained) {
         sinceSync = 0;
         drain();
       }
-      const startedAt = performance.now();
+      const startedAt = drained ? performance.now() : 0;
 
       for (let i = 0; i < SLOTS.length; i++) {
         textures[i] = null;
@@ -186,7 +278,11 @@ export function createVisuals(canvas: HTMLCanvasElement): Visuals {
 
       composer.render(textures, weights, p, fast, time);
 
-      if (measure) {
+      if (query !== null && timer !== null) {
+        gl.endQuery(timer.TIME_ELAPSED_EXT);
+        pending = query;
+      }
+      if (drained) {
         drain();
         lastFrameMs = performance.now() - startedAt;
       }
@@ -194,10 +290,18 @@ export function createVisuals(canvas: HTMLCanvasElement): Visuals {
 
     frameMs: () => lastFrameMs,
 
+    requestFrameTiming(seconds: number): void {
+      probeWindow = Math.max(probeWindow, Math.max(0, seconds));
+    },
+
     resize,
 
     dispose(): void {
       observer.disconnect();
+      if (pending !== null) gl.deleteQuery(pending);
+      pending = null;
+      probeTarget?.dispose();
+      probeTarget = null;
       for (const s of scenes) s.dispose();
       scenes.length = 0;
       composer.dispose();

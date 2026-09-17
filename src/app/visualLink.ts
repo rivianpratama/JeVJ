@@ -31,7 +31,7 @@ import { InkFeedback } from '../visuals/scenes/InkFeedback';
 import { ParticleField } from '../visuals/scenes/ParticleField';
 import { Strands } from '../visuals/scenes/Strands';
 import { createFrameClock } from './frameClock';
-import { createVisuals, type Visuals } from '../visuals/renderer';
+import { PROBE_WINDOW_SEC, createVisuals, drawsAtWeight, type Visuals } from '../visuals/renderer';
 import { mergeMood, type MoodSource } from './effectiveMood';
 import type { AnalysisLoop } from './analysisLoop';
 import type { CueReader } from './cueReader';
@@ -39,6 +39,12 @@ import type { MoodVector } from '../shared/types';
 
 /** How fast a downbeat's flash fades, per the brief. */
 const DOWNBEAT_TAU = 0.3;
+/**
+ * How long the frame cost is worth measuring once audio starts. The first
+ * seconds of a track are when the particle tier makes its decision, and on a
+ * machine without a GPU timer that is the only stretch the fallback probe runs.
+ */
+const PROBE_ON_AUDIO_SEC = 10;
 /** The idle clock: one beat a second, four to the bar. */
 const IDLE_BPM = 60;
 const IDLE_BEATS_PER_BAR = 4;
@@ -114,6 +120,16 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
   let handle = 0;
   /** Audio time of the last downbeat seen, so each one is counted once. */
   let lastDownbeatAt = Number.NEGATIVE_INFINITY;
+  /** Whether the last frame had audio, so the start of it can be noticed. */
+  let wasPlaying = false;
+
+  // A tab coming back from the background has been throttled, composited
+  // differently, possibly moved to another GPU. Measure again before trusting
+  // anything about what a frame costs.
+  const onVisibility = (): void => {
+    if (!document.hidden) visuals.requestFrameTiming(PROBE_WINDOW_SEC);
+  };
+  document.addEventListener('visibilitychange', onVisibility);
 
   function step(): void {
     handle = requestAnimationFrame(step);
@@ -151,10 +167,21 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
     }
 
     const reduced = reduceQuery?.matches === true;
-    // What the *last* frame cost decides how much work this one is given. The
-    // cloud only earns a promotion while there is audio: an idle page draws
-    // almost nothing and would promote every machine within three seconds.
-    particles.tune(visuals.frameMs(), tick.step, snap !== null, reduced);
+    const playing = snap !== null;
+    if (playing && !wasPlaying) visuals.requestFrameTiming(PROBE_ON_AUDIO_SEC);
+    wasPlaying = playing;
+
+    // What the *last* frame cost decides how much work this one is given, and
+    // `params` is that same frame's mix — so the cost and the question "was the
+    // cloud even in it" come from one frame rather than two. The cloud only
+    // earns a promotion while there is audio: an idle page draws almost nothing
+    // and would promote every machine within three seconds.
+    const drawn = params !== null && drawsAtWeight(params.weights.particles);
+    if (particles.tune(visuals.frameMs(), tick.step, playing, drawn, reduced)) {
+      // The cloud is a different size now; what a frame cost a moment ago is
+      // not what it costs from here.
+      visuals.requestFrameTiming(PROBE_WINDOW_SEC);
+    }
 
     params = direct(director, mood, fast, tick.step, params, reduced);
     visuals.frame(tick.step, params, fast, tick.time);
@@ -188,6 +215,7 @@ export function createVisualLink(o: VisualLinkOptions): VisualLink {
     dispose(): void {
       if (handle !== 0) cancelAnimationFrame(handle);
       handle = 0;
+      document.removeEventListener('visibilitychange', onVisibility);
       visuals.dispose();
     },
     mood: () => mood,

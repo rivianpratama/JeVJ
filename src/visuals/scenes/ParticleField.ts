@@ -105,6 +105,8 @@ export class ParticleField implements Scene {
   private wasExploding = false;
   /** The camera's outward lurch, decaying. */
   private snap = 0;
+  /** The orbit angle, integrated rather than evaluated. See `update`. */
+  private theta = 0;
 
   constructor() {
     this.material = new THREE.ShaderMaterial({
@@ -141,20 +143,34 @@ export class ParticleField implements Scene {
   }
 
   /**
-   * Hand the scene what the frame is costing. It decides the tier from that and
+   * Hand the scene what the last frame cost. It decides the tier from that and
    * rebuilds when the answer changes; see `particleTier.ts` for the rules.
+   *
+   * `drawn` is whether the cloud was actually in that frame — the renderer
+   * skips a layer that is out of the mix, and a frame that did not pay for the
+   * particles is not evidence about them. Returns whether the tier changed, so
+   * the caller can ask for the frame cost to be measured again.
    */
-  tune(frameMs: number, dt: number, playing: boolean, reducedMotion: boolean): void {
+  tune(
+    frameMs: number,
+    dt: number,
+    playing: boolean,
+    drawn: boolean,
+    reducedMotion: boolean,
+  ): boolean {
     this.reducedMotion = reducedMotion;
-    if (this.disabled || this.renderer === null) return;
+    if (this.disabled || this.renderer === null) return false;
     const want = stepTier(this.tier, {
       dt,
       frameMs,
       maxTextureSize: this.maxTextureSize,
       playing,
+      drawn,
       reducedMotion,
     });
-    if (want !== this.size) this.build(want, true);
+    if (want === this.size) return false;
+    this.build(want, true);
+    return true;
   }
 
   /** What the HUD prints: how many points are in the cloud right now. */
@@ -306,11 +322,18 @@ export class ParticleField implements Scene {
 
     // The camera: a slow orbit that never repeats on a round number, pulled in
     // by a build and knocked out by a hit.
-    // Reduced motion halves the orbit rate and stills the vertical bob — the
-    // dolly is already switched off by the director, through `dollySnap`.
-    const orbitRate = this.reducedMotion ? 0.5 : 1;
+    // The orbit is integrated from its own rate rather than evaluated from the
+    // clock. They describe the same path — 0.05 + 0.3·0.02·cos(t·0.02) is the
+    // derivative of the brief's θ = t·0.05 + 0.3·sin(t·0.02) — but a rate can
+    // be halved for reduced motion without the camera jumping to wherever the
+    // halved *angle* happens to point the moment the setting is toggled.
+    //
+    // Reduced motion also stills the vertical bob. The dolly is already
+    // switched off by the director, through `dollySnap`.
+    const orbitRate = (0.05 + 0.006 * Math.cos(time * 0.02)) * (this.reducedMotion ? 0.5 : 1);
+    this.theta += orbitRate * dt;
     this.snap = Math.max(this.snap - dt / SNAP_DECAY, p.dollySnap * fast.impact);
-    const theta = orbitRate * (time * 0.05 + 0.3 * Math.sin(time * 0.02));
+    const theta = this.theta;
     const radius = CAMERA_Z - BUILD_DOLLY * fast.build + this.snap;
     this.camera.position.set(
       Math.sin(theta) * radius,
