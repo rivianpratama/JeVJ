@@ -132,7 +132,7 @@ export function validateMoodInput(x: unknown): { ok: true; value: MoodInput } | 
 export function validateMoodVector(x: unknown): { ok: true; value: MoodVector } | { ok: false; error: string };
 export const NEUTRAL_MOOD: MoodVector; // all scores 0.5, nouls 0.2, genre 'pop', section 'verse_steady', motion 'flow', beatsToChange 'none', preDropStyle 'none', impact 0.3, dropImminent 0.1, confidence 0
 ```
-Validation rules: every numeric field finite and within 0..1 except `bpm` (0..300), `slope4/slope8` (−60..60), `onsetRatio` (0..20), `centroidSlope` (−1..1), `barsSinceChange` (0..999), `barInPhrase` (0..31), `crest` (0..1); `bands` exactly 8 ints 0..9; enum fields must be members of the const arrays; `pos` matches `/^\d+:\d{2}\/(\d+:\d{2}|live)$/`; `key` matches `/^([A-G][#b]?|\?)$/`.
+Validation rules: every numeric field finite and within 0..1 except `bpm` (0..300), `slope4/slope8` (−60..60), `onsetRatio` (0..20), `onsetsPerSec` (0..20), `centroidSlope` (−1..1), `barsSinceChange` (0..999), `barInPhrase` (0..31), `crest` (0..1); `bands` exactly 8 ints 0..9; enum fields must be members of the const arrays; `pos` matches `/^\d+:\d{2}\/(\d+:\d{2}|live)$/`; `key` matches `/^([A-G][#b]?|\?)$/`.
 
 ```ts
 // src/shared/tokens.ts
