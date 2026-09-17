@@ -66,6 +66,7 @@ function stubFrame(): FrameFeatures {
     chroma: chromaFsMinor(),
     sub: 0.8,
     pitch: 0.2,
+    f0: 220,
     formant: 0.15,
   };
 }

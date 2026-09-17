@@ -42,6 +42,7 @@ function snapshot(t: number): AnalysisSnapshot {
       chroma: new Float32Array(12).fill(1 / 12),
       sub: 0.5,
       pitch: 0.2,
+      f0: 220,
       formant: 0.15,
     },
     onset: 0,

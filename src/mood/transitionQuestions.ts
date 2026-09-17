@@ -25,8 +25,8 @@
  * client bundle reads these shapes and the SDK will not load in a browser.
  */
 
-import { MOOD_PREAMBLE, type ChoiceQuestion, type NoulQuestion, type Question, type ScoreQuestion } from './questions';
-import type { TransitionInput } from '../shared/types';
+import { MOOD_PREAMBLE, type ChoiceQuestion, type Entry, type NoulQuestion, type Question, type ScoreQuestion } from './questions';
+import type { TransitionInput, TransitionKind } from '../shared/types';
 
 /** The most candidates one request may carry. */
 export const TRANSITION_BATCH = 4;
@@ -51,19 +51,34 @@ export const TRANSITION_PREAMBLE: Record<string, string> = {
   harshDelta: '-1..1 change in how abrasive it is',
 };
 
-/** The choice rubric, in the order `TRANSITION_KINDS` declares. */
-const KIND_CRITERIA = {
-  drop: { what: 'the payoff: full energy slams in after a build or gap' },
+/**
+ * The choice rubric, in the order `TRANSITION_KINDS` declares.
+ *
+ * Two labels carry more than a sentence, and they are the two the first real
+ * track confused: a screamed climax is loud, sudden and lands after a build,
+ * which is `drop`'s description word for word, so `drop` now says what it is
+ * *not* for and `scream_peak` lists the measurements that pick it out. The
+ * extra keys are part of the prompt — the model reads the whole criterion
+ * object — so this is a wording change, not a comment.
+ */
+const KIND_CRITERIA: Record<TransitionKind, Entry> = {
+  drop: {
+    what: 'the payoff: full energy slams in after a build or gap',
+    not_for: 'a harsh, screamed or distorted climax; that is scream_peak',
+  },
   build_start: { what: 'energy begins rising toward something' },
   breakdown: { what: 'energy is pulled away after a peak, stripped down' },
   break_silence: { what: 'a sudden hole: near-silence or a filter cut' },
   vocal_entry: { what: 'a voice enters or becomes the focus' },
-  scream_peak: { what: 'harsh, screamed or distorted climax' },
+  scream_peak: {
+    what: 'harsh, screamed or distorted climax',
+    signals: ['harsh well above 0.6', 'noise high', 'very bright', 'loud'],
+  },
   quiet_fall: { what: 'gentle fall into a quiet passage' },
   tempo_change: { what: 'the pulse speeds up or slows down' },
   key_change: { what: 'the harmony moves to a new key' },
   none: { what: 'no meaningful change here' },
-} as const;
+};
 
 /** The five levels of `intensity`, lowest first. */
 export const INTENSITY_LEVELS = [

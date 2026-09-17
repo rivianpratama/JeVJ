@@ -86,6 +86,28 @@ describe('vocal', () => {
     }
   });
 
+  it('halves a reading whose fundamental never moves', () => {
+    // A synth pad holding one note: the pitch is a number a machine chose, and
+    // it does not wander the way a throat does.
+    expect(steadyVocal(() => 200)).toBeCloseTo(0.5, 3);
+  });
+
+  it('leaves a wavering fundamental at full strength', () => {
+    // Half a percent of vibrato, five times a second — a singer's.
+    expect(steadyVocal((t) => 200 * (1 + 0.005 * Math.sin(2 * Math.PI * 5 * t)))).toBeCloseTo(1, 3);
+  });
+
+  it('does not call a frame with no fundamental stable', () => {
+    expect(steadyVocal(() => 0)).toBeCloseTo(1, 3);
+  });
+
+  it('waits for half a second of pitch before it judges stability', () => {
+    const detector = new VocalDetector();
+    for (let i = 0; i < 6; i++) detector.push(frameWith(1, 1, 200, i * 0.02), 0.02);
+    // A tenth of a second of a held note is a held note, not a synth.
+    expect(detector.score()).toBeCloseTo(1, 3);
+  });
+
   it('starts at nothing and takes about half a second to follow a change', () => {
     const detector = new VocalDetector();
     expect(detector.score()).toBe(0);
@@ -129,10 +151,25 @@ describe('harshness', () => {
   });
 });
 
+/**
+ * A fully vocal reading held for two seconds, with `f0Of` choosing the
+ * fundamental of each frame: the steady-state score, after the smoothing has
+ * settled and the stability window is full.
+ */
+function steadyVocal(f0Of: (t: number) => number): number {
+  const detector = new VocalDetector();
+  const dt = 0.02;
+  for (let i = 0; i < 100; i++) {
+    const t = i * dt;
+    detector.push(frameWith(1, 1, f0Of(t), t), dt);
+  }
+  return detector.score();
+}
+
 /** A frame carrying nothing but the two measurements `vocal` is made of. */
-function frameWith(pitch: number, formant: number): FrameFeatures {
+function frameWith(pitch: number, formant: number, f0 = 0, t = 0): FrameFeatures {
   return {
-    t: 0,
+    t,
     rms: 0.1,
     db: -20,
     bands: new Float32Array(8),
@@ -145,6 +182,7 @@ function frameWith(pitch: number, formant: number): FrameFeatures {
     chroma: new Float32Array(12),
     sub: 0.1,
     pitch,
+    f0,
     formant,
   };
 }

@@ -128,6 +128,12 @@ export class TimedRing {
     if (this.count < this.ts.length) this.count += 1;
   }
 
+  /** Forget everything: the run of samples this held has ended. */
+  clear(): void {
+    this.head = 0;
+    this.count = 0;
+  }
+
   timeAt(i: number): number {
     return this.ts[this.slot(i)] as number;
   }

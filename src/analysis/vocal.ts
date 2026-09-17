@@ -17,7 +17,9 @@
  *   region (`formant`). Either alone is ambiguous — a cello is harmonic, a
  *   hi-hat is full of 1-3 kHz — and the product is not: a sound that is both
  *   is a throat. It is then smoothed over half a second, because a voice is a
- *   thing that is *present*, not a thing that happens on one frame.
+ *   thing that is *present*, not a thing that happens on one frame — and
+ *   halved when the fundamental under it never moves, because that is a
+ *   synthesizer holding a note rather than a person singing one.
  * - **harsh** is loudness, brightness and noisiness read together, and then
  *   halved unless the music is actually striking. The discount is what stops a
  *   loud bright pad — a supersaw, a cymbal wash, an orchestral swell — from
@@ -27,6 +29,7 @@
  * Pure: frames and readings in, numbers out. No clock of its own.
  */
 
+import { TimedRing } from './ring';
 import type { Attack, FrameFeatures } from '../shared/types';
 
 /**
@@ -50,6 +53,37 @@ const FORMANT_FULL = 0.14;
 const VOCAL_TAU_SEC = 0.5;
 /** A tab left in the background must not be smoothed through. */
 const MAX_DT = 1;
+
+/**
+ * How long the fundamental is watched, and how still it has to hold to be a
+ * machine rather than a throat.
+ *
+ * The first real track this ran on called a synth lead a voice: a saw wave
+ * through a formant-ish filter is harmonic and has energy at 1-3 kHz, which is
+ * both halves of the measurement above. What it does not have is a *body*. A
+ * sung note is held by muscles that cannot hold anything perfectly — a singer's
+ * vibrato is around half a percent either way, and even a deliberately flat
+ * note drifts several times that — while an oscillator is given a number and
+ * sits on it. So half a second of fundamentals with a relative standard
+ * deviation under 0.2% is not a voice, and the reading is halved rather than
+ * zeroed: it is evidence, not proof, and a vocoder is a real case.
+ *
+ * 0.5 s is the same window the smoothing uses, and for the same reason:
+ * shorter than a phrase, longer than a note's attack.
+ */
+const STABILITY_WINDOW_SEC = 0.5;
+const STABLE_REL_STD = 0.002;
+/** What is left of `vocal` when the fundamental never moves. */
+const STATIC_PITCH_DISCOUNT = 0.5;
+/**
+ * The least of that window that has to be filled before stillness means
+ * anything. Three frames of a note are three frames of a note; only a span
+ * long enough to hold a vibrato cycle can say one is missing.
+ */
+const MIN_STABILITY_SPAN_SEC = 0.4;
+const MIN_STABILITY_SAMPLES = 8;
+/** Frames in the window at any plausible rate, with room to spare. */
+const F0_HISTORY = 128;
 
 /** How `harsh` weights its three readings, as the plan specifies. */
 const W_BRIGHT = 0.4;
@@ -80,9 +114,20 @@ export function vocalOfFrame(f: FrameFeatures): number {
 export class VocalDetector {
   private value = 0;
   private started = false;
+  /** The fundamentals of the recent past, for the stability discount. */
+  private readonly f0s = new TimedRing(F0_HISTORY);
+  /** The newest frame's instant, which the window is measured back from. */
+  private now = 0;
 
   /** One frame and the seconds since the previous one. */
   push(f: FrameFeatures, dt: number): void {
+    this.now = f.t;
+    // An unpitched frame is not a still one: it ends the run rather than
+    // extending it, which is what keeps a silence between two held notes from
+    // reading as one very steady note.
+    if (f.f0 > 0) this.f0s.push(f.t, f.f0);
+    else this.f0s.clear();
+
     const target = vocalOfFrame(f);
     if (!this.started) {
       this.started = true;
@@ -95,7 +140,30 @@ export class VocalDetector {
 
   /** 0..1: how much of a voice is present. 0 before the first frame. */
   score(): number {
-    return this.value;
+    return this.staticPitch() ? this.value * STATIC_PITCH_DISCOUNT : this.value;
+  }
+
+  /**
+   * Whether the fundamental has held too still over the window to be a throat.
+   * False whenever there is not enough of a window to say so.
+   */
+  private staticPitch(): boolean {
+    const from = this.now - STABILITY_WINDOW_SEC;
+    const start = this.f0s.indexAtOrAfter(from);
+    const n = this.f0s.length - start;
+    if (n < MIN_STABILITY_SAMPLES) return false;
+    if (this.f0s.timeAt(this.f0s.length - 1) - this.f0s.timeAt(start) < MIN_STABILITY_SPAN_SEC) {
+      return false;
+    }
+
+    const mean = this.f0s.mean(from, this.now);
+    if (!(mean > 0)) return false;
+    let sum = 0;
+    for (let i = start; i < this.f0s.length; i++) {
+      const d = this.f0s.valueAt(i) - mean;
+      sum += d * d;
+    }
+    return Math.sqrt(sum / n) / mean < STABLE_REL_STD;
   }
 }
 

@@ -24,7 +24,10 @@
  * (`t0`..`t3`), the answers come back split, and the batches go out
  * sequentially for the same reason pass 1's calls do — fifteen parallel
  * requests are fifteen chances to be rate limited, and nothing can start
- * before the last of them anyway.
+ * before the last of them anyway. A batch that fails is asked once more two
+ * seconds later, and a batch that fails twice is written off — those four
+ * moments are missing from the track, the transcript says why, and the bar
+ * still reaches 100%.
  */
 
 import { analyzeOffline, type OfflineSample, type TransitionCandidate } from '../timeline/offlineAnalyzer';
@@ -56,12 +59,19 @@ const GAP_DEPTH_DB = 12;
 const MAX_GAP_SEC = 8;
 /** A sane bar when the grid never locked. */
 const FALLBACK_BAR_SEC = 2;
+/** How long a failed batch waits before its one retry. */
+const RETRY_DELAY_MS = 2000;
 
 export interface TrackAnalysisDeps {
   /** One passage. Pass 1 calls this once per segment. */
   askJev: (input: MoodInput) => Promise<MoodVector>;
-  /** Up to four moments at once, answered in the order they were sent. */
+  /**
+   * Up to four moments at once, answered in the order they were sent. A throw
+   * is a batch that did not happen; see `RETRY_DELAY_MS`.
+   */
   askTransition: (inputs: TransitionInput[]) => Promise<TransitionVerdict[]>;
+  /** The wait before a retry. A test passes one that does not actually wait. */
+  sleep?: (ms: number) => Promise<void>;
   title?: string;
   videoId?: string;
 }
@@ -114,7 +124,8 @@ export async function analyzeTrack(
   for (let b = 0; b * TRANSITION_BATCH < inputs.length; b++) {
     const from = b * TRANSITION_BATCH;
     const batch = inputs.slice(from, from + TRANSITION_BATCH);
-    const verdicts = await deps.askTransition(batch);
+    const attempt = await askTwice(deps, batch);
+    const verdicts = attempt.verdicts;
 
     batch.forEach((input, i) => {
       const candidate = offline.candidates[from + i]!;
@@ -132,6 +143,16 @@ export async function analyzeTrack(
         returnT: returnAfter(offline.candidates, candidate),
       });
     });
+    // A batch nobody answered is four moments the track will not have, and the
+    // transcript has to say so: the columns in Task 16 would otherwise show
+    // four questions and no replies with no explanation of why.
+    if (attempt.error !== undefined) {
+      log.push({
+        t: offline.candidates[from]!.t,
+        dir: 'res',
+        json: JSON.stringify({ error: attempt.error }),
+      });
+    }
     progress(PASS_ONE_END + ((1 - PASS_ONE_END) * (b + 1)) / batches);
   }
 
@@ -146,6 +167,39 @@ export async function analyzeTrack(
   };
   if (deps.videoId !== undefined) analysis.videoId = deps.videoId;
   return analysis;
+}
+
+/**
+ * One batch, asked twice if it has to be.
+ *
+ * Most of what goes wrong with a batch goes wrong once: a rate limit, a
+ * connection that dropped, a gateway that was restarting. Two seconds later it
+ * usually works, and a batch is four moments of the track, so it is worth the
+ * wait. What is not worth anything is a third try: a request that failed twice
+ * two seconds apart is failing for a reason that is still there, and the other
+ * twelve batches are still waiting. So the second failure gives up on *these*
+ * four candidates and says why, and the sweep carries on to the next batch.
+ */
+async function askTwice(
+  deps: TrackAnalysisDeps,
+  batch: TransitionInput[],
+): Promise<{ verdicts: TransitionVerdict[]; error?: string }> {
+  try {
+    return { verdicts: await deps.askTransition(batch) };
+  } catch (first) {
+    await (deps.sleep ?? sleep)(RETRY_DELAY_MS);
+    try {
+      return { verdicts: await deps.askTransition(batch) };
+    } catch (second) {
+      return { verdicts: [], error: message(second) };
+    }
+  }
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
+
+function message(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /** `analyzeOffline`'s own 0..1 on this pass's bar: sweep, then the calls. */
@@ -395,10 +449,13 @@ function monotone(onProgress: ((p: number) => void) | undefined): (p: number) =>
  * The two callbacks, wired to the local API.
  *
  * Built like `MoodClient`'s fetch path and for the same reason: the key lives
- * on the server, so the browser asks our own routes and never sees it. A
- * failed call is not an exception here — a track whose third batch timed out
- * is a track with slightly fewer moments in it, not a track that cannot be
- * played — so both fall back rather than throwing.
+ * on the server, so the browser asks our own routes and never sees it.
+ *
+ * The two differ in what they do with a failure, because the caller does. A
+ * passage nobody judged still has to have a mood, and a neutral one is the
+ * honest answer, so `askJev` falls back. A batch of moments nobody judged is
+ * worth asking about a second time, and only a throw tells `askTwice` that
+ * there is anything to retry — so `askTransition` throws.
  */
 export function httpDeps(
   o: { fetchFn?: typeof fetch; title?: string; videoId?: string } = {},
@@ -428,13 +485,10 @@ export function httpDeps(
       }
     },
     askTransition: async (inputs) => {
-      try {
-        const json = await post('/api/transition', { transitions: inputs });
-        const verdicts = (json as { verdicts?: TransitionVerdict[] } | null)?.verdicts;
-        return Array.isArray(verdicts) ? verdicts : [];
-      } catch {
-        return [];
-      }
+      const json = await post('/api/transition', { transitions: inputs });
+      const verdicts = (json as { verdicts?: TransitionVerdict[] } | null)?.verdicts;
+      if (!Array.isArray(verdicts)) throw new Error('the transition call did not answer');
+      return verdicts;
     },
   };
 }

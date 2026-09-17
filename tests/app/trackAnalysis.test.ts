@@ -242,6 +242,65 @@ describe('analyzeTrack on the song fixture', () => {
   }, 60_000);
 });
 
+describe('a transition batch that fails', () => {
+  /** The scripted model, with the first `failures` calls throwing instead. */
+  function flaky(failures: number): {
+    deps: TrackAnalysisDeps;
+    waits: number[];
+    calls: () => number;
+  } {
+    const jev = scriptedJev();
+    const waits: number[] = [];
+    let calls = 0;
+    return {
+      waits,
+      calls: () => calls,
+      deps: {
+        ...jev,
+        askTransition: async (inputs) => {
+          calls += 1;
+          if (calls <= failures) throw new Error(`gateway timeout ${calls}`);
+          return jev.askTransition(inputs);
+        },
+        sleep: async (ms) => {
+          waits.push(ms);
+        },
+      },
+    };
+  }
+
+  it('asks again two seconds later, and keeps the answers', async () => {
+    const { deps, waits, calls } = flaky(1);
+    const expected = (await run()).analysis;
+    const analysis = await analyzeTrack(fixture.signal, SR, deps);
+
+    expect(waits).toEqual([2000]);
+    expect(calls()).toBe(Math.ceil(expected.transitions.length / 4) + 1);
+    expect(analysis.transitions).toHaveLength(expected.transitions.length);
+    expect(analysis.log.some((e) => e.json.includes('"error"'))).toBe(false);
+  }, 60_000);
+
+  it('skips the candidates it could not ask about, and still reaches 100%', async () => {
+    const { deps, waits } = flaky(2);
+    const expected = (await run()).analysis;
+    const progress: number[] = [];
+    const analysis = await analyzeTrack(fixture.signal, SR, deps, (p) => progress.push(p));
+
+    expect(waits).toEqual([2000]);
+    expect(progress[progress.length - 1]).toBe(1);
+    // The first batch is four candidates, and they are gone; everything after
+    // it was asked about as usual.
+    expect(analysis.transitions).toHaveLength(expected.transitions.length - 4);
+    expect(analysis.transitions[0]!.at).toBe(expected.transitions[4]!.at);
+
+    // And the failure is in the transcript where the answers would have been.
+    const failed = analysis.log.filter((e) => e.dir === 'res' && e.json.includes('"error"'));
+    expect(failed).toHaveLength(1);
+    expect(JSON.parse(failed[0]!.json).error).toContain('gateway timeout 2');
+    expect(failed[0]!.t).toBe(expected.transitions[0]!.at);
+  }, 60_000);
+});
+
 describe('passOneProgress', () => {
   it('maps the sweep onto the first third and the calls onto the rest', () => {
     expect(passOneProgress(0)).toBe(0);

@@ -57,6 +57,7 @@ export interface FrameFeatures {
   chroma: Float32Array; // 12, sums to 1 (all zeros if silent)
   sub: number; // share of energy in 20-60 Hz, 0..1
   pitch: number; // 0..1 harmonic-sum salience of the best f0 in 100-1000 Hz
+  f0: number; // Hz of that best fundamental, refined past the scan grid; 0 when silent
   formant: number; // 0..1 share of 200 Hz-8 kHz energy sitting in 1-3 kHz
 }
 

@@ -39,8 +39,14 @@ describe('transitionQuestions', () => {
     expect(kind?.type).toBe('choice');
     if (kind?.type !== 'choice') throw new Error('kind must be a choice');
     expect(Object.keys(kind.criteria)).toEqual([...TRANSITION_KINDS]);
-    expect(kind.criteria['drop']).toEqual({ what: 'the payoff: full energy slams in after a build or gap' });
-    expect(kind.criteria['scream_peak']).toEqual({ what: 'harsh, screamed or distorted climax' });
+    expect(kind.criteria['drop']).toEqual({
+      what: 'the payoff: full energy slams in after a build or gap',
+      not_for: 'a harsh, screamed or distorted climax; that is scream_peak',
+    });
+    expect(kind.criteria['scream_peak']).toEqual({
+      what: 'harsh, screamed or distorted climax',
+      signals: ['harsh well above 0.6', 'noise high', 'very bright', 'loud'],
+    });
     expect(kind.criteria['none']).toEqual({ what: 'no meaningful change here' });
   });
 

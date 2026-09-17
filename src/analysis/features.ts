@@ -83,6 +83,12 @@ const PITCH_STEP_BINS = 0.25;
  * a few hertz off the candidate has moved by less than this.
  */
 const PITCH_PEAK_HALF_WIDTH = 1;
+/**
+ * How many bins either side of a partial its centre of energy is taken over.
+ * Wider than the peak window above because this is a *position* rather than a
+ * total: the skirts of the lobe are where the sub-bin information is.
+ */
+const F0_CENTROID_HALF_WIDTH = 2;
 
 /** The formant band, and the band it is measured as a share of. */
 const FORMANT_LO_HZ = 1000;
@@ -180,6 +186,7 @@ export class FeatureExtractor {
 
     const rms = time ? rmsOf(time) : this.rmsFromMagnitudes(mags);
     const bandsRaw = this.bandMeans(mags);
+    const pitch = this.pitchOf(mags);
 
     return {
       t,
@@ -194,7 +201,8 @@ export class FeatureExtractor {
       zcr: time ? (zeroCrossings(time) * this.sampleRate) / time.length : 0,
       chroma: chromaFromMagnitudes(mags, this.sampleRate, this.fftSize),
       sub: this.subShare(mags),
-      pitch: this.pitchSalience(mags),
+      pitch: pitch.salience,
+      f0: pitch.f0,
       formant: this.formantShare(mags),
     };
   }
@@ -214,23 +222,68 @@ export class FeatureExtractor {
    * whose flat spectrum puts no more under a harmonic comb than under any
    * other nine bins.
    */
-  private pitchSalience(mags: Float32Array): number {
+  private pitchOf(mags: Float32Array): { salience: number; f0: number } {
     const loBin = Math.max(1, Math.ceil(PITCH_TOTAL_LO_HZ / this.hzPerBin));
     const hiBin = Math.min(this.bins, Math.floor(PITCH_TOTAL_HI_HZ / this.hzPerBin) + 1);
 
     let total = 0;
     for (let k = loBin; k < hiBin; k++) total += mags[k]! * mags[k]!;
-    if (!(total > 0)) return 0;
+    if (!(total > 0)) return { salience: 0, f0: 0 };
 
     const from = PITCH_F0_LO_HZ / this.hzPerBin;
     const to = PITCH_F0_HI_HZ / this.hzPerBin;
     let best = 0;
+    let bestBins = 0;
     for (let f0 = from; f0 <= to; f0 += PITCH_STEP_BINS) {
       let sum = 0;
       for (let h = 1; h <= PITCH_HARMONICS; h++) sum += this.peakEnergy(mags, Math.round(h * f0));
-      if (sum > best) best = sum;
+      if (sum > best) {
+        best = sum;
+        bestBins = f0;
+      }
     }
-    return clamp(best / total, 0, 1);
+    return {
+      salience: clamp(best / total, 0, 1),
+      f0: best > 0 ? this.refineF0(mags, bestBins) * this.hzPerBin : 0,
+    };
+  }
+
+  /**
+   * The winning fundamental, sharpened past the grid it was found on.
+   *
+   * The scan steps a quarter of a bin, which at this window is about 2.7 Hz —
+   * coarser than a singer's vibrato, so the argmax of a wavering note sits
+   * still and a note that is sitting still is indistinguishable from it. Only
+   * one caller cares, and it cares about exactly that difference (see
+   * `VocalDetector`'s stability discount), so the answer is refined here: take
+   * the energy-weighted centre of the harmonic that actually carries the most
+   * energy and divide by its number. Anchoring on the strongest harmonic
+   * rather than on the fundamental is what buys the resolution — the third
+   * harmonic moves three hertz for every hertz the note does — and a voice,
+   * whose formants lift a harmonic well above its fundamental, is the case
+   * that benefits most.
+   */
+  private refineF0(mags: Float32Array, f0Bins: number): number {
+    let anchor = 1;
+    let bestEnergy = -1;
+    for (let h = 1; h <= PITCH_HARMONICS; h++) {
+      const e = this.peakEnergy(mags, Math.round(h * f0Bins));
+      if (e > bestEnergy) {
+        bestEnergy = e;
+        anchor = h;
+      }
+    }
+
+    const k = Math.round(anchor * f0Bins);
+    let weighted = 0;
+    let energy = 0;
+    for (let j = k - F0_CENTROID_HALF_WIDTH; j <= k + F0_CENTROID_HALF_WIDTH; j++) {
+      if (j < 1 || j >= mags.length) continue;
+      const e = mags[j]! * mags[j]!;
+      weighted += j * e;
+      energy += e;
+    }
+    return energy > 0 ? weighted / energy / anchor : f0Bins;
   }
 
   /** Energy in `k` and the bins either side of it — one partial's whole lobe. */

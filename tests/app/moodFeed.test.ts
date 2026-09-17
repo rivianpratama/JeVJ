@@ -20,6 +20,7 @@ function snapshot(t: number, over: Partial<AnalysisSnapshot> = {}): AnalysisSnap
       chroma: new Float32Array(12).fill(1 / 12),
       sub: 0.5,
       pitch: 0.2,
+      f0: 220,
       formant: 0.15,
     },
     onset: 0,
