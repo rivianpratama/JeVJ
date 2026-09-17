@@ -238,11 +238,6 @@ export interface Cue {
   transition?: TransitionKind;
 }
 
-export interface Timeline {
-  step: 0.2;
-  cues: Cue[];
-}
-
 export interface MoodResponse {
   mood: MoodVector;
   usage: { input_tokens: number; output_tokens: number };
@@ -290,13 +285,20 @@ export interface AnalysisLogEntry {
  *
  * Summed from the `usage` every `/api/mood` and `/api/transition` response
  * carries, so it is what was billed rather than an estimate of what was sent.
- * `lastLatencyMs` is the last call's round trip, which is the only latency the
- * HUD has ever printed.
  */
 export interface TokenUsage {
   calls: number;
   input_tokens: number;
   output_tokens: number;
+  /**
+   * The round trip of the *last* call of the analysis, in milliseconds — not an
+   * average and not a total.
+   *
+   * It is a spot reading kept for one purpose: telling a model that is slow
+   * today from an analysis that is simply long. The HUD prints it as
+   * `lastLatencyMs`, and it is the only latency figure in the app that is about
+   * the network rather than about the audio clock.
+   */
   lastLatencyMs: number;
 }
 

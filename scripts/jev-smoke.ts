@@ -1,10 +1,17 @@
 /**
- * One real call to Jev, end to end: `npx tsx scripts/jev-smoke.ts`.
+ * One real call to Jev, end to end: `npm run smoke -- --live`.
  *
  * The unit tests run against a fake client, so nothing in them would notice if
  * the question shapes were rejected by the API, if a rubric came back with a
  * different number of levels than we asked for, or if a call cost five times
  * what we budgeted. This does notice, for the price of one request.
+ *
+ * **It costs money, so it does not spend any unless you say `--live`.** Run
+ * without it — or with `--dry`, which is the same thing said out loud — and it
+ * builds exactly what would be sent and prints the shape and the estimated
+ * size of it, without opening a socket. That is the mode CI and a routine
+ * `npm test` sweep want, and it still catches the thing that breaks most
+ * often: a payload or a rubric that has quietly grown.
  *
  * It reads `.env` itself rather than adding a dotenv dependency, and it prints
  * the decoded mood, the token usage and the latency. The key is never printed
@@ -15,7 +22,8 @@ import { resolve } from 'node:path';
 
 import { readEnvFile } from '../server/env';
 import { createJevClient, handleMood } from '../server/moodHandler';
-import { CORE_IDS, MOOD_QUESTIONS, NOUL_IDS, selectQuestionIds } from '../src/mood/questions';
+import { MOOD_QUESTIONS, buildState } from '../src/mood/questions';
+import { estimateTokens } from '../src/shared/tokens';
 import type { MoodInput } from '../src/shared/types';
 
 /** The serialization example from Task 6: a build, 14 bars in, at 128 BPM. */
@@ -55,35 +63,43 @@ const PAYLOAD: MoodInput = {
   barInPhrase: 14,
 };
 
-/** One live call with a named question set, printed. */
+/** One live call, printed. */
 async function run(
-  label: string,
-  ask: string[],
   client: ReturnType<typeof createJevClient>,
 ): Promise<{ tokens: number; latencyMs: number } | null> {
-  const result = await handleMood({ ...PAYLOAD, ask }, { client });
+  const result = await handleMood(PAYLOAD, { client });
   if (result.status !== 200 || !('mood' in result.json)) {
-    console.error(`${label}: status ${result.status}:`, result.json);
+    console.error(`status ${result.status}:`, result.json);
     return null;
   }
   const { mood, usage, latencyMs } = result.json;
   const tokens = usage.input_tokens + usage.output_tokens;
-  console.log(`\n${label} — ${ask.length} questions`);
+  console.log(`\nevery question — ${Object.keys(MOOD_QUESTIONS).length} of them`);
   console.log('mood   ', JSON.stringify(round(mood)));
   console.log('usage  ', JSON.stringify(usage), `→ ${tokens} tokens`);
   console.log('latency', `${latencyMs} ms`);
   return { tokens, latencyMs };
 }
 
-/**
- * Both question sets, one live call each.
- *
- * The point of the second call is the number at the bottom: the whole set
- * against the set a typical call actually asks. The payload below is a build,
- * so the client would ask everything about *it* — the "trimmed" run is the
- * common case, an ordinary bar with no build under it and the nouls skipped.
- */
+/** What would be sent, measured, without sending it. */
+function dryRun(): void {
+  const state = buildState(PAYLOAD);
+  const questions = Object.keys(MOOD_QUESTIONS);
+  console.log('dry run — nothing was sent. Add --live to spend a call.\n');
+  console.log(`questions   ${questions.length}: ${questions.join(', ')}`);
+  console.log(`state       ${estimateTokens(JSON.stringify(state))} est. tokens`);
+  console.log(`questions   ${estimateTokens(JSON.stringify(MOOD_QUESTIONS))} est. tokens`);
+  console.log(`request     ~${estimateTokens(JSON.stringify({ state, questions: MOOD_QUESTIONS }))} est. tokens`);
+}
+
 async function main(): Promise<void> {
+  // Live is opt-in. A script that costs money on a bare `npm run smoke` is a
+  // script somebody runs by accident.
+  if (!process.argv.includes('--live')) {
+    dryRun();
+    return;
+  }
+
   const env = readEnvFile(resolve(process.cwd(), '.env'));
   const apiKey = env['TYPESAFE_API_KEY'] ?? process.env['TYPESAFE_API_KEY'] ?? '';
   if (apiKey === '') {
@@ -92,22 +108,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const client = createJevClient(apiKey);
-  const full = await run('every question', Object.keys(MOOD_QUESTIONS), client);
-  const trimmed = await run('an ordinary call', [...CORE_IDS], client);
-  const withNouls = await run('every other call', [...CORE_IDS, ...NOUL_IDS], client);
-
-  // What the client would actually ask about this payload, for the record.
-  const chosen = selectQuestionIds({ callIndex: 0, input: PAYLOAD, previous: null });
-  console.log(`\nthis payload would be asked ${chosen.length} questions`);
-  if (full && trimmed && withNouls) {
-    console.log(
-      `tokens/call ${full.tokens} → ${trimmed.tokens} (core) / ${withNouls.tokens} (core + nouls)`,
-    );
-    console.log(`latency ${full.latencyMs} ms → ${trimmed.latencyMs} ms / ${withNouls.latencyMs} ms`);
-  } else {
-    process.exitCode = 1;
-  }
+  if ((await run(createJevClient(apiKey))) === null) process.exitCode = 1;
 }
 
 /** Two decimals on every number, so one line of output stays one line. */

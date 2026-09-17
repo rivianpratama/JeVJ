@@ -1,15 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  CORE_IDS,
-  MOOD_PREAMBLE,
-  MOOD_QUESTIONS,
-  NOUL_IDS,
-  PREDICTIVE_IDS,
-  buildState,
-  questionsFor,
-  selectQuestionIds,
-} from '../../src/mood/questions';
-import { NEUTRAL_MOOD } from '../../src/shared/moodSchema';
+import { MOOD_PREAMBLE, MOOD_QUESTIONS, buildState } from '../../src/mood/questions';
 import { estimateTokens } from '../../src/shared/tokens';
 import {
   BEATS_TO_CHANGE,
@@ -18,7 +8,6 @@ import {
   PRE_DROP_STYLES,
   SECTIONS,
 } from '../../src/shared/types';
-import type { MoodInput } from '../../src/shared/types';
 import { EXAMPLE_INPUT } from '../helpers/moodFixture';
 
 const EXPECTED_KEYS = [
@@ -117,69 +106,6 @@ describe('buildState', () => {
   });
 });
 
-describe('selectQuestionIds', () => {
-  /** A payload with no build under it at all. */
-  const CALM: MoodInput = {
-    ...EXAMPLE_INPUT,
-    slope4: 0,
-    slope8: 0,
-    onsetRatio: 1,
-    centroidSlope: 0,
-    barInPhrase: 2,
-  };
-
-  it('asks the ten core questions on every call', () => {
-    for (let call = 0; call < 6; call++) {
-      const ids = selectQuestionIds({ callIndex: call, input: CALM, previous: null });
-      for (const id of CORE_IDS) expect(ids, `call ${call}`).toContain(id);
-    }
-    expect(CORE_IDS.length).toBe(10);
-  });
-
-  it('asks the nouls every other call, starting with the first', () => {
-    const asked = (call: number): boolean =>
-      selectQuestionIds({ callIndex: call, input: CALM, previous: null }).includes('hypnotic');
-    expect([0, 1, 2, 3, 4].map(asked)).toEqual([true, false, true, false, true]);
-  });
-
-  it('leaves the predictions alone while nothing is building', () => {
-    const ids = selectQuestionIds({ callIndex: 0, input: CALM, previous: null });
-    for (const id of PREDICTIVE_IDS) expect(ids).not.toContain(id);
-  });
-
-  it('asks the predictions on any one of the four build cues', () => {
-    const cued: Partial<MoodInput>[] = [
-      { slope8: 2.5 },
-      { onsetRatio: 1.4 },
-      { barInPhrase: 12 },
-    ];
-    for (const over of cued) {
-      const ids = selectQuestionIds({ callIndex: 1, input: { ...CALM, ...over }, previous: null });
-      for (const id of PREDICTIVE_IDS) expect(ids, JSON.stringify(over)).toContain(id);
-    }
-    // And the fourth cue is not in the payload at all: it is what Jev said the
-    // last time, which is the only thing that knows a build has been declared.
-    const after = selectQuestionIds({
-      callIndex: 1,
-      input: CALM,
-      previous: { ...NEUTRAL_MOOD, section: 'build' },
-    });
-    for (const id of PREDICTIVE_IDS) expect(after).toContain(id);
-  });
-
-  it('never asks anything MOOD_QUESTIONS does not define', () => {
-    const ids = selectQuestionIds({ callIndex: 0, input: EXAMPLE_INPUT, previous: null });
-    for (const id of ids) expect(MOOD_QUESTIONS).toHaveProperty(id);
-  });
-
-  it('asks everything when the music is building on an even call', () => {
-    // The worst case is still the whole set: two-tiering saves tokens on the
-    // calls in between, not on the one that matters.
-    const ids = selectQuestionIds({ callIndex: 0, input: EXAMPLE_INPUT, previous: null });
-    expect(ids.length).toBe(Object.keys(MOOD_QUESTIONS).length);
-  });
-});
-
 describe('the genre rubric', () => {
   it('sends the two loud families away from each other by name', () => {
     // Measured on six real tracks: *Duality* came back `electronic_dance` and a
@@ -194,22 +120,5 @@ describe('the genre rubric', () => {
     const edm = genre.criteria['electronic_dance'] as { not_for?: string };
     expect(rock.not_for).toBe('electronic dance music with synth leads');
     expect(edm.not_for).toBe('distorted guitars and screamed vocals');
-  });
-});
-
-describe('questionsFor', () => {
-  it('hands back exactly the questions named, in the canonical order', () => {
-    const picked = questionsFor(['motion', 'valence']);
-    expect(Object.keys(picked)).toEqual(['valence', 'motion']);
-    expect(picked['valence']).toBe(MOOD_QUESTIONS['valence']);
-  });
-
-  it('ignores names it does not know', () => {
-    expect(Object.keys(questionsFor(['valence', 'nonsense']))).toEqual(['valence']);
-  });
-
-  it('falls back to the whole set rather than asking nothing', () => {
-    expect(questionsFor([])).toBe(MOOD_QUESTIONS);
-    expect(questionsFor(['nonsense'])).toBe(MOOD_QUESTIONS);
   });
 });

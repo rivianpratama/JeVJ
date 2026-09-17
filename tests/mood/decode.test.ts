@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { decodeAnswers } from '../../src/mood/decode';
 import { NEUTRAL_MOOD, validateMoodVector } from '../../src/shared/moodSchema';
 import { GENRES } from '../../src/shared/types';
-import type { MoodVector } from '../../src/shared/types';
 import { exampleAnswers } from '../helpers/moodFixture';
 
 describe('decodeAnswers', () => {
@@ -75,24 +74,9 @@ describe('decodeAnswers', () => {
   });
 });
 
-describe('decodeAnswers with the last vector behind it', () => {
-  /** What Jev said last time: nothing like the neutral mood in any field. */
-  const PREVIOUS: MoodVector = {
-    ...NEUTRAL_MOOD,
-    valence: 0.9,
-    aggression: 0.8,
-    melancholy: 0.75,
-    hypnotic: 0.7,
-    euphoricPeak: 0.6,
-    genre: 'rock_metal',
-    dropImminent: 0.9,
-    beatsToChange: '8',
-    impact: 0.85,
-    preDropStyle: 'riser',
-  };
-
-  /** The core ten, which every call asks. */
-  function coreOnly(): Record<string, unknown> {
+describe('decodeAnswers when the model leaves a question out', () => {
+  /** The ten a v1 call used to ask; here, simply an incomplete answer set. */
+  function partial(): Record<string, unknown> {
     const all = exampleAnswers();
     const out: Record<string, unknown> = {};
     for (const id of ['valence', 'arousal', 'tension', 'warmth', 'synthetic', 'space', 'spoken', 'genre', 'section', 'motion']) {
@@ -101,43 +85,38 @@ describe('decodeAnswers with the last vector behind it', () => {
     return out;
   }
 
-  it('answers what it was asked, whatever came before', () => {
-    const m = decodeAnswers(coreOnly(), PREVIOUS);
-    expect(m.valence).toBeCloseTo(3 / 4, 10);
-    expect(m.genre).toBe('electronic_dance');
+  it('answers what it was actually given', () => {
+    const m = partial();
+    expect(decodeAnswers(m).valence).toBeCloseTo(3 / 4, 10);
+    expect(decodeAnswers(m).genre).toBe('electronic_dance');
   });
 
-  it('keeps the last answer for a question this call did not ask', () => {
-    const m = decodeAnswers(coreOnly(), PREVIOUS);
-    expect(m.aggression).toBe(0.8);
-    expect(m.melancholy).toBe(0.75);
-    expect(m.hypnotic).toBe(0.7);
-    expect(m.euphoricPeak).toBe(0.6);
-  });
-
-  it('withdraws a prediction that was not restated', () => {
-    const m = decodeAnswers(coreOnly(), PREVIOUS);
+  it('stands the missing ones at neutral rather than carrying anything over', () => {
+    // v1 filled these in from the caller's last vector, because a call asked a
+    // subset by design and the rest were meant to hold. v2 asks all eighteen
+    // every time, so an answer that is not there is a model that did not answer
+    // — and the last mood is not evidence about this one.
+    const m = decodeAnswers(partial());
+    expect(m.aggression).toBe(NEUTRAL_MOOD.aggression);
+    expect(m.melancholy).toBe(NEUTRAL_MOOD.melancholy);
+    expect(m.hypnotic).toBe(NEUTRAL_MOOD.hypnotic);
+    expect(m.euphoricPeak).toBe(NEUTRAL_MOOD.euphoricPeak);
     expect(m.dropImminent).toBe(NEUTRAL_MOOD.dropImminent);
     expect(m.beatsToChange).toBe('none');
     expect(m.impact).toBe(NEUTRAL_MOOD.impact);
     expect(m.preDropStyle).toBe('none');
   });
 
-  it('takes a prediction it did ask about', () => {
-    const m = decodeAnswers(exampleAnswers(), PREVIOUS);
+  it('takes a prediction it was given', () => {
+    const m = decodeAnswers(exampleAnswers());
     expect(m.dropImminent).toBe(0.72);
     expect(m.beatsToChange).toBe('8');
     expect(m.impact).toBeCloseTo(3 / 4, 10);
     expect(m.preDropStyle).toBe('riser');
   });
 
-  it('still produces a vector the schema accepts', () => {
-    expect(validateMoodVector(decodeAnswers(coreOnly(), PREVIOUS)).ok).toBe(true);
-    expect(validateMoodVector(decodeAnswers({}, PREVIOUS)).ok).toBe(true);
-  });
-
-  it('falls back to neutral when there is no previous vector', () => {
-    const m = decodeAnswers(coreOnly(), null);
-    expect(m.aggression).toBe(NEUTRAL_MOOD.aggression);
+  it('still produces a vector the schema accepts, even given nothing at all', () => {
+    expect(validateMoodVector(decodeAnswers(partial())).ok).toBe(true);
+    expect(validateMoodVector(decodeAnswers({})).ok).toBe(true);
   });
 });

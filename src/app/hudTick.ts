@@ -12,8 +12,6 @@
  * own exact instants regardless.
  */
 
-import { Summarizer } from '../analysis/summarizer';
-import { estimateTokens } from '../shared/tokens';
 import { hudRows } from './hudRows';
 import { writeGridCues } from '../timeline/gridWriter';
 import { applyDetectorEvent } from '../timeline/detectorWriter';
@@ -105,8 +103,6 @@ export function createHudTick(o: HudTickOptions): () => void {
 
     o.hud.update({
       ...hudRows(snap, {
-        novelty: t.reading.novelty,
-        tokens: estimateTokens(Summarizer.serialize(t.reading.input)),
         // The mood the renderer is drawing with, not Jev's raw last answer.
         mood: o.visuals.mood(),
         moodSrc: o.visuals.moodSource(),
@@ -117,7 +113,6 @@ export function createHudTick(o: HudTickOptions): () => void {
                 calls: usage.calls,
                 tokens: usage.input_tokens + usage.output_tokens,
                 lastLatencyMs: usage.lastLatencyMs,
-                nextIn: 0,
               },
             }),
       }),

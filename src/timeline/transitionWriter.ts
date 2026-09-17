@@ -1,13 +1,16 @@
 /**
  * A named moment, turned into instructions with timestamps.
  *
- * `jevWriter.ts` does this for a live prediction, where the interesting
- * problem is *when* — a model that answers in half a second cannot be trusted
- * with an instant, so the beats count is resolved against the grid. Here the
- * instant is already known to the sample: the candidate finder took it off the
- * detector or off a novelty peak in a file we have all of. What is not known
- * is *what it is*, and that is what the verdict carries. So this writer has
- * the opposite shape: no snapping, no prediction, one rule per kind.
+ * v1 had a second writer next to this one for a *live* prediction, where the
+ * interesting problem was *when*: a model answering in half a second cannot be
+ * trusted with an instant, so its "a drop in eight beats" had to be resolved
+ * against the beat grid and snapped to a phrase boundary. v2 does not predict —
+ * the whole track is judged before a note of it plays — so that writer is gone
+ * and this one is the only one. Here the instant is already known to the
+ * sample: the candidate finder took it off the detector or off a novelty peak
+ * in a file we have all of. What is not known is *what it is*, and that is what
+ * the verdict carries. So this writer has the opposite shape: no snapping, no
+ * prediction, one rule per kind.
  *
  * Every rule is specified in the plan and every one of them is a claim about
  * what the visuals should do:
@@ -34,10 +37,11 @@
  * And anything the model called dramatic — a jolt, goosebumps, a held breath —
  * also sets `flourish`, which is the Director's cue to fire a one-shot.
  *
- * Every cue is written at source `jev`: these are the model's judgments, they
- * share the build channel with `jevWriter`'s ramps rather than with the
- * detector's holes, and `CueTimeline` reads each source's ramp separately for
- * exactly that reason.
+ * Every cue is written at source `jev`: these are the model's judgments, and
+ * they share a build channel with each other rather than with the detector's
+ * holes. `CueTimeline` reads each source's ramp separately for exactly that
+ * reason — a hole the detector punched in the middle of an anticipation ramp
+ * spikes and falls back onto the ramp instead of notching through it.
  *
  * Pure: a timeline, a time, a verdict and the context, in.
  */

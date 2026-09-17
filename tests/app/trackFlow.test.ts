@@ -277,8 +277,22 @@ describe('createTrackFlow', () => {
     element.fire('play');
     const cues = [...timeline.cues()];
     expect(cues.length).toBeGreaterThan(0);
-    // Track time plus (ctx.currentTime - el.currentTime).
-    expect(cues[0]!.t).toBeGreaterThanOrEqual(CTX_NOW - EL_AT);
+    // Track time plus (ctx.currentTime - el.currentTime). A cue that is merely
+    // "somewhere after the offset" could be anywhere in the track, so what is
+    // asserted is the whole mapping: every cue lands inside the twelve seconds
+    // of audio there actually are, the first one at the top of the track — the
+    // sweep backfills the grid to 0 — and the last before the end of it.
+    // (The *exact* arithmetic is pinned against a known cue in the cached-record
+    // case below, where the track time is a number this file chose.)
+    const offset = CTX_NOW - EL_AT;
+    const trackTimes = cues.map((c) => c.t - offset).sort((a, b) => a - b);
+    expect(trackTimes[0]).toBeLessThan(1);
+    expect(trackTimes[0]).toBeGreaterThanOrEqual(0);
+    expect(trackTimes[trackTimes.length - 1]).toBeLessThanOrEqual(SECONDS);
+    // And the mapping is a function of the two clocks alone: firing `play`
+    // again from the same place reproduces every time exactly.
+    element.fire('play');
+    expect([...timeline.cues()].map((c) => c.t - offset).sort((a, b) => a - b)).toEqual(trackTimes);
   }, 60_000);
 
   it('downloads a link, plays the file it got, and caches what it learned', async () => {

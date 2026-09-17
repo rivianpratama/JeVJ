@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { BeatGrid } from '../../src/analysis/grid';
 import { NEUTRAL_MOOD } from '../../src/shared/moodSchema';
 import { CueTimeline } from '../../src/timeline/timeline';
 import { applyDetectorEvent } from '../../src/timeline/detectorWriter';
-import { writeJevCues } from '../../src/timeline/jevWriter';
+import { writeTransitionCues } from '../../src/timeline/transitionWriter';
+import { exampleVerdict } from '../helpers/moodFixture';
 import type { DropEvent } from '../../src/analysis/drop';
 
 /**
@@ -98,17 +98,12 @@ describe('applyDetectorEvent', () => {
 
   it('does not notch the ramp it lands in the middle of', () => {
     const tl = new CueTimeline();
-    // A 120 BPM grid, and a drop Jev has put at 14 with a ramp from 10.
-    const grid = new BeatGrid();
-    grid.onOnset(1.5, 1, 1);
-    grid.setTempo({ bpm: 120, period: 0.5, confidence: 0.9, marking: 'allegro' }, 1.5);
-    grid.tick(10);
-    writeJevCues(
-      tl,
-      { ...NEUTRAL_MOOD, dropImminent: 0.9, beatsToChange: '8', impact: 0.8 },
-      grid,
-      10,
-    );
+    // A drop pass 2 named at 14, at 120 BPM — two seconds a bar, so its
+    // two-bar anticipation ramp runs from 10.
+    writeTransitionCues(tl, 14, exampleVerdict({ kind: 'drop', intensity: 0.8 }), {
+      barSec: 2,
+      mood: NEUTRAL_MOOD,
+    });
 
     // Two bars in, the floor drops out for a moment: the visuals go to full
     // tension, and when the hole releases they fall back onto the ramp they

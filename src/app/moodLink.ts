@@ -14,10 +14,12 @@
  * cadence, its novelty gate, its backoff and the phrase look-ahead that fed it
  * are gone rather than switched off.
  *
- * What still has to happen every tick is the feed: the HUD reads its payload
- * and its novelty, and the beat grid counts phrases from the section boundaries
- * only the feed hears. And the state still slews, because the timeline's own
- * answers arrive as steps and a picture that snaps on one is a cut.
+ * What still has to happen every tick is the feed, for one reason: the beat
+ * grid counts phrases from section boundaries, and the feed is the only thing
+ * that hears one. (v1 also read its novelty score off it, to decide when the
+ * next call was worth making. There is no next call.) The state is kept as the
+ * base vector `effectiveMood` merges the timeline's per-segment answers over;
+ * see `MoodState`.
  */
 
 import type { AnalysisSnapshot } from './analysisLoop';

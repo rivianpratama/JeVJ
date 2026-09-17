@@ -156,10 +156,22 @@ describe('strands', () => {
     // has heard nothing.
     const gamma = Number(/const float VIS_GAMMA = ([0-9.]+);/.exec(strandsFrag)![1]);
     const STRANDS = 400;
-    expect(STRANDS * 0.32 ** gamma).toBeLessThanOrEqual(25);
+    const lit = (weight: number): number => STRANDS * weight ** gamma;
+    expect(lit(0.32)).toBeLessThanOrEqual(25);
     // And a layer the mood has actually handed the frame to is still a curtain.
-    expect(STRANDS * 1 ** gamma).toBe(STRANDS);
-    expect(STRANDS * 0.8 ** gamma).toBeGreaterThan(200);
+    // At full weight every strand is lit whatever the gamma — that much is
+    // arithmetic — so the number worth pinning is the one just below it, where
+    // the gamma is doing the work: 0.8 has to keep more than half the ribbons.
+    expect(lit(0.8)).toBeGreaterThan(200);
+    expect(lit(0.8)).toBeLessThan(STRANDS);
+    // And the curve is monotone across the range, so there is no weight at
+    // which asking for more ribbons draws fewer.
+    let previous = -1;
+    for (let w = 0; w <= 1.0001; w += 0.05) {
+      expect(lit(w)).toBeGreaterThan(previous);
+      previous = lit(w);
+    }
+    expect(previous).toBeCloseTo(STRANDS, 6);
   });
 
   it('scales width and alpha per pass, so a halo can be drawn around a core', () => {

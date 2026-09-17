@@ -52,8 +52,6 @@ describe('handleMood', () => {
     const client = fakeClient();
     await handleMood({ ...EXAMPLE_INPUT, nonsense: 1 }, { client });
     const req = client.seen[0] as { state: { music: unknown }; questions: unknown; model?: string };
-    // Nothing asked for: the whole set, which is what `questionsFor` falls back
-    // to rather than asking nothing at all.
     expect(req.questions).toBe(MOOD_QUESTIONS);
     expect(req.model).toBe('jev-latest');
     expect(req.state.music).toEqual(EXAMPLE_INPUT);
@@ -79,39 +77,22 @@ describe('handleMood', () => {
     expect((res.json as { error: string }).error).toContain('429');
   });
 
-  it('asks only the questions the caller asked for', async () => {
+  it('asks every question, whatever the request says it wants', async () => {
+    // v1 let the caller name the questions worth spending tokens on and carry
+    // its last vector so the rest could be filled in. v2 asks once per segment
+    // before a track plays, so there is nothing to economize on and no half
+    // vector to reason about. A request that still carries the old fields gets
+    // the whole set and is otherwise ignored.
     const client = fakeClient();
-    await handleMood({ ...EXAMPLE_INPUT, ask: ['valence', 'genre', 'nonsense'] }, { client });
-    const req = client.seen[0] as { questions: Record<string, unknown> };
-    expect(Object.keys(req.questions)).toEqual(['valence', 'genre']);
-  });
-
-  it('fills the questions nobody asked from the vector the caller carried', async () => {
-    const prev: MoodVector = { ...NEUTRAL_MOOD, aggression: 0.77, melancholy: 0.11 };
-    const client = fakeClient({
-      // A reply to the core ten only, which is what an odd call asks for.
-      async systemOne() {
-        const all = exampleAnswers();
-        return {
-          answers: { valence: all['valence'], genre: all['genre'] },
-          usage: { input_tokens: 900, output_tokens: 60 },
-        };
-      },
-    });
-
-    const res = await handleMood({ ...EXAMPLE_INPUT, ask: ['valence', 'genre'], prev }, { client });
-    const body = mood(res.json);
-    expect(body.mood.valence).toBeCloseTo(3 / 4, 10);
-    expect(body.mood.aggression).toBe(0.77);
-    expect(body.mood.melancholy).toBe(0.11);
-    // Except a prediction, which is withdrawn rather than carried.
-    expect(body.mood.beatsToChange).toBe('none');
-  });
-
-  it('ignores a carried vector that is not one', async () => {
-    const client = fakeClient();
-    const res = await handleMood({ ...EXAMPLE_INPUT, prev: { valence: 3 } }, { client });
+    const res = await handleMood(
+      { ...EXAMPLE_INPUT, ask: ['valence', 'genre'], prev: { ...NEUTRAL_MOOD, aggression: 0.77 } },
+      { client },
+    );
+    const req = client.seen[0] as { questions: unknown };
+    expect(req.questions).toBe(MOOD_QUESTIONS);
     expect(res.status).toBe(200);
+    // Nothing carried over: the answer is only what the model said this time.
+    expect(mood(res.json).mood.aggression).not.toBe(0.77);
     expect(validateMoodVector(mood(res.json).mood).ok).toBe(true);
   });
 });

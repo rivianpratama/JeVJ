@@ -35,7 +35,6 @@ import { readEnvFile } from '../../server/env';
 import { createJevClient, handleMood, type JevLike } from '../../server/moodHandler';
 import { handleTransition } from '../../server/transitionHandler';
 import { analyzeTrack } from '../../src/app/trackAnalysis';
-import { selectQuestionIds } from '../../src/mood/questions';
 import {
   GENRES,
   TRANSITION_KINDS,
@@ -94,10 +93,7 @@ async function run(
     askJev: dry
       ? async (): Promise<MoodVector> => ({ ...NEUTRAL_MOOD })
       : async (input) => {
-          // The same question selection the client makes, so the bill and the
-          // answers are the app's rather than this script's.
-          const ask = selectQuestionIds({ callIndex: 0, input, previous: null });
-          const result = await handleMood({ ...input, ask }, { client: client(apiKey) });
+          const result = await handleMood(input, { client: client(apiKey) });
           if (result.status !== 200 || !('mood' in result.json)) {
             console.error(`  mood call failed: ${JSON.stringify(result.json)}`);
             return { ...NEUTRAL_MOOD };

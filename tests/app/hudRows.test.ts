@@ -69,18 +69,25 @@ describe('hudRows', () => {
 
     // A dash until there is something to print. Nothing ever happens in
     // silence, so that is where "no drop yet" can be read honestly.
-    expect(hudRows(snap).mood!['novelty']).toBe('—');
-    expect(hudRows(snap).mood!['payload']).toBe('—');
     expect(hudRows(quiet).mood!['drop']).toBe('—');
 
     const now = snap.features.t;
-    const mood = hudRows({ ...snap, drop: { t: now - 1, strength: 0.75, kind: 'impact' } }, {
-      novelty: 0.4267,
-      tokens: 142,
-    }).mood!;
-    expect(mood['novelty']).toBe('0.43');
-    expect(mood['payload']).toBe(142);
+    const mood = hudRows({ ...snap, drop: { t: now - 1, strength: 0.75, kind: 'impact' } }).mood!;
     expect(mood['drop']).toBe('impact 0.75');
+  });
+
+  it('prints nothing about a cadence it no longer has', () => {
+    // `novelty`, `payload` and `next in` described v1's decision about when to
+    // spend the next call. v2 spends its whole budget before the track starts,
+    // so all three printed constants — 1.00, a number nobody read, and 0.0s
+    // forever — which is worse than not printing them.
+    const rows = hudRows(after(clickTrack(120, 12, FS), 12), {
+      mood: NEUTRAL_MOOD,
+      jev: { calls: 3, tokens: 5400, lastLatencyMs: 212 },
+    });
+    for (const gone of ['novelty', 'payload', 'next in']) {
+      expect(rows.mood!, gone).not.toHaveProperty(gone);
+    }
   });
 
   it('prints the mood the director is actually drawing with, and where it came from', () => {
@@ -91,44 +98,36 @@ describe('hudRows', () => {
     const snap = after(clickTrack(120, 12, FS), 12);
     const effective = { ...NEUTRAL_MOOD, arousal: 0.9375, motion: 'shatter' as const };
 
-    const live = hudRows(snap, { novelty: 0.2, tokens: 1, mood: NEUTRAL_MOOD, moodSrc: 'live' });
+    const live = hudRows(snap, { mood: NEUTRAL_MOOD, moodSrc: 'live' });
     expect(live.mood!['mood src']).toBe('live');
 
-    const timeline = hudRows(snap, {
-      novelty: 0.2,
-      tokens: 1,
-      mood: effective,
-      moodSrc: 'timeline',
-    });
+    const timeline = hudRows(snap, { mood: effective, moodSrc: 'timeline' });
     expect(timeline.mood!['arousal']).toBe('0.94');
     expect(timeline.mood!['motion']).toBe('shatter');
     expect(timeline.mood!['mood src']).toBe('timeline');
 
-    const idle = hudRows(snap, { novelty: 0.2, tokens: 1, mood: NEUTRAL_MOOD, moodSrc: 'idle' });
+    const idle = hudRows(snap, { mood: NEUTRAL_MOOD, moodSrc: 'idle' });
     expect(idle.mood!['mood src']).toBe('idle');
   });
 
   it('prints jev\'s judgment and what it has cost, once there is one', () => {
     const snap = after(clickTrack(120, 12, FS), 12);
     const rows = hudRows(snap, {
-      novelty: 0.2,
-      tokens: 142,
       mood: { ...NEUTRAL_MOOD, valence: 0.8125, genre: 'jazz', motion: 'swarm', dropImminent: 0.5 },
-      jev: { calls: 3, tokens: 5400, lastLatencyMs: 212, nextIn: 1.25 },
+      jev: { calls: 3, tokens: 5400, lastLatencyMs: 212 },
     });
 
     expect(rows.mood!['valence']).toBe('0.81');
     expect(rows.mood!['genre']).toBe('jazz');
     expect(rows.mood!['motion']).toBe('swarm');
     expect(rows.mood!['dropImminent']).toBe('0.50');
-    expect(rows.mood!['next in']).toBe('1.3s');
     expect(rows.calls).toBe(3);
     expect(rows.tokensTotal).toBe(5400);
     expect(rows.lastLatencyMs).toBe(212);
   });
 
   it('leaves the jev rows out entirely before the first answer', () => {
-    const rows = hudRows(after(clickTrack(120, 12, FS), 12), { novelty: 0.2, tokens: 142 });
+    const rows = hudRows(after(clickTrack(120, 12, FS), 12), {});
     expect(rows.mood!['valence']).toBeUndefined();
     expect(rows.mood!['mood src']).toBeUndefined();
     expect(rows.calls).toBeUndefined();

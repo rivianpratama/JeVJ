@@ -4,13 +4,12 @@
  * Everything on the `CueTimeline` is stamped in *analysis time*: the clock the
  * frames come off, which runs late relative to what is coming out of the
  * speakers. The detector reports a transient one analyser window after it
- * sounded, and with a captured tab the sound had already been through the
- * capture and output pipeline before that. The beat grid, the drop detector
- * and Jev's own predictions are all derived from those frames, so they are all
- * late by the same amount — which is why no writer corrects for it. Correcting
- * in a writer would shift one source out from under the others and break the
- * comparisons that matter, like "is this measured slam the one that was
- * predicted".
+ * sounded, and everything else on the timeline — the beat grid, the drop
+ * detector, the offline pass's own cues — is derived from those same frames,
+ * so all of it is late by the same amount. Which is why no writer corrects for
+ * it: correcting in a writer would shift one source out from under the others
+ * and break the comparisons that matter, like "is this measured slam the one
+ * the model named".
  *
  * So the correction happens exactly once, here, at the far end: to know what
  * the visuals should be doing at audio time `now`, ask the timeline about
@@ -40,10 +39,10 @@ export interface CueReader {
 }
 
 /**
- * `latencySec` is how far the analysis runs behind the sound:
- * `ONSET_REPORT_LAG_SEC + captureLatency + trim` for a captured tab, and
- * `ONSET_REPORT_LAG_SEC + trim` for a local file, whose samples never went
- * through a capture pipeline.
+ * `latencySec` is how far the analysis runs behind the sound. v2 has one
+ * source — a file off our own disk — so it is `ONSET_REPORT_LAG_SEC + trim`,
+ * with no capture pipeline in front of it. v1 added a captured tab's own
+ * latency here as well; there is no longer a tab to capture.
  */
 export function createCueReader(tl: CueTimeline, latencySec: () => number): CueReader {
   const readTime = (now: number): number => {

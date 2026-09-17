@@ -49,15 +49,30 @@ describe('transition', () => {
     }
   });
 
-  it('is a no-op rather than a throw wherever an event means nothing', () => {
+  it('is the whole table, row by row', () => {
     // Every event reaches the machine from something the user or the browser
     // did — a media element emits `pause` as it is torn down, `ended` fires on
     // a seek past the end — and none of it is worth a thrown exception in a
-    // handler that is halfway through swapping a track.
+    // handler that is halfway through swapping a track. So every cell has an
+    // answer, and the answer is written down here rather than checked for
+    // membership: "it returned *some* state" passes for a table that sends
+    // every event to `empty`.
+    const table: Record<AppState, Partial<Record<AppEvent, AppState>>> = {
+      empty: { 'url:submit': 'resolving', 'file:drop': 'analyzing' },
+      resolving: { resolved: 'analyzing' },
+      analyzing: { analyzed: 'ready' },
+      ready: { 'file:drop': 'analyzing', play: 'playing' },
+      playing: { pause: 'paused', ended: 'ended' },
+      paused: { play: 'playing', ended: 'ended' },
+      ended: { 'file:drop': 'analyzing', play: 'playing' },
+    };
+
     for (const from of APP_STATES) {
       for (const event of APP_EVENTS) {
-        expect(() => transition(from, event)).not.toThrow();
-        expect(APP_STATES).toContain(transition(from, event));
+        // `failed` is the one event every state answers, and it always answers
+        // `empty`; anything else the row does not name leaves the state alone.
+        const expected = event === 'failed' ? 'empty' : (table[from][event] ?? from);
+        expect(transition(from, event), `${from} + ${event}`).toBe(expected);
       }
     }
   });

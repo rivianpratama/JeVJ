@@ -1,24 +1,18 @@
 /**
- * The page we would send Jev, and the two numbers that decide whether to.
+ * The page the mood layer builds each tick, and the one thing left that reads it.
  *
  * The analysis loop already knows everything a `MoodInput` is made of, so this
- * is not another analysis: it is the thing that keeps *last time* — the
- * payload novelty and section changes are measured against — and nothing else.
- * Task 7's client asks it for those numbers; the HUD prints them meanwhile.
+ * is not another analysis: it is the thing that keeps *last time*, which is what
+ * a section boundary is measured against.
  *
- * Two references, because the two questions ask about different pasts:
- *
- * - `lastSent` is the payload that actually went out, and *only* `markSent`
- *   moves it. Novelty is "how much has changed since we last said anything",
- *   so it has to accumulate across a slow drift until something is said; a
- *   reference that re-took itself on a timer would keep zeroing the very
- *   number that is supposed to be growing. Before the first send there is
- *   nothing on record anywhere, so novelty is 1: everything is news.
- * - the section reference is a payload from about four seconds ago, which is
- *   what the plan's "trend flips vs 4 s ago" is measured against. It ages on
- *   its own and re-takes itself at a boundary — what came before a boundary is
- *   not what the next one should be judged against — and it never touches
- *   `lastSent`.
+ * **v1 kept two references and this keeps one.** The other was `lastSent` — the
+ * payload that actually went out — against which a novelty score accumulated
+ * until it was worth spending a call. v2 spends its whole model budget before a
+ * track plays and sends nothing while one does, so there is no "last sent" and
+ * novelty has nothing to be a gate on. The reference that remains is a payload
+ * from about four seconds ago, which is what "the trend flipped" is judged
+ * against; it ages on its own and re-takes itself at a boundary, because what
+ * came before a boundary is not what the next one should be judged against.
  *
  * Wiring, not analysis: it lives here rather than in `src/analysis` because it
  * keeps state about the session rather than about the sound. Whoever owns the
@@ -41,8 +35,6 @@ const SECTION_COOLDOWN_SEC = 2;
 
 export interface MoodReading {
   input: MoodInput;
-  /** 0..1 against the payload last sent; 1 until one has been. */
-  novelty: number;
   /** True on the frame a boundary is called, at most once per cooldown. */
   sectionChanged: boolean;
 }
@@ -56,8 +48,6 @@ export interface MoodFeedOptions {
 }
 
 export class MoodFeed {
-  /** What actually went out. Only `markSent` writes this. */
-  private sent: MoodInput | null = null;
   /** A payload from about `SECTION_REFERENCE_SEC` ago; boundaries only. */
   private sectionRef: MoodInput | null = null;
   private sectionRefAt = -Infinity;
@@ -78,8 +68,6 @@ export class MoodFeed {
     const input = Summarizer.fromSnapshot(snap, positionSec, durationSec);
     this.current = input;
 
-    const novelty = this.sent === null ? 1 : Summarizer.novelty(this.sent, input);
-
     let sectionChanged = Summarizer.sectionChanged(this.sectionRef, input);
     if (sectionChanged && now - this.lastSectionAt < SECTION_COOLDOWN_SEC) sectionChanged = false;
     if (sectionChanged) {
@@ -95,21 +83,11 @@ export class MoodFeed {
       this.sectionRef = input;
       this.sectionRefAt = now;
     }
-    return { input, novelty, sectionChanged };
+    return { input, sectionChanged };
   }
 
-  /** The payload that was last sent, which novelty is measured against. */
-  lastSent(): MoodInput | null {
-    return this.sent;
-  }
-
-  /** The most recent payload built, sent or not. */
+  /** The most recent payload built. */
   latest(): MoodInput | null {
     return this.current;
-  }
-
-  /** Task 7 calls this with the payload a request actually carried. */
-  markSent(input: MoodInput): void {
-    this.sent = input;
   }
 }

@@ -26,10 +26,6 @@ const DROP_HOLD_SEC = 2;
 
 /** What the mood layer knows and the snapshot does not. */
 export interface MoodRows {
-  /** 0..1 against the payload last sent. */
-  novelty: number;
-  /** Estimated token cost of that payload serialized. */
-  tokens: number;
   /**
    * The mood the director is drawing with — the live one merged with whatever
    * the timeline overrides — once there has been one. Not Jev's raw last
@@ -38,13 +34,11 @@ export interface MoodRows {
   mood?: MoodVector | null;
   /** Which layer had the last word on it. */
   moodSrc?: MoodSource | null;
-  /** What asking has cost so far, and when we will ask again. */
+  /** What this track's two passes cost. Null until one has been analyzed. */
   jev?: {
     calls: number;
     tokens: number;
     lastLatencyMs: number;
-    /** Seconds until the next call may go out; negative means "due". */
-    nextIn: number;
   } | null;
 }
 
@@ -69,8 +63,6 @@ export function hudRows(snap: AnalysisSnapshot, feed: MoodRows | null = null): H
     range: dynamics.range.toFixed(2),
     trend: dynamics.trend,
     crest: dynamics.crest.toFixed(2),
-    novelty: feed ? feed.novelty.toFixed(2) : UNMEASURED,
-    payload: feed ? feed.tokens : UNMEASURED,
     drop:
       snap.drop && f.t - snap.drop.t <= DROP_HOLD_SEC
         ? `${snap.drop.kind} ${snap.drop.strength.toFixed(2)}`
@@ -96,8 +88,6 @@ export function hudRows(snap: AnalysisSnapshot, feed: MoodRows | null = null): H
     mood['motion'] = m.motion;
     mood['dropImminent'] = m.dropImminent.toFixed(2);
   }
-  if (feed?.jev) mood['next in'] = `${Math.max(0, feed.jev.nextIn).toFixed(1)}s`;
-
   // Before the first measurement the grid still holds its default 120 BPM at
   // zero confidence. Printed, that reads as a reading; a dash says the truth,
   // which is that nothing has been measured yet.

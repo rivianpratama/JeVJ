@@ -1,13 +1,23 @@
 /**
- * The mood the visuals actually read: Jev's last judgment, approached rather
- * than jumped to.
+ * The mood the visuals actually read: a judgment approached rather than jumped
+ * to.
  *
- * Answers arrive every few seconds and land whole — valence 0.25 one moment,
- * 0.9 the next. Handing that straight to a renderer running at sixty frames a
- * second would make the picture flinch every time the model speaks, and the
- * flinch would be an artifact of the polling rate rather than of the music. So
- * each field is a first-order lag toward its target, and the time constants
- * say what each field is *for*:
+ * **What it is in v2.** Nothing calls `setTarget` any more. v1 asked Jev several
+ * times a minute and its answers landed whole — valence 0.25 one moment, 0.9
+ * the next — and handing that straight to a renderer at sixty frames a second
+ * made the picture flinch every time the model spoke, which is an artifact of
+ * the polling rate rather than of the music. v2 asks nothing while a track
+ * plays: the timeline holds one answer per segment, written before the track
+ * started, and `CueTimeline` interpolates between them itself, so the smoothing
+ * that mattered now happens a layer down.
+ *
+ * It is kept rather than deleted because `effectiveMood` merges the timeline's
+ * *partial* mood over a base vector, and this is the thing that holds one. It
+ * stands at `NEUTRAL_MOOD` for the life of the page, which is exactly the right
+ * floor under a per-segment override; and the slew below is the seam a live
+ * layer would come back through, which is the one thing this file is for. If
+ * anything ever calls `setTarget` again, the constants say what each field is
+ * *for*:
  *
  * - the standing scores (valence, arousal, warmth…) move over τ = 1.5 s. They
  *   describe the mood of a passage; a passage does not turn on a dime.

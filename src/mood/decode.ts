@@ -146,14 +146,14 @@ export function decodeChoice<K extends string>(
  * anticipation ramp on every call for the rest of the track, because the thing
  * that stops us asking is precisely the build being over.
  */
-export function decodeAnswers(
-  answers: Record<string, unknown>,
-  previous: MoodVector | null = null,
-): MoodVector {
+export function decodeAnswers(answers: Record<string, unknown>): MoodVector {
   const conf: Confidences = [];
-  // What a question nobody asked falls back to: the last answer for anything
-  // that describes the music, and "no prediction" for anything that predicts.
-  const held = previous ?? NEUTRAL_MOOD;
+  // What an answer that did not arrive, or arrived malformed, falls back to.
+  // v1 filled those in from the caller's last vector, because a call only asked
+  // a subset of the questions and the rest were meant to stand; v2 asks all
+  // eighteen every time, so a missing answer is a model that did not answer and
+  // the neutral value is the only honest stand-in.
+  const held = NEUTRAL_MOOD;
 
   const genre = decodeChoice(answers['genre'], GENRES, held.genre, held.genreP, conf);
   const section = decodeChoice(answers['section'], SECTIONS, held.section, held.sectionP, conf);

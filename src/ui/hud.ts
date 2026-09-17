@@ -25,8 +25,9 @@ export interface HudData {
   dpr?: number;
   /**
    * How far the timeline is read ahead of the analysis clock, in milliseconds:
-   * the detector's own lag, the capture pipeline's, and the trim below. This is
-   * the number the trim slider is *correcting*, so the two belong together.
+   * the detector's own reporting lag plus the trim below. There is no capture
+   * pipeline in v2 — every track is a file off our own disk. This is the number
+   * the trim slider is *correcting*, so the two belong together.
    */
   latencyMs?: number;
   key?: string;

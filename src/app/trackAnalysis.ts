@@ -222,7 +222,7 @@ export async function analyzeTrack(
       });
     });
     // A batch nobody answered is four moments the track will not have, and the
-    // transcript has to say so: the columns in Task 16 would otherwise show
+    // transcript has to say so: the scrolling columns would otherwise show
     // four questions and no replies with no explanation of why.
     if (attempt.error !== undefined) {
       log.push({
@@ -570,8 +570,9 @@ function monotone(onProgress: ((p: number) => void) | undefined): (p: number) =>
 /**
  * The two callbacks, wired to the local API.
  *
- * Built like `MoodClient`'s fetch path and for the same reason: the key lives
- * on the server, so the browser asks our own routes and never sees it.
+ * The key lives on the server, so the browser asks our own routes and never
+ * sees it — which is why these are `fetch` calls to `/api/...` rather than an
+ * SDK client, and why the SDK is not in the client bundle at all.
  *
  * The two differ in what they do with a failure, because the caller does. A
  * passage nobody judged still has to have a mood, and a neutral one is the

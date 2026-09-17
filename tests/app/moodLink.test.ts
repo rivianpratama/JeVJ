@@ -65,19 +65,17 @@ function fakeFeed(): MoodFeed {
   return {
     update: (snap: AnalysisSnapshot) => ({
       input: Summarizer.fromSnapshot(snap, snap.features.t, 200),
-      novelty: 1,
       sectionChanged: false,
     }),
-    markSent: () => undefined,
   } as unknown as MoodFeed;
 }
 
 describe('MoodLink', () => {
   it('summarizes every tick and advances the slew off the audio clock', () => {
-    // What is left of the layer in v2: the feed still runs, because the HUD
-    // reads its payload and the grid counts phrases from the boundaries only
-    // the feed hears, and the state still slews toward whatever the timeline
-    // last pointed it at.
+    // What is left of the layer in v2: the feed still runs, because the grid
+    // counts phrases from the boundaries only the feed hears, and the state is
+    // still the base vector the timeline's own answers are merged over — so it
+    // has to keep a clock even though nothing points it anywhere any more.
     const state = new MoodState();
     const link = new MoodLink({ feed: fakeFeed(), state });
     state.setTarget({ ...NEUTRAL_MOOD, arousal: 1 }, 0);

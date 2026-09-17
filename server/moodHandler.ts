@@ -16,9 +16,9 @@
 import { TypeSafeClient, type EntryType, type Questions } from '@typesafe-ai/sdk';
 
 import { decodeAnswers } from '../src/mood/decode';
-import { buildState, questionsFor } from '../src/mood/questions';
-import { validateMoodInput, validateMoodVector } from '../src/shared/moodSchema';
-import type { MoodResponse, MoodVector } from '../src/shared/types';
+import { MOOD_QUESTIONS, buildState } from '../src/mood/questions';
+import { validateMoodInput } from '../src/shared/moodSchema';
+import type { MoodResponse } from '../src/shared/types';
 
 /** The model we ask. Pinned by name so a client default cannot move it. */
 export const MOOD_MODEL = 'jev-latest';
@@ -46,25 +46,21 @@ export interface MoodDeps {
 export type MoodResult = { status: number; json: MoodResponse | { error: string } };
 
 /**
- * The questions the caller asked for, and the answer it is holding.
+ * One mood call: every question, every time.
  *
- * Both are hints rather than instructions: the client decides what is worth
- * asking this call (`mood/questions.ts`) and carries its last vector so that
- * the questions it skipped can be filled in rather than reset. Neither is
- * trusted — `questionsFor` drops names it does not know and falls back to the
- * whole set, and a `prev` that is not a well-formed vector is simply not there.
+ * v1 sent a two-tier request — an `ask` list naming the questions this call was
+ * worth spending tokens on, and a `prev` vector so the ones it skipped could be
+ * filled in rather than reset. It existed because v1 asked several times a
+ * minute while a track played, and cutting eighteen questions to ten saved real
+ * money on the calls in between. v2 does not ask while anything plays: a track
+ * is judged once, before it sounds, at a handful of calls per segment, and
+ * there are no calls in between to economize on. The protocol is gone rather
+ * than switched off, so nothing has to reason about a request that arrives with
+ * half a vector attached.
  */
-function askedFor(body: unknown): { ask: string[]; previous: MoodVector | null } {
-  const raw = typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {};
-  const ask = Array.isArray(raw['ask']) ? raw['ask'].filter((x): x is string => typeof x === 'string') : [];
-  const prev = validateMoodVector(raw['prev']);
-  return { ask, previous: prev.ok ? prev.value : null };
-}
-
 export async function handleMood(body: unknown, deps: MoodDeps): Promise<MoodResult> {
   const input = validateMoodInput(body);
   if (!input.ok) return { status: 400, json: { error: input.error } };
-  const { ask, previous } = askedFor(body);
 
   const now = deps.now ?? Date.now;
   const startedAt = now();
@@ -73,13 +69,13 @@ export async function handleMood(body: unknown, deps: MoodDeps): Promise<MoodRes
     // field, so anything extra a caller attached never reaches the model.
     const result = await deps.client.systemOne({
       state: buildState(input.value),
-      questions: questionsFor(ask),
+      questions: MOOD_QUESTIONS,
       model: MOOD_MODEL,
     });
     return {
       status: 200,
       json: {
-        mood: decodeAnswers(result.answers, previous),
+        mood: decodeAnswers(result.answers),
         usage: {
           input_tokens: result.usage?.input_tokens ?? 0,
           output_tokens: result.usage?.output_tokens ?? 0,

@@ -2,7 +2,8 @@
  * The cue timeline: what the visuals are to do, and exactly when.
  *
  * Nothing in the app reacts to Jev directly. Three writers — the beat grid,
- * Jev's predictions and the local detector — put cues on this one store, and
+ * the offline pass's verdicts and the local detector — put cues on this one
+ * store, and
  * the renderer asks it a single question every frame: what is true *now*. That
  * indirection is the whole trick behind hitting a drop on the sample. A
  * prediction can be written seconds early and, when the transient actually
@@ -10,14 +11,13 @@
  * knowing; an offline pass can write a whole track's cues before playback
  * starts (`replaceSource`); and a model answer that lands 400 ms after the
  * question was asked is still written at the instant it was asked about,
- * because `writeJevCues` is handed the time of the question, not of the reply.
+ * because a writer is handed the time of the music, not of the reply.
  *
  * **One clock, and one place where it is corrected.** Every time written here
  * is *analysis time*: the audio clock as the analysis chain sees it, which
  * runs late relative to what the listener hears by the detector's reporting
- * lag plus, for a captured tab, the capture and output latency. Frames,
- * onsets, grid predictions, detector events and the Jev cues derived from the
- * grid are all on that one clock, so they can be compared with each other
+ * lag. Frames, onsets, grid predictions, detector events and the Jev cues the
+ * offline pass wrote are all on that one clock, so they can be compared
  * without anybody subtracting anything. No writer compensates. The *reader*
  * does it once — `src/app/cueReader.ts` asks for `now + latencySec` — which is
  * the only place the two clocks ever meet.
