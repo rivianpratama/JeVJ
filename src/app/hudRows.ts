@@ -15,6 +15,12 @@ const PHASE_CELLS = 10;
 const BAND_BLOCKS = 8;
 /** What a field reads before there is anything to read. */
 const UNMEASURED = '—';
+/**
+ * How long a drop stays on the HUD. The snapshot's event is sticky so that a
+ * consumer reading at its own rate cannot miss one; printed as-is that makes
+ * the row announce a drop from minutes ago for the rest of the track.
+ */
+const DROP_HOLD_SEC = 2;
 
 /** What the mood feed knows and the snapshot does not. */
 export interface MoodRows {
@@ -47,7 +53,10 @@ export function hudRows(snap: AnalysisSnapshot, feed: MoodRows | null = null): H
     crest: dynamics.crest.toFixed(2),
     novelty: feed ? feed.novelty.toFixed(2) : UNMEASURED,
     tokens: feed ? feed.tokens : UNMEASURED,
-    drop: snap.drop ? `${snap.drop.kind} ${snap.drop.strength.toFixed(2)}` : UNMEASURED,
+    drop:
+      snap.drop && f.t - snap.drop.t <= DROP_HOLD_SEC
+        ? `${snap.drop.kind} ${snap.drop.strength.toFixed(2)}`
+        : UNMEASURED,
   };
   for (let i = 0; i < f.bands.length; i++) {
     mood[`b${i}`] = '█'.repeat(Math.round((f.bands[i] ?? 0) * BAND_BLOCKS));

@@ -243,6 +243,20 @@ describe('Summarizer.serialize', () => {
     expect(check.ok && check.value.sync).toBe(1);
     expect(check.ok && check.value.slope4).toBe(3.1);
   });
+
+  it('rounds a hair below zero to zero, not to minus zero', () => {
+    const base = exampleReadings();
+    const m = Summarizer.fromSnapshot(
+      {
+        ...base,
+        dynamics: { ...base.dynamics, slope4: -0.01, slope8: -0.04 },
+        timbre: { ...base.timbre, centroidSlope: -0.001 },
+      },
+      92,
+      245,
+    );
+    for (const v of [m.centroidSlope, m.slope4, m.slope8]) expect(Object.is(v, -0)).toBe(false);
+  });
 });
 
 describe('Summarizer.novelty', () => {

@@ -65,6 +65,44 @@ function turned(t: number): AnalysisSnapshot {
   };
 }
 
+/**
+ * A long slow slide from the opening snapshot to something else entirely,
+ * complete at 16 s. Nothing it moves is a boundary rule's business — the trend,
+ * `slope4`, the onset density and the key all hold — so the only thing it can
+ * be read by is novelty.
+ */
+function drifting(t: number): AnalysisSnapshot {
+  const base = snapshot(t);
+  const k = Math.min(1, Math.max(0, t / 16));
+  const to = (from: number, dest: number) => from + (dest - from) * k;
+  const bands = Float32Array.from(
+    [0.9, 0.8, 0.6, 0.5, 0.5, 0.6, 0.7, 0.5].map((b) => to(b, 0.1)),
+  );
+  return {
+    ...base,
+    features: { ...base.features, bands, bandsRaw: bands },
+    grid: { ...base.grid, bpm: to(128, 160), confidence: to(0.9, 0.3) },
+    key: { ...base.key, modeConf: to(0.7, 0.1) },
+    rhythm: { ...base.rhythm, sync: to(0.3, 0.9), regular: to(0.9, 0.3) },
+    dynamics: {
+      ...base.dynamics,
+      loud: k > 0.5 ? 'p' : 'f',
+      range: to(0.2, 0.8),
+      crest: to(0.3, 0.8),
+      slope8: to(2, -10),
+    },
+    timbre: {
+      ...base.timbre,
+      consonance: to(0.6, 0.1),
+      bright: to(0.7, 0.1),
+      noise: to(0.4, 0.9),
+      sub: to(0.8, 0.1),
+      centroidSlope: to(0.4, -0.4),
+    },
+    speech: to(0.05, 0.6),
+  };
+}
+
 describe('MoodFeed', () => {
   it('builds a payload the schema accepts', () => {
     const r = new MoodFeed().update(snapshot(0), 92, 245);
@@ -72,38 +110,79 @@ describe('MoodFeed', () => {
     expect(r.input.pos).toBe('1:32/4:05');
   });
 
-  it('has nothing to compare the first payload against', () => {
+  it('has everything to say before anything has been said', () => {
     const r = new MoodFeed().update(snapshot(0), 0, 245);
-    expect(r.novelty).toBe(0);
+    expect(r.novelty).toBe(1);
     expect(r.sectionChanged).toBe(false);
     expect(r.input).toEqual(new MoodFeed().update(snapshot(0), 0, 245).input);
+    expect(new MoodFeed().lastSent()).toBe(null);
   });
 
   it('reports nothing new while nothing changes', () => {
     const feed = new MoodFeed();
     feed.update(snapshot(0), 0, 245);
+    feed.markSent(feed.latest()!);
     expect(feed.update(snapshot(1), 1, 245).novelty).toBe(0);
     expect(feed.update(snapshot(2), 2, 245).novelty).toBe(0);
   });
 
-  it('measures how far the music has moved from the reference', () => {
+  it('measures how far the music has moved from what was sent', () => {
     const feed = new MoodFeed();
     feed.update(snapshot(0), 0, 245);
+    feed.markSent(feed.latest()!);
     const r = feed.update(turned(1), 1, 245);
     expect(r.novelty).toBeGreaterThan(0);
   });
 
-  it('re-takes the reference once it is four seconds old', () => {
+  it('accumulates a slow drift instead of resetting every four seconds', () => {
+    const feed = new MoodFeed();
+    feed.update(drifting(0), 0, 245);
+    const sent = feed.latest()!;
+    feed.markSent(sent);
+
+    let last = -1;
+    for (let t = 1; t <= 12; t++) {
+      const n = feed.update(drifting(t), t, 245).novelty;
+      expect(n).toBeGreaterThan(last); // never re-based, so never resets
+      last = n;
+    }
+    expect(last).toBeGreaterThan(0.3);
+    expect(feed.lastSent()).toBe(sent);
+  });
+
+  it('starts over from what actually went out, then builds again', () => {
+    const feed = new MoodFeed();
+    feed.update(drifting(0), 0, 245);
+    feed.markSent(feed.latest()!);
+    feed.update(drifting(12), 12, 245);
+
+    feed.markSent(feed.latest()!);
+    expect(feed.update(drifting(12), 12, 245).novelty).toBe(0);
+    expect(feed.update(drifting(16), 16, 245).novelty).toBeGreaterThan(0);
+  });
+
+  it('leaves what was sent alone across a section boundary', () => {
     const feed = new MoodFeed();
     feed.update(snapshot(0), 0, 245);
-    const first = feed.lastSent();
-    feed.update(snapshot(3), 3, 245);
-    expect(feed.lastSent()).toBe(first); // still inside the window
+    const sent = feed.latest()!;
+    feed.markSent(sent);
 
-    const moved = feed.update(turned(5), 5, 245);
-    expect(moved.novelty).toBeGreaterThan(0); // measured against the old one
-    // ...which it then replaces, so the same music is no longer news.
-    expect(feed.update(turned(5.1), 5.1, 245).novelty).toBe(0);
+    expect(feed.update(turned(1), 1, 245).sectionChanged).toBe(true);
+    expect(feed.lastSent()).toBe(sent);
+    expect(feed.update(turned(1.2), 1.2, 245).novelty).toBeGreaterThan(0);
+  });
+
+  it('tells its owner about a boundary once, with the audio time', () => {
+    const heard: number[] = [];
+    const feed = new MoodFeed({ onSectionChange: (now) => heard.push(now) });
+    feed.update(snapshot(0), 0, 245);
+
+    expect(feed.update(turned(1), 1, 245).sectionChanged).toBe(true);
+    expect(heard).toEqual([1]);
+    // The same fading, still fading, is the same section.
+    feed.update(turned(1.1), 1.1, 245);
+    feed.update(turned(1.6), 1.6, 245);
+    expect(heard).toEqual([1]);
   });
 
   it('calls a boundary once, not on every frame of it', () => {
@@ -126,11 +205,12 @@ describe('MoodFeed', () => {
   it('latches what was sent when the client says it went', () => {
     const feed = new MoodFeed();
     feed.update(snapshot(0), 0, 245);
-    // A change too mild to be a boundary, so only `markSent` can re-latch it.
+    feed.markSent(feed.latest()!);
+    // A change too mild to be a boundary: only `markSent` can re-base novelty.
     expect(feed.update(duller(1), 1, 245).sectionChanged).toBe(false);
     expect(feed.update(duller(1.2), 1.2, 245).novelty).toBeGreaterThan(0);
 
-    feed.markSent(1.2);
+    feed.markSent(feed.latest()!);
     expect(feed.lastSent()).toEqual(feed.latest());
     expect(feed.update(duller(1.5), 1.5, 245).novelty).toBe(0);
   });

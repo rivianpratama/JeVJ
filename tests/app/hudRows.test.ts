@@ -64,13 +64,26 @@ describe('hudRows', () => {
     expect(hudRows(snap).mood!['tokens']).toBe('—');
     expect(hudRows(quiet).mood!['drop']).toBe('—');
 
-    const mood = hudRows({ ...snap, drop: { t: 3, strength: 0.75, kind: 'impact' } }, {
+    const now = snap.features.t;
+    const mood = hudRows({ ...snap, drop: { t: now - 1, strength: 0.75, kind: 'impact' } }, {
       novelty: 0.4267,
       tokens: 142,
     }).mood!;
     expect(mood['novelty']).toBe('0.43');
     expect(mood['tokens']).toBe(142);
     expect(mood['drop']).toBe('impact 0.75');
+  });
+
+  it('holds a drop for two seconds and then lets it go', () => {
+    const snap = after(clickTrack(120, 12, FS), 12);
+    const now = snap.features.t;
+    const at = (age: number) =>
+      hudRows({ ...snap, drop: { t: now - age, strength: 0.75, kind: 'impact' } }).mood!['drop'];
+
+    // The detector's event is sticky so nobody misses it; the row is not, or
+    // the HUD would still be announcing a drop from a minute ago.
+    expect(at(1.9)).toBe('impact 0.75');
+    expect(at(2.5)).toBe('—');
   });
 
   it('says nothing has been measured before anything has', () => {

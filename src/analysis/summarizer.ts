@@ -328,12 +328,17 @@ function unit(x: number): number {
   return hundredths(x, 0, 1);
 }
 
+/**
+ * `+ 0` on the way out: a value a hair below zero rounds to `-0`, which reads
+ * as `-0` everywhere a payload is compared or printed, and is not a reading
+ * anything measured.
+ */
 function hundredths(x: number, lo: number, hi: number): number {
-  return Math.round(clamp(x, lo, hi) * 100) / 100;
+  return Math.round(clamp(x, lo, hi) * 100) / 100 + 0;
 }
 
 function tenths(x: number, lo: number, hi: number): number {
-  return Math.round(clamp(x, lo, hi) * 10) / 10;
+  return Math.round(clamp(x, lo, hi) * 10) / 10 + 0;
 }
 
 /** NaN reads as the bottom of the range: an unmeasured field, not a loud one. */
@@ -364,7 +369,10 @@ function vector(m: MoodInput): number[] {
     m.onsetRatio / 4,
     m.centroidSlope,
     Math.max(0, LOUD_ORDER.indexOf(m.loud)) / (LOUD_ORDER.length - 1),
-    trendSign(m.trend),
+    // ±0.5, not ±1: every other term spans one unit, so building→fading has to
+    // span one too. At ±1 the flip would be worth 2 and the per-term clamp
+    // would quietly cut it back to 1 — the same number, but by accident.
+    trendSign(m.trend) / 2,
   ];
 }
 

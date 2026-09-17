@@ -36,7 +36,10 @@ if (!root) throw new Error('JeVJ: #ui is missing from the document');
 const card = createCard(root);
 const player = createYouTubePlayer(card.playerMount);
 const loop = new AnalysisLoop();
-const feed = new MoodFeed();
+// Nothing else tells the grid a section ended, and the phrase count it keeps
+// is counted from there. The feed is what hears boundaries, so it is what says
+// so — the HUD tick below only passes frames through.
+const feed = new MoodFeed({ onSectionChange: (now) => loop.markSectionChange(now) });
 
 /** Offset applied when analyser time is converted to cue time (task 5b). */
 let latencyTrimMs = loadTrim();
@@ -83,9 +86,6 @@ function renderHud(): void {
   // The HUD tick is also the mood tick: the payload Task 7 will send is built
   // here, against the same snapshot the overlay is describing.
   const reading = feed.update(snap, positionSec(), durationSec());
-  // Nothing else tells the grid a section ended, and the phrase count it keeps
-  // is counted from there.
-  if (reading.sectionChanged) loop.markSectionChange(snap.features.t);
 
   hud.update(
     hudRows(snap, {
