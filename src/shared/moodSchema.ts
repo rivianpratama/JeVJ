@@ -354,7 +354,7 @@ export function validateTransitionVerdict(x: unknown): Valid<TransitionVerdict> 
  * Bump when the cue writers change: every cached analysis then rebuilds
  * rather than replaying cues the old writer placed.
  *
- * 2: transitions land on the detector's instant, not the summarizer's sample.
+ * 2: transitions and boundaries land where the loudness stepped, not the summarizer's sample.
  */
 export const ANALYSIS_VERSION = 2;
 

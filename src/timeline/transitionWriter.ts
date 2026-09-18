@@ -65,7 +65,7 @@ const SCREAM_FLOOR = 0.8;
 /** How far a hole's energy has to come back for the return to be a hit. */
 const RETURN_JUMP_DB = 6;
 /** Above this, Jev called the moment a jolt and the Director fires a flourish. */
-const DRAMATIC = 0.6;
+const DRAMATIC = 0.5;
 /** A sane bar when the grid never locked, so a ramp is still drawn. */
 const FALLBACK_BAR_SEC = 2;
 /**
@@ -137,6 +137,10 @@ export interface TransitionContext {
   slams?: readonly DetectorInstant[];
   /** Every hole it stamped, for a fall found by something else. */
   holes?: readonly DetectorInstant[];
+  /** Where the frames say the loudness stepped up around `at`, when no slam did. */
+  riseT?: number;
+  /** Where they say it stepped down. */
+  fallT?: number;
 }
 
 /**
@@ -151,8 +155,8 @@ export function writeTransitionCues(
   ctx: TransitionContext,
 ): void {
   const bar = ctx.barSec > 0 && Number.isFinite(ctx.barSec) ? ctx.barSec : FALLBACK_BAR_SEC;
-  const hit = ctx.detectorT ?? snapToDetector(ctx.slams, at) ?? at;
-  const fall = ctx.detectorT ?? snapToDetector(ctx.holes, at) ?? at;
+  const hit = ctx.detectorT ?? snapToDetector(ctx.slams, at) ?? ctx.riseT ?? at;
+  const fall = ctx.detectorT ?? snapToDetector(ctx.holes, at) ?? ctx.fallT ?? at;
   const flourish = verdict.dramatic >= DRAMATIC;
   const mark = (c: Cue): void => tl.add({ ...c, transition: verdict.kind, ...(flourish ? { flourish: true } : {}) });
 

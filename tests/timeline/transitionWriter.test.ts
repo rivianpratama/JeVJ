@@ -66,6 +66,11 @@ describe('writeTransitionCues: drop', () => {
     expect(at(write('drop', {}, { slams }), AT - 0.4)?.impact).toBe(0.7);
   });
 
+  it('falls back to where the frames say the loudness stepped when no slam did', () => {
+    expect(at(write('drop', {}, { riseT: AT - 1.1 }), AT - 1.1)?.impact).toBe(0.7);
+    expect(at(write('drop', {}, { slams: [{ t: AT - 0.5, strength: 0.5 }], riseT: AT - 1.1 }), AT - 0.5)?.impact).toBe(0.7);
+  });
+
   it('writes one hit when two candidates name the same slam', () => {
     const tl = new CueTimeline();
     const slams = [{ t: AT - 1.2, strength: 0.8 }];
@@ -193,7 +198,7 @@ describe('writeTransitionCues: flourish', () => {
   });
 
   it('leaves the flag off below the threshold', () => {
-    const cues = write('drop', { dramatic: 0.59 });
+    const cues = write('drop', { dramatic: 0.45 });
     expect(cues.every((c) => c.flourish === undefined)).toBe(true);
   });
 

@@ -46,6 +46,7 @@ import { AnalysisPipeline } from '../analysis/pipeline';
 import { Summarizer } from '../analysis/summarizer';
 import { CueTimeline } from './timeline';
 import type { Beat, GridState } from '../analysis/grid';
+import { steepestStep } from './anchor';
 import type { Cue, FrameFeatures, MoodInput, MoodVector } from '../shared/types';
 
 /** 60 frames a second, as the live loop gets from the display. */
@@ -76,10 +77,6 @@ const MIN_GAP_RELEASE_SEC = 0.5;
 const CANDIDATE_NOVELTY = 0.25;
 /** Bars between two novelty peaks; closer than this they are one moment. */
 const CANDIDATE_SPACING_BARS = 4;
-/** A tempo that moved by this share is a tempo change. */
-const TEMPO_CHANGE_RATIO = 0.06;
-/** How sure of a key we have to be before a new tonic means anything. */
-const KEY_CHANGE_FIT = 0.5;
 /** Where `vocal` and `harsh` are read as crossing into their feature. */
 const VOCAL_CROSSING = 0.5;
 const HARSH_CROSSING = 0.6;
@@ -282,9 +279,12 @@ export async function analyzeOffline(
 
       let cut = false;
       if (turned && t - segmentStart >= MIN_SEGMENT_SEC && duration - t >= MIN_TAIL_SEC) {
-        bounds.push(t);
+        // The summarizer noticed here; the music turned earlier. Cut where the
+        // loudness actually stepped, and never so early the segment goes short.
+        const cutAt = Math.max(steepestStep(features, t, 'either') ?? t, segmentStart + MIN_SEGMENT_SEC);
+        bounds.push(cutAt);
         cut = true;
-        pipeline.markSectionChange(t);
+        pipeline.markSectionChange(cutAt);
       }
 
       // What came before a boundary is not what the next one should be judged
@@ -388,23 +388,6 @@ export function findCandidates(o: CandidateSources): TransitionCandidate[] {
     });
   }
 
-  for (let i = 1; i < o.samples.length; i++) {
-    const before = o.samples[i - 1]!;
-    const after = o.samples[i]!;
-
-    const bpmBefore = before.input.bpm;
-    const bpmAfter = after.input.bpm;
-    if (bpmBefore > 0 && bpmAfter > 0) {
-      const moved = Math.abs(bpmAfter - bpmBefore) / bpmBefore;
-      if (moved > TEMPO_CHANGE_RATIO) {
-        raw.push({ t: after.t, reason: 'tempo', novelty: Math.max(after.novelty, moved) });
-      }
-    }
-
-    if (after.tonic !== before.tonic && after.tonic >= 0 && after.fit > KEY_CHANGE_FIT) {
-      raw.push({ t: after.t, reason: 'key', novelty: Math.max(after.novelty, after.fit) });
-    }
-  }
 
   for (const c of crossings(o.frames, o.vocal, VOCAL_CROSSING, 'vocal')) {
     raw.push({ ...c, novelty: Math.max(noveltyAt(c.t), VOCAL_CROSSING_NOVELTY) });

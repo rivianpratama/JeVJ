@@ -109,17 +109,6 @@ describe('findCandidates rules', () => {
     barsSinceChange: 4, barInPhrase: 4,
   };
 
-  it('calls a tempo that moved more than 6%', () => {
-    const found = findCandidates({
-      samples: [sample(0), sample(0.5, { bpm: 129 })],
-      drops: [],
-      frames: [],
-      vocal: [],
-      harsh: [],
-    });
-    expect(found.map((c) => c.reason)).toEqual(['tempo']);
-    expect(found[0]?.t).toBe(0.5);
-  });
 
   it('ignores a tempo that wobbled inside 6%', () => {
     const found = findCandidates({
@@ -132,19 +121,6 @@ describe('findCandidates rules', () => {
     expect(found).toEqual([]);
   });
 
-  it('calls a new tonic only when the key fits', () => {
-    const weak = findCandidates({
-      samples: [sample(0), sample(0.5, {}, { tonic: 7, fit: 0.4 })],
-      drops: [], frames: [], vocal: [], harsh: [],
-    });
-    expect(weak).toEqual([]);
-
-    const strong = findCandidates({
-      samples: [sample(0), sample(0.5, {}, { tonic: 7, fit: 0.8 })],
-      drops: [], frames: [], vocal: [], harsh: [],
-    });
-    expect(strong.map((c) => c.reason)).toEqual(['key']);
-  });
 
   it('takes every detector event, and keeps its exact instant', () => {
     const found = findCandidates({

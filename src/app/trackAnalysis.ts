@@ -33,6 +33,7 @@
 import { beatTrust } from '../analysis/speech';
 import { analyzeOffline, type OfflineSample, type TransitionCandidate } from '../timeline/offlineAnalyzer';
 import { CueTimeline } from '../timeline/timeline';
+import { steepestStep } from '../timeline/anchor';
 import { writeTransitionCues, type DetectorInstant } from '../timeline/transitionWriter';
 import { TRANSITION_BATCH } from '../mood/transitionQuestions';
 import { NEUTRAL_MOOD , ANALYSIS_VERSION } from '../shared/moodSchema';
@@ -224,7 +225,11 @@ export async function analyzeTrack(
       log.push({ t: candidate.t, dir: 'res', json: JSON.stringify(verdict) });
       transitions.push({ at: candidate.t, input, verdict });
 
+      const riseT = steepestStep(offline.features, candidate.t, 'rise');
+      const fallT = steepestStep(offline.features, candidate.t, 'fall');
       writeTransitionCues(tl, candidate.t, verdict, {
+        ...(riseT === undefined ? {} : { riseT }),
+        ...(fallT === undefined ? {} : { fallT }),
         barSec: barSecAt(offline.samples, candidate.t),
         mood: moodAt(offline.segments, candidate.t),
         ...(candidate.detectorT === undefined ? {} : { detectorT: candidate.detectorT }),
