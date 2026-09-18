@@ -1,3 +1,4 @@
+import { ANALYSIS_VERSION } from '../../src/shared/moodSchema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createColumnsLink, splitLog } from '../../src/app/columnsLink';
 import type { ColumnEntry, JsonColumns } from '../../src/ui/jsonColumns';
@@ -26,6 +27,7 @@ function fakeColumns(): JsonColumns & {
 /** A record with one question and one answer in it, so there is something to clear. */
 function analysis(): TrackAnalysis {
   return {
+    version: ANALYSIS_VERSION,
     title: 'a track',
     durationSec: 90,
     segments: [{ start: 0, end: 90, input: {} as never, mood: {} as never }],

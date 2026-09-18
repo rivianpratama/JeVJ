@@ -35,7 +35,7 @@ import { analyzeOffline, type OfflineSample, type TransitionCandidate } from '..
 import { CueTimeline } from '../timeline/timeline';
 import { writeTransitionCues, type DetectorInstant } from '../timeline/transitionWriter';
 import { TRANSITION_BATCH } from '../mood/transitionQuestions';
-import { NEUTRAL_MOOD } from '../shared/moodSchema';
+import { NEUTRAL_MOOD , ANALYSIS_VERSION } from '../shared/moodSchema';
 import type {
   AnalysisLogEntry,
   AnalyzedTransition,
@@ -249,6 +249,7 @@ export async function analyzeTrack(
 
   progress(1);
   const analysis: TrackAnalysis = {
+    version: ANALYSIS_VERSION,
     title: deps.title ?? '',
     durationSec,
     segments: offline.segments.map((s) => ({ start: s.start, end: s.end, input: s.input, mood: s.mood })),

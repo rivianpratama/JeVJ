@@ -7,7 +7,7 @@ import {
   downloadPercent,
   downmix,
 } from '../../src/app/trackFlow';
-import { NEUTRAL_MOOD } from '../../src/shared/moodSchema';
+import { NEUTRAL_MOOD, ANALYSIS_VERSION } from '../../src/shared/moodSchema';
 import { CueTimeline } from '../../src/timeline/timeline';
 import { clickTrack } from '../helpers/synth';
 import type { TrackAnalysisDeps } from '../../src/app/trackAnalysis';
@@ -149,6 +149,7 @@ function fakeDeps(): {
 /** An empty but valid analysis record, as the cache would hand one back. */
 function cachedRecord(): TrackAnalysis {
   return {
+    version: ANALYSIS_VERSION,
     title: 'from the cache',
     durationSec: SECONDS,
     segments: [],

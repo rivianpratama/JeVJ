@@ -3,7 +3,7 @@
  * tested against, plus a set of model answers shaped exactly like the SDK's.
  */
 
-import { NEUTRAL_MOOD } from '../../src/shared/moodSchema';
+import { NEUTRAL_MOOD , ANALYSIS_VERSION } from '../../src/shared/moodSchema';
 import type { MoodInput, TrackAnalysis, TransitionInput, TransitionVerdict } from '../../src/shared/types';
 
 export const EXAMPLE_INPUT: MoodInput = {
@@ -88,6 +88,7 @@ export function exampleAnalysis(videoId?: string): TrackAnalysis {
   const input = exampleTransition('0:24');
   const verdict = exampleVerdict();
   const analysis: TrackAnalysis = {
+    version: ANALYSIS_VERSION,
     title: 'a track',
     durationSec: 60,
     segments: [{ start: 0, end: 60, input: EXAMPLE_INPUT, mood: NEUTRAL_MOOD }],

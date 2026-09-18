@@ -304,6 +304,11 @@ export interface TokenUsage {
 
 /** The whole pre-analysis of one track: what to draw, and how we got there. */
 export interface TrackAnalysis {
+  /**
+   * Which writer produced the cues. A cached record from an older writer is a
+   * timeline with the old writer's mistakes in it, and reads as a miss.
+   */
+  version: number;
   videoId?: string;
   title: string;
   durationSec: number;

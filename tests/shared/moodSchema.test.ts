@@ -178,6 +178,14 @@ describe('validateTransitionVerdict', () => {
 });
 
 describe('validateTrackAnalysis', () => {
+  it('reads a record from an older writer as a miss', () => {
+    const old: Record<string, unknown> = { ...exampleAnalysis() };
+    old['version'] = 1;
+    expect(validateTrackAnalysis(old).ok).toBe(false);
+    delete old['version'];
+    expect(validateTrackAnalysis(old).ok).toBe(false);
+  });
+
   it('round-trips a record through JSON', () => {
     const analysis = exampleAnalysis('jNQXAC9IVRw');
     const parsed: unknown = JSON.parse(JSON.stringify(analysis));

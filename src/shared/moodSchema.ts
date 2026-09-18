@@ -350,8 +350,17 @@ export function validateTransitionVerdict(x: unknown): Valid<TransitionVerdict> 
  * kinds, and copies the rest. Anything it rejects is a cache entry we throw
  * away and rebuild, which costs one re-analysis and never a wrong picture.
  */
+/**
+ * Bump when the cue writers change: every cached analysis then rebuilds
+ * rather than replaying cues the old writer placed.
+ *
+ * 2: transitions land on the detector's instant, not the summarizer's sample.
+ */
+export const ANALYSIS_VERSION = 2;
+
 export function validateTrackAnalysis(x: unknown): Valid<TrackAnalysis> | Invalid {
   if (!isRecord(x)) return bad('analysis', 'an object');
+  if (x['version'] !== ANALYSIS_VERSION) return bad('version', `analysis version ${ANALYSIS_VERSION}`);
   if (typeof x['title'] !== 'string') return bad('title', 'a string');
   if (!num(x['durationSec'], 0, 24 * 3600)) return bad('durationSec', 'a finite number of seconds');
   if (x['videoId'] !== undefined && typeof x['videoId'] !== 'string') return bad('videoId', 'a string');
@@ -400,6 +409,7 @@ export function validateTrackAnalysis(x: unknown): Valid<TrackAnalysis> | Invali
   }
 
   const out: TrackAnalysis = {
+    version: ANALYSIS_VERSION,
     title: x['title'],
     durationSec: x['durationSec'],
     segments,
