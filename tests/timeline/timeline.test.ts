@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CueTimeline, impactTau } from '../../src/timeline/timeline';
+import { CueTimeline } from '../../src/timeline/timeline';
 import { NEUTRAL_MOOD } from '../../src/shared/moodSchema';
 import type { Cue, TransitionKind } from '../../src/shared/types';
 
@@ -40,22 +40,13 @@ describe('CueTimeline', () => {
     expect(tl.at(10).mood.genre).toBe('electronic_dance');
   });
 
-  it('fires on the sample and rings for as long as the hit was hard', () => {
-    // The sustain is the hit's own: `0.25 + 0.5·intensity`, so a slam is still
-    // half there three quarters of a second later and a tap is not.
-    const slam = new CueTimeline();
-    slam.add({ t: 3, source: 'jev', impact: 1 });
-    expect(slam.at(3).impact).toBeCloseTo(1, 6);
-    expect(slam.at(3 + impactTau(1)).impact).toBeCloseTo(Math.exp(-1), 6);
-    expect(slam.at(2.9).impact).toBe(0);
+  it('decays an impact over a quarter second and fires on the sample', () => {
+    const tl = new CueTimeline();
+    tl.add({ t: 3, source: 'jev', impact: 1 });
 
-    const tap = new CueTimeline();
-    tap.add({ t: 3, source: 'jev', impact: 0.2 });
-    expect(tap.at(3 + impactTau(1)).impact).toBeLessThan(0.2 * Math.exp(-1));
-
-    // Half a second after both, the slam is worth more than three times the
-    // tap — against 1.25 times if they decayed at one rate.
-    expect(slam.at(3.5).impact / tap.at(3.5).impact).toBeGreaterThan(3);
+    expect(tl.at(3).impact).toBeCloseTo(1, 6);
+    expect(tl.at(3.25).impact).toBeCloseTo(0.3679, 3);
+    expect(tl.at(2.9).impact).toBe(0);
   });
 
   it('takes the strongest impact still ringing', () => {
@@ -63,25 +54,8 @@ describe('CueTimeline', () => {
     tl.add({ t: 3, source: 'jev', impact: 1 });
     tl.add({ t: 3.2, source: 'detector', impact: 0.5 });
 
-    // The older, louder one is still worth more than the new one at 3.2: it hit
-    // harder and it rings for longer, which is the point of the scaling.
-    expect(tl.at(3.2).impact).toBeCloseTo(Math.exp(-0.2 / impactTau(1)), 6);
-    expect(tl.at(3.2).impact).toBeGreaterThan(0.5);
-  });
-
-  it('scales the sustain with the hit, and clamps a nonsense one', () => {
-    expect(impactTau(0)).toBeCloseTo(0.25, 9);
-    expect(impactTau(0.5)).toBeCloseTo(0.5, 9);
-    expect(impactTau(1)).toBeCloseTo(0.75, 9);
-    // Monotone in between, and nothing outside 0..1 can lengthen or shorten it.
-    let previous = 0;
-    for (let i = 0; i <= 1.0001; i += 0.1) {
-      expect(impactTau(i)).toBeGreaterThan(previous);
-      previous = impactTau(i);
-    }
-    expect(impactTau(-1)).toBe(impactTau(0));
-    expect(impactTau(4)).toBe(impactTau(1));
-    expect(impactTau(Number.NaN)).toBe(impactTau(0));
+    // The older, louder one has decayed to 0.45 by 3.2; the new one is 0.5.
+    expect(tl.at(3.2).impact).toBeCloseTo(0.5, 6);
   });
 
   it('interpolates the build between the cues bracketing it', () => {

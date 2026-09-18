@@ -130,17 +130,7 @@ so what the picture does is what the listener is *hearing*. The HUD's trim
 slider covers whatever the latency estimate misses, a bluetooth speaker mostly.
 
 Because the timeline is complete before playback, a drop lands on the sample it
-lands on. Nothing is predicted live and nothing has to be caught up with. Three
-things make that literal rather than approximate: an impact's timestamp is
-refined off the PCM envelope to the instant the attack happened rather than left
-at the end of the analyser window that noticed it; the map onto the audio clock
-is a running median of the last eight readings rather than one sample of
-`el.currentTime`; and the timeline is read *behind* the audio clock by the
-output buffer, so the frame that shows a cue coincides with the audible instant
-and not with the scheduling one. Measured on the synthetic EDM fixture, whose
-slam is at exactly 24.000 s: the cue used to land between 19 ms early and 58 ms
-late depending on where in the window the attack fell, and now lands within a
-millisecond of it.
+lands on. Nothing is predicted live and nothing has to be caught up with.
 
 ### The director
 

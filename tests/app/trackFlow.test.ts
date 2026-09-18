@@ -6,9 +6,6 @@ import {
   DOWNLOAD_END,
   downloadPercent,
   downmix,
-  median,
-  OFFSET_EPSILON_SEC,
-  OFFSET_WINDOW,
 } from '../../src/app/trackFlow';
 import { NEUTRAL_MOOD } from '../../src/shared/moodSchema';
 import { CueTimeline } from '../../src/timeline/timeline';
@@ -48,31 +45,6 @@ describe('the progress bar', () => {
     expect(analysisPercent(2, DOWNLOAD_END)).toBe(100);
     expect(analysisPercent(-1, DOWNLOAD_END)).toBe(40);
     expect(analysisPercent(Number.NaN, DOWNLOAD_END)).toBe(40);
-  });
-});
-
-describe('median', () => {
-  it('is the middle reading, and the mean of the two middles when there are two', () => {
-    expect(median([3])).toBe(3);
-    expect(median([5, 1, 3])).toBe(3);
-    expect(median([4, 1, 3, 2])).toBe(2.5);
-  });
-
-  it('ignores an outlier the way a mean cannot', () => {
-    // The point of the median. `el.currentTime` is stale by an unpredictable
-    // amount, always in the same direction, so one reading can be tens of
-    // milliseconds out — and a mean would put a fraction of that into every cue
-    // in the track.
-    const good = [0.5, 0.501, 0.499, 0.5, 0.502, 0.498, 0.5];
-    expect(median([...good, 0.62])).toBeCloseTo(0.5, 6);
-    const mean = [...good, 0.62].reduce((a, b) => a + b, 0) / 8;
-    expect(Math.abs(mean - 0.5)).toBeGreaterThan(OFFSET_EPSILON_SEC);
-  });
-
-  it('does not disturb what it was given', () => {
-    const xs = [3, 1, 2];
-    median(xs);
-    expect(xs).toEqual([3, 1, 2]);
   });
 });
 
@@ -402,32 +374,6 @@ describe('createTrackFlow', () => {
     element.seekTo(to);
     element.fire('seeked');
     expect([...timeline.cues()].map((c) => c.t)).toEqual([1.5 + CTX_NOW - to]);
-  }, 60_000);
-
-  it('rides out the jitter in the element\'s own clock', async () => {
-    const { flow, timeline, element } = build({ cached: cachedRecord() });
-    await flow.open('https://youtu.be/jNQXAC9IVRw');
-
-    element.fire('play');
-    const settled = [...timeline.cues()].map((c) => c.t);
-    expect(settled).toEqual([1.5 + CTX_NOW - EL_AT]);
-
-    // `timeupdate` arrives four times a second with a `currentTime` that is
-    // stale by an unpredictable few milliseconds. None of that may reach the
-    // picture: the median holds, and the timeline is not re-placed at all.
-    for (const stale of [0.004, 0.002, 0.003, 0.001, 0.004, 0.002, 0.003]) {
-      element.seekTo(EL_AT - stale);
-      element.fire('timeupdate');
-      expect([...timeline.cues()].map((c) => c.t)).toEqual(settled);
-    }
-
-    // A real move is another matter: eight readings a tenth of a second out and
-    // the median follows.
-    for (let i = 0; i < OFFSET_WINDOW; i++) {
-      element.seekTo(EL_AT - 0.1);
-      element.fire('timeupdate');
-    }
-    expect([...timeline.cues()].map((c) => c.t)).toEqual([1.5 + CTX_NOW - EL_AT + 0.1]);
   }, 60_000);
 
   it('refuses a file the decoder will not take, in words worth showing', async () => {

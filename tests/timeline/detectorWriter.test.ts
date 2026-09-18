@@ -96,26 +96,6 @@ describe('applyDetectorEvent', () => {
     expect(tl.at(10.3).build).toBe(0);
   });
 
-  it('leaves a named moment where the offline sweep put it', () => {
-    // The sweep refined that instant against the PCM envelope. This reading was
-    // taken at the end of an analyser window and is late by however much of the
-    // window came after the attack, so re-anchoring onto it would put the hit
-    // back where the refinement took it from.
-    const tl = new CueTimeline();
-    writeTransitionCues(tl, 14, exampleVerdict({ kind: 'drop', intensity: 0.8 }), {
-      barSec: 2,
-      mood: NEUTRAL_MOOD,
-      detectorT: 14,
-    });
-
-    applyDetectorEvent(tl, calledAt(14.06, { strength: 0.9 }), 14.08, { beatSec: 0.5 });
-
-    const impacts = tl.cues().filter((c) => c.impact !== undefined);
-    expect(impacts.map((c) => c.t)).toEqual([14]);
-    // And nothing new was written next to it either: one hit, one cue.
-    expect(impacts).toHaveLength(1);
-  });
-
   it('does not notch the ramp it lands in the middle of', () => {
     const tl = new CueTimeline();
     // A drop pass 2 named at 14, at 120 BPM — two seconds a bar, so its

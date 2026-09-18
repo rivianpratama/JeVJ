@@ -315,26 +315,6 @@ function ring(cx: number, cy: number, inner: number): Annulus {
 // ───────────────────────────────────────────────────────────── flourishes
 
 /**
- * How long a drop's burst runs: `0.6 + 0.8·intensity`.
- *
- * A fixed 0.6 s was the "the hit is too short" complaint at the other end from
- * the impact decay. The burst is the largest gesture a single moment makes —
- * six times the outward push, a third of a stop of exposure, a chroma split —
- * and squeezing an overwhelming slam and a polite one into the same six tenths
- * of a second says the two are the same event. They are not, and the model has
- * already said by how much: 0.6 s at the bottom, 1.4 s at the top. The shape is
- * unchanged — `(1 − t)²` over whatever the window is — so a bigger hit does not
- * punch harder, it lets go more slowly, which is what a big room does.
- */
-const DROP_BURST_BASE = 0.6;
-const DROP_BURST_SPAN = 0.8;
-
-export function dropBurstSec(intensity: number): number {
-  const i = Number.isFinite(intensity) ? Math.min(1, Math.max(0, intensity)) : 0;
-  return DROP_BURST_BASE + DROP_BURST_SPAN * i;
-}
-
-/**
  * How long each one-shot runs.
  *
  * Five kinds do something and the rest do not. `build_start` is a section
@@ -345,13 +325,9 @@ export function dropBurstSec(intensity: number): number {
  * `scream_peak` is 1 s rather than the flare's 0.4: the mirror it opens is
  * specified to hold for a second, and the flare is gated inside it by
  * `applyFlourish`. A flourish's window is the longest thing it does.
- *
- * `drop`'s entry is its *floor*: the real window is `dropBurstSec` of the hit's
- * own intensity, decided when it fires and kept on the state. This table is
- * what a drop is worth when nobody said how hard it was.
  */
 export const FLOURISH_SEC: Record<TransitionKind, number> = {
-  drop: DROP_BURST_BASE,
+  drop: 0.6,
   build_start: 0,
   breakdown: 0,
   break_silence: 1.5,
@@ -398,15 +374,6 @@ export interface FlourishState {
   kind: TransitionKind | null;
   startedAt: number;
   /**
-   * How long the one that is running runs for.
-   *
-   * Kept on the state rather than looked up, because a drop's window depends on
-   * how hard *that* drop hit and the answer has to be the same for every frame
-   * of it — reading the intensity again each frame would shorten the window as
-   * the impact decayed underneath it.
-   */
-  seconds: number;
-  /**
    * Where `activeFlourish` writes its answer.
    *
    * It is asked once per frame for the life of the page, and a fresh
@@ -425,7 +392,6 @@ export function createFlourishes(): FlourishState {
     firedAt,
     kind: null,
     startedAt: Number.NEGATIVE_INFINITY,
-    seconds: 0,
     active: { kind: TRANSITION_KINDS[0]!, t: 0 },
   };
 }
@@ -438,12 +404,7 @@ export function createFlourishes(): FlourishState {
  * cooldowns rather than locking the new page out for as long as the old one
  * had been running.
  */
-export function fireFlourish(
-  s: FlourishState,
-  kind: TransitionKind,
-  now: number,
-  intensity = 0,
-): boolean {
+export function fireFlourish(s: FlourishState, kind: TransitionKind, now: number): boolean {
   if (FLOURISH_SEC[kind] <= 0) return false;
   const last = s.firedAt[kind];
   if (now < last) resetFlourishes(s);
@@ -454,8 +415,6 @@ export function fireFlourish(
   // limiter exists to never see.
   s.kind = kind;
   s.startedAt = now;
-  // A drop's window is the hit's; everything else runs for its table entry.
-  s.seconds = kind === 'drop' ? dropBurstSec(intensity) : FLOURISH_SEC[kind];
   return true;
 }
 
@@ -463,7 +422,6 @@ export function resetFlourishes(s: FlourishState): void {
   for (const k of TRANSITION_KINDS) s.firedAt[k] = Number.NEGATIVE_INFINITY;
   s.kind = null;
   s.startedAt = Number.NEGATIVE_INFINITY;
-  s.seconds = 0;
 }
 
 /**
@@ -477,7 +435,7 @@ export function activeFlourish(
 ): { kind: TransitionKind; t: number } | null {
   const kind = s.kind;
   if (kind === null) return null;
-  const sec = s.seconds > 0 ? s.seconds : FLOURISH_SEC[kind];
+  const sec = FLOURISH_SEC[kind];
   const age = now - s.startedAt;
   if (!(age >= 0) || age >= sec) return null;
   // The state's own scratch object, overwritten; see `FlourishState.active`.

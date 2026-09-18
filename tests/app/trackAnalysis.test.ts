@@ -45,12 +45,8 @@ function scriptedJev(): TrackAnalysisDeps & { seen: TransitionInput[]; batches: 
     // seen from its own edge, before the music is back, is the silence.
     if (t.gapBeforeSec >= 0.1 && t.jumpDb >= 20) return 'drop';
     if (t.gapBeforeSec >= 0.1 && t.jumpDb >= 6) return 'break_silence';
-    // Harshness before loudness, which is what `drop.not_for` tells the real
-    // model: "a harsh, screamed or distorted climax; that is scream_peak". A
-    // scream is loud too, so a fake that checked the jump first would answer
-    // `drop` to every scream in the track.
-    if (t.harshDelta >= 0.25) return 'scream_peak';
     if (t.jumpDb >= 6) return 'drop';
+    if (t.harshDelta >= 0.25) return 'scream_peak';
     if (t.jumpDb <= -8) return 'breakdown';
     if (t.vocalDelta >= 0.15) return 'vocal_entry';
     if (t.bpmBefore > 0 && Math.abs(t.bpmAfter - t.bpmBefore) / t.bpmBefore > 0.06) return 'tempo_change';

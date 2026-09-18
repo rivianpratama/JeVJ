@@ -77,17 +77,7 @@ export interface TransitionContext {
    * adjustment adjusts, and what the restoring cue puts back.
    */
   mood: MoodVector;
-  /**
-   * The detector's exact instant, refined to the sample, when one of them found
-   * this moment.
-   *
-   * `drop` and `scream_peak` land on this and not on `at` wherever it exists,
-   * and the difference is audible. `at` is the *candidate's* time, which has
-   * been through the dedupe: several rules fire on one moment by design and the
-   * one that wins on novelty contributes its own timestamp, which may be a
-   * payload sample taken half a second away. For a mood that does not matter.
-   * For the instant a hit lands on it is the whole thing.
-   */
+  /** The detector's exact instant, when one of them found this moment. */
   detectorT?: number;
   /** Loudness change across the moment, in dB. */
   jumpDb?: number;
@@ -96,14 +86,9 @@ export interface TransitionContext {
 }
 
 /**
- * Write the cues one verdict calls for.
- *
- * `at` is the candidate's own time, which came through the dedupe and may be a
- * payload sample rather than a transient. Anything that has to land *on the
- * sample* — the two kinds a listener would clap along with, `drop` and
- * `scream_peak` — uses `ctx.detectorT` instead wherever there is one. The rest
- * keep `at`: a hole's edge, a voice arriving, a key moving are all things that
- * happen over a bar, and there is no attack in the envelope to snap them to.
+ * Write the cues one verdict calls for. `at` is the candidate's own time; a
+ * detector instant in the context wins for anything that has to land on the
+ * sample.
  */
 export function writeTransitionCues(
   tl: CueTimeline,

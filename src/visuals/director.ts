@@ -72,13 +72,6 @@ export interface FastFrame {
    */
   beatConf: number;
   regular: number;
-  /**
-   * Seconds in a bar, as the grid has it. The one thing on this frame that is
-   * about *musical* length rather than about energy, and the only honest unit
-   * for "hold this for a bar" — a fixed second is two bars of a 120 BPM track
-   * and half a bar of a slow one. An idle page reports the idle clock's own.
-   */
-  barSec: number;
 }
 
 export interface RenderParams {
@@ -394,25 +387,7 @@ const BREAKDOWN_SPEED = 0.5;
 const CLIMAX_BLOOM = 1.3;
 /** The lowest the bright pass may sit through a climax; see the use site. */
 const CLIMAX_BLOOM_THRESHOLD = 0.85;
-/**
- * How long the climax flare holds: one bar, not one second.
- *
- * A `drop_climax` section with a hit in it lifts the bloom, and the lift used
- * to last a flat second — which is half a bar of a 60 BPM piece and two bars of
- * a 150 BPM one, so the same instruction meant two different gestures depending
- * on the tempo. A bar is what a drop is measured in by everyone who writes one.
- *
- * Bounded either side, because a grid that has locked onto a wrong multiple
- * would otherwise hold the flare for eight seconds or blink it for two tenths.
- */
-const CLIMAX_BLOOM_MIN_SEC = 0.5;
-const CLIMAX_BLOOM_MAX_SEC = 4;
-const CLIMAX_BLOOM_FALLBACK_SEC = 2;
-
-export function climaxBloomSec(barSec: number): number {
-  if (!Number.isFinite(barSec) || barSec <= 0) return CLIMAX_BLOOM_FALLBACK_SEC;
-  return Math.min(CLIMAX_BLOOM_MAX_SEC, Math.max(CLIMAX_BLOOM_MIN_SEC, barSec));
-}
+const CLIMAX_BLOOM_SEC = 1;
 /** How big a hit starts that second. */
 const CLIMAX_IMPACT_GATE = 0.5;
 /** The decay is a multiplier per frame; outside this it is not a fade. */
@@ -680,9 +655,7 @@ export function direct(
   let reverse = false;
   for (const kind of transitions) {
     if (kind === 'drop' || kind === 'breakdown') reverse = true;
-    // The hit as the timeline reads it on this frame, which at a seam is the
-    // cue's own intensity: a drop's burst runs for as long as the drop was big.
-    fireFlourish(state.flourishes, kind, state.clock, clamp01(fast.impact));
+    fireFlourish(state.flourishes, kind, state.clock);
   }
   if (state.spin.reverseLeft > 0) reverse = false;
   // And a cooldown of its own, which the real-track pass made necessary.
@@ -948,8 +921,7 @@ export function direct(
   if (prev === null) state.heldBloomBase = bloomTarget;
   else state.heldBloomBase += (bloomTarget - state.heldBloomBase) * k;
   if (section === 'drop_climax' && impact >= CLIMAX_IMPACT_GATE) state.lastClimaxAt = state.clock;
-  const flaring =
-    section === 'drop_climax' && state.clock - state.lastClimaxAt < climaxBloomSec(fast.barSec);
+  const flaring = section === 'drop_climax' && state.clock - state.lastClimaxAt < CLIMAX_BLOOM_SEC;
   // The flare is a multiplier on the slewed base, so the ceiling has to be
   // applied again after it — mixed in by the safety rather than switched, so a
   // climax that turns into speech dims out instead of being snapped down.

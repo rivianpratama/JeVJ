@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { ONSET_REPORT_LAG_SEC } from '../../src/analysis/onset';
 import { NEUTRAL_MOOD } from '../../src/shared/moodSchema';
-import { analyzeOffline, mergeSegments, refineOnsetTime } from '../../src/timeline/offlineAnalyzer';
-import { clickTrack, concatSignals, songFixture } from '../helpers/synth';
+import { analyzeOffline, mergeSegments } from '../../src/timeline/offlineAnalyzer';
+import { clickTrack, concatSignals } from '../helpers/synth';
 import { EXAMPLE_INPUT } from '../helpers/moodFixture';
 import type { MoodInput, MoodVector } from '../../src/shared/types';
 
@@ -159,27 +159,6 @@ describe('analyzeOffline', () => {
     }
   });
 
-  it('puts the slam on the instant it sounded, not on the end of the window', { timeout: 60_000 }, async () => {
-    // The song fixture cuts a 0.4 s hole and drops everything at exactly 24.000.
-    // The detector cannot see the transient until the analyser window that
-    // contains it has closed, so its own stamp is 16 ms late here and would be
-    // up to 93 ms late on a slam that fell at the start of a window — an eighth
-    // of a beat at 128 BPM, which is what "the visuals react late" was.
-    const { signal, truth } = songFixture(SR);
-    const result = await analyzeOffline(signal, SR, fakeJev().ask);
-
-    const impacts = result.timeline.filter((c) => c.impact !== undefined).map((c) => c.t);
-    const nearest = impacts.reduce((best, t) =>
-      Math.abs(t - truth.drop) < Math.abs(best - truth.drop) ? t : best,
-    );
-    expect(Math.abs(nearest - truth.drop), `impact at ${nearest}s`).toBeLessThanOrEqual(0.008);
-
-    // And the candidate carries the same instant, so the model is asked about
-    // the moment the ramp will land on.
-    const candidate = result.candidates.find((c) => Math.abs(c.t - truth.drop) <= 0.05);
-    expect(candidate?.detectorT).toBeCloseTo(nearest, 6);
-  });
-
   it('has nothing to say about an empty buffer', { timeout: 10_000 }, async () => {
     const jev = fakeJev();
     const result = await analyzeOffline(new Float32Array(0), SR, jev.ask);
@@ -242,44 +221,5 @@ describe('mergeSegments', () => {
   it('drops a span it has no payload for', () => {
     const out = mergeSegments([{ start: 0, end: 10 }], []);
     expect(out).toHaveLength(0);
-  });
-});
-
-describe('refineOnsetTime', () => {
-  /** Silence, then a step to full scale at exactly `at` seconds. */
-  function step(at: number, seconds = 1): Float32Array {
-    const out = new Float32Array(Math.round(seconds * SR));
-    for (let i = Math.round(at * SR); i < out.length; i++) out[i] = i % 2 === 0 ? 0.8 : -0.8;
-    return out;
-  }
-
-  it('finds the attack under a frame stamped up to a window late', () => {
-    const signal = step(0.5);
-    // Every plausible stamp: the detector reports at the end of whichever
-    // 4096-sample window closed after the attack, so the error it is correcting
-    // is anywhere from one frame to one window.
-    for (const late of [0.017, 0.033, 0.05, 0.093]) {
-      const refined = refineOnsetTime(signal, SR, 0.5 + late);
-      expect(Math.abs(refined - 0.5), `${late * 1000} ms late`).toBeLessThanOrEqual(0.003);
-    }
-  });
-
-  it('falls back to the one-frame correction when there is no attack to find', () => {
-    // Silence, a steady tone with no rise in it, and a stamp past the end of
-    // the samples: three ways of having nothing to look at.
-    expect(refineOnsetTime(new Float32Array(SR), SR, 0.5)).toBeCloseTo(0.5 - ONSET_REPORT_LAG_SEC, 9);
-    const steady = new Float32Array(SR).map((_, i) => (i % 2 === 0 ? 0.5 : -0.5));
-    expect(refineOnsetTime(steady, SR, 0.5)).toBeCloseTo(0.5 - ONSET_REPORT_LAG_SEC, 9);
-    expect(refineOnsetTime(new Float32Array(0), SR, 0.5)).toBeCloseTo(0.5 - ONSET_REPORT_LAG_SEC, 9);
-    expect(refineOnsetTime(steady, 0, 0.5)).toBeCloseTo(0.5 - ONSET_REPORT_LAG_SEC, 9);
-  });
-
-  it('never looks further back than the window it is given', () => {
-    // Two hits 300 ms apart: the search must find the second, not the louder
-    // first. A wider search would move a quiet slam onto the previous bar.
-    const signal = new Float32Array(SR);
-    for (let i = Math.round(0.2 * SR); i < Math.round(0.24 * SR); i++) signal[i] = i % 2 === 0 ? 1 : -1;
-    for (let i = Math.round(0.5 * SR); i < Math.round(0.54 * SR); i++) signal[i] = i % 2 === 0 ? 0.3 : -0.3;
-    expect(refineOnsetTime(signal, SR, 0.53)).toBeGreaterThan(0.45);
   });
 });
