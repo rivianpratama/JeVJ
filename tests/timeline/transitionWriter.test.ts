@@ -46,6 +46,28 @@ describe('writeTransitionCues: drop', () => {
     expect(at(cues, AT)?.impact).toBeUndefined();
   });
 
+  it('lands on the strongest slam the detector stamped shortly before the candidate', () => {
+    const slams = [
+      { t: AT - 1.4, strength: 0.9 },
+      { t: AT - 0.3, strength: 0.4 },
+      { t: AT - 4, strength: 1 },
+    ];
+    const cues = write('drop', {}, { slams });
+    expect(at(cues, AT - 1.4)?.impact).toBe(0.7);
+    expect(at(cues, AT)?.impact).toBeUndefined();
+    expect(at(cues, AT - 4)?.impact).toBeUndefined();
+  });
+
+  it('writes one hit when two candidates name the same slam', () => {
+    const tl = new CueTimeline();
+    const slams = [{ t: AT - 1.2, strength: 0.8 }];
+    writeTransitionCues(tl, AT - 1.2, verdict('drop'), { barSec: BAR, mood: MOOD, detectorT: AT - 1.2 });
+    writeTransitionCues(tl, AT, verdict('drop', { intensity: 0.5 }), { barSec: BAR, mood: MOOD, slams });
+    const hits = [...tl.cues()].filter((c) => c.transition === 'drop' && c.impact !== undefined);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]?.impact).toBe(0.7);
+  });
+
   it('ramps the build from 0 to 1 over the two bars before it', () => {
     const cues = write('drop');
     const start = AT - 2 * BAR;

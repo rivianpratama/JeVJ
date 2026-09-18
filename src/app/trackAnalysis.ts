@@ -33,7 +33,7 @@
 import { beatTrust } from '../analysis/speech';
 import { analyzeOffline, type OfflineSample, type TransitionCandidate } from '../timeline/offlineAnalyzer';
 import { CueTimeline } from '../timeline/timeline';
-import { writeTransitionCues } from '../timeline/transitionWriter';
+import { writeTransitionCues, type DetectorInstant } from '../timeline/transitionWriter';
 import { TRANSITION_BATCH } from '../mood/transitionQuestions';
 import { NEUTRAL_MOOD } from '../shared/moodSchema';
 import type {
@@ -197,6 +197,17 @@ export async function analyzeTrack(
     }),
   );
 
+  // What the detector stamped to the frame during the sweep. A verdict on a
+  // candidate the summarizer found lands on one of these, not on the sample
+  // time the summarizer's smoothing put it at — see `snapToDetector`.
+  const slams: DetectorInstant[] = [];
+  const holes: DetectorInstant[] = [];
+  for (const c of offline.timeline) {
+    if (c.source !== 'offline') continue;
+    if (c.impact !== undefined) slams.push({ t: c.t, strength: c.impact });
+    else if (c.build === 1) holes.push({ t: c.t, strength: 0 });
+  }
+
   const transitions: AnalyzedTransition[] = [];
   const batches = Math.max(1, Math.ceil(inputs.length / TRANSITION_BATCH));
   for (let b = 0; b * TRANSITION_BATCH < inputs.length; b++) {
@@ -219,6 +230,8 @@ export async function analyzeTrack(
         ...(candidate.detectorT === undefined ? {} : { detectorT: candidate.detectorT }),
         jumpDb: input.jumpDb,
         returnT: returnAfter(offline.candidates, candidate),
+        slams,
+        holes,
       });
     });
     // A batch nobody answered is four moments the track will not have, and the

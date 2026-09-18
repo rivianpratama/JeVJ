@@ -68,6 +68,50 @@ const RETURN_JUMP_DB = 6;
 const DRAMATIC = 0.6;
 /** A sane bar when the grid never locked, so a ramp is still drawn. */
 const FALLBACK_BAR_SEC = 2;
+/**
+ * How far around a candidate's own time the writer looks for the detector's
+ * instant of the same event.
+ *
+ * A novelty candidate sits at the summarizer's sample, and the summarizer
+ * smooths over bars, so its peak arrives one to two seconds *after* the music
+ * actually turned. The slam the listener hears is earlier, and is one the
+ * detector already stamped to the frame: so the search reaches back further
+ * than it reaches forward, and a hit lands on the detector's time or not at all.
+ */
+const SNAP_BEFORE_SEC = 2.5;
+const SNAP_AFTER_SEC = 0.6;
+/** Two hits of one kind this close together are the same moment named twice. */
+const DUPLICATE_SEC = 0.35;
+
+/** A slam or a hole the offline detector stamped, in track seconds. */
+export interface DetectorInstant {
+  t: number;
+  /** How hard it hit, 0..1. Holes carry 0. */
+  strength: number;
+}
+
+/**
+ * The strongest instant within the window around `at`, nearest wins a tie; or
+ * undefined when the detector heard nothing there.
+ */
+export function snapToDetector(
+  instants: readonly DetectorInstant[] | undefined,
+  at: number,
+): number | undefined {
+  if (instants === undefined) return undefined;
+  let best: DetectorInstant | undefined;
+  for (const d of instants) {
+    if (d.t < at - SNAP_BEFORE_SEC || d.t > at + SNAP_AFTER_SEC) continue;
+    if (
+      best === undefined ||
+      d.strength > best.strength ||
+      (d.strength === best.strength && Math.abs(d.t - at) < Math.abs(best.t - at))
+    ) {
+      best = d;
+    }
+  }
+  return best?.t;
+}
 
 export interface TransitionContext {
   /** Seconds in a bar here. A grid that never locked falls back to 2 s. */
@@ -83,6 +127,10 @@ export interface TransitionContext {
   jumpDb?: number;
   /** When the music comes back after a hole. Defaults to one bar later. */
   returnT?: number;
+  /** Every slam the offline detector stamped, for a hit found by something else. */
+  slams?: readonly DetectorInstant[];
+  /** Every hole it stamped, for a fall found by something else. */
+  holes?: readonly DetectorInstant[];
 }
 
 /**
@@ -97,9 +145,20 @@ export function writeTransitionCues(
   ctx: TransitionContext,
 ): void {
   const bar = ctx.barSec > 0 && Number.isFinite(ctx.barSec) ? ctx.barSec : FALLBACK_BAR_SEC;
-  const hit = ctx.detectorT ?? at;
+  const hit = ctx.detectorT ?? snapToDetector(ctx.slams, at) ?? at;
+  const fall = ctx.detectorT ?? snapToDetector(ctx.holes, at) ?? at;
   const flourish = verdict.dramatic >= DRAMATIC;
   const mark = (c: Cue): void => tl.add({ ...c, transition: verdict.kind, ...(flourish ? { flourish: true } : {}) });
+
+  // Snapping sends the novelty candidate and the detector candidate of one
+  // slam to the same instant, and the model may well name both. One hit is a
+  // hit; two on top of each other is a burst held twice as long.
+  if (
+    (verdict.kind === 'drop' || verdict.kind === 'scream_peak') &&
+    tl.cues().some((c) => c.transition === verdict.kind && c.impact !== undefined && Math.abs(c.t - hit) < DUPLICATE_SEC)
+  ) {
+    return;
+  }
 
   switch (verdict.kind) {
     case 'drop': {
@@ -117,18 +176,18 @@ export function writeTransitionCues(
     case 'breakdown':
     case 'quiet_fall': {
       mark({
-        t: at,
+        t: fall,
         source: 'jev',
         section: 'breakdown',
         mood: { arousal: clamp(ctx.mood.arousal - AROUSAL_DROP) },
       });
-      tl.add({ t: at + ADJUST_BARS * bar, source: 'jev', mood: { arousal: ctx.mood.arousal } });
+      tl.add({ t: fall + ADJUST_BARS * bar, source: 'jev', mood: { arousal: ctx.mood.arousal } });
       return;
     }
 
     case 'break_silence': {
-      mark({ t: at, source: 'jev', build: 1 });
-      const back = ctx.returnT ?? at + bar;
+      mark({ t: fall, source: 'jev', build: 1 });
+      const back = ctx.returnT ?? fall + bar;
       const jumped = (ctx.jumpDb ?? 0) >= RETURN_JUMP_DB;
       tl.add({
         t: back,
