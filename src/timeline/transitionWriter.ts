@@ -82,6 +82,12 @@ const SNAP_BEFORE_SEC = 2.5;
 const SNAP_AFTER_SEC = 0.6;
 /** Two hits of one kind this close together are the same moment named twice. */
 const DUPLICATE_SEC = 0.35;
+/**
+ * How much strength a slam gives up per second it lies from the candidate. A
+ * slam two seconds off has to be 0.3 harder than one right there to win — so a
+ * big hit in the build-up does not pull the drop a bar early.
+ */
+const DISTANCE_PENALTY_PER_SEC = 0.15;
 
 /** A slam or a hole the offline detector stamped, in track seconds. */
 export interface DetectorInstant {
@@ -91,7 +97,8 @@ export interface DetectorInstant {
 }
 
 /**
- * The strongest instant within the window around `at`, nearest wins a tie; or
+ * The best instant within the window around `at` — the strongest, with a
+ * penalty for distance so nearness breaks anything close to a tie — or
  * undefined when the detector heard nothing there.
  */
 export function snapToDetector(
@@ -100,14 +107,13 @@ export function snapToDetector(
 ): number | undefined {
   if (instants === undefined) return undefined;
   let best: DetectorInstant | undefined;
+  let bestScore = -Infinity;
   for (const d of instants) {
     if (d.t < at - SNAP_BEFORE_SEC || d.t > at + SNAP_AFTER_SEC) continue;
-    if (
-      best === undefined ||
-      d.strength > best.strength ||
-      (d.strength === best.strength && Math.abs(d.t - at) < Math.abs(best.t - at))
-    ) {
+    const score = d.strength - DISTANCE_PENALTY_PER_SEC * Math.abs(d.t - at);
+    if (score > bestScore) {
       best = d;
+      bestScore = score;
     }
   }
   return best?.t;

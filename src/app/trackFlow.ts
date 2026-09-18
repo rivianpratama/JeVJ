@@ -102,6 +102,8 @@ export function createTrackFlow(o: TrackFlowOptions): TrackFlow {
   let cues: Cue[] = [];
   /** Which pass is the current one; a late one writes nothing. */
   let pass = 0;
+  /** How far the clocks may part before the track is re-placed, in seconds. */
+  const REPLACE_EPSILON_SEC = 0.05;
   /** The object URL of a dropped file, so the last one can be let go. */
   let objectUrl: string | null = null;
 
@@ -115,15 +117,35 @@ export function createTrackFlow(o: TrackFlowOptions): TrackFlow {
    */
   function place(): void {
     if (cues.length === 0) return;
-    const offset = o.ctx().currentTime - o.el.currentTime;
+    const offset = currentOffset();
+    if (!Number.isFinite(offset)) return;
+    placedAt = offset;
     o.timeline.replaceSource(
       'offline',
       0,
       cues.map((c) => ({ ...c, t: c.t + offset })),
     );
   }
-  o.el.addEventListener('play', place);
+  function currentOffset(): number {
+    return o.ctx().currentTime - o.el.currentTime;
+  }
+  /** The offset the cues are placed at, or NaN before any placement. */
+  let placedAt = Number.NaN;
+
+  // `playing`, not `play`: `play` fires when play() is *called*, and a video
+  // that still has to buffer and prime its decoder sits at currentTime 0 for
+  // up to a couple of seconds while the audio clock runs on. An offset taken
+  // then is short by exactly that much, and every cue in the track fires that
+  // much too soon. `playing` fires when frames actually start moving, and
+  // again after every stall, which is the other time the two clocks part.
+  o.el.addEventListener('playing', place);
   o.el.addEventListener('seeked', place);
+  // And a check four times a second for the drift nothing announces. The
+  // threshold is above the jitter of a `currentTime` read, well below anything
+  // a listener could see.
+  o.el.addEventListener('timeupdate', () => {
+    if (!Number.isFinite(placedAt) || Math.abs(currentOffset() - placedAt) > REPLACE_EPSILON_SEC) place();
+  });
 
   /** Start of a pass: the old track's cues are not this track's. */
   function begin(): number {

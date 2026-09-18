@@ -58,6 +58,14 @@ describe('writeTransitionCues: drop', () => {
     expect(at(cues, AT - 4)?.impact).toBeUndefined();
   });
 
+  it('does not let a harder hit in the build-up pull the drop a bar early', () => {
+    const slams = [
+      { t: AT - 2.2, strength: 0.75 },
+      { t: AT - 0.4, strength: 0.6 },
+    ];
+    expect(at(write('drop', {}, { slams }), AT - 0.4)?.impact).toBe(0.7);
+  });
+
   it('writes one hit when two candidates name the same slam', () => {
     const tl = new CueTimeline();
     const slams = [{ t: AT - 1.2, strength: 0.8 }];

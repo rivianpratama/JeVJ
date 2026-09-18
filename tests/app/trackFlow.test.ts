@@ -274,7 +274,7 @@ describe('createTrackFlow', () => {
     // Nothing is on the timeline until the element actually starts: only then
     // is there an offset between track time and the audio clock.
     expect([...timeline.cues()]).toHaveLength(0);
-    element.fire('play');
+    element.fire('playing');
     const cues = [...timeline.cues()];
     expect(cues.length).toBeGreaterThan(0);
     // Track time plus (ctx.currentTime - el.currentTime). A cue that is merely
@@ -289,9 +289,9 @@ describe('createTrackFlow', () => {
     expect(trackTimes[0]).toBeLessThan(1);
     expect(trackTimes[0]).toBeGreaterThanOrEqual(0);
     expect(trackTimes[trackTimes.length - 1]).toBeLessThanOrEqual(SECONDS);
-    // And the mapping is a function of the two clocks alone: firing `play`
+    // And the mapping is a function of the two clocks alone: firing `playing`
     // again from the same place reproduces every time exactly.
-    element.fire('play');
+    element.fire('playing');
     expect([...timeline.cues()].map((c) => c.t - offset).sort((a, b) => a - b)).toEqual(trackTimes);
   }, 60_000);
 
@@ -318,7 +318,7 @@ describe('createTrackFlow', () => {
     expect(model.calls()).toBe(0);
     expect(progress[progress.length - 1]).toBe(100);
 
-    element.fire('play');
+    element.fire('playing');
     expect([...timeline.cues()].map((c) => c.t)).toEqual([1.5 + CTX_NOW - EL_AT]);
   }, 60_000);
 
@@ -335,7 +335,7 @@ describe('createTrackFlow', () => {
       const { flow, timeline, element } = build();
 
       await flow.openFile(new File([new Uint8Array(8)], 'first.wav', { type: 'audio/wav' }));
-      element.fire('play');
+      element.fire('playing');
       const firstTrack = [...timeline.cues()].length;
       expect(firstTrack).toBeGreaterThan(0);
       expect(urls.created).toHaveLength(1);
@@ -351,7 +351,7 @@ describe('createTrackFlow', () => {
       // released when the second takes its place.
       expect(urls.revoked).toEqual([urls.created[0]]);
       expect(element.src()).toBe(urls.created[1]);
-      element.fire('play');
+      element.fire('playing');
       expect([...timeline.cues()]).toHaveLength(firstTrack);
     } finally {
       urls.restore();
@@ -362,7 +362,7 @@ describe('createTrackFlow', () => {
     const { flow, timeline, element } = build({ cached: cachedRecord() });
     await flow.open('https://youtu.be/jNQXAC9IVRw');
 
-    element.fire('play');
+    element.fire('playing');
     expect([...timeline.cues()].map((c) => c.t)).toEqual([1.5 + CTX_NOW - EL_AT]);
 
     // A seek moves the element's clock without moving the audio context's, so
@@ -394,7 +394,7 @@ describe('createTrackFlow', () => {
     flow.cancel();
     expect(await pending).toBeNull();
 
-    element.fire('play');
+    element.fire('playing');
     expect([...timeline.cues()]).toHaveLength(0);
   }, 60_000);
 });
